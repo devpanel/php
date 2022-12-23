@@ -1,4 +1,4 @@
-FROM php:8.2.1RC1-apache-buster
+FROM php:8.2-apache-buster
 
 ARG POLYVER_CUSTOMER_KEY
 
@@ -94,7 +94,6 @@ RUN docker-php-ext-install -j$(nproc) \
   gettext \
   gmp \
   intl \
-#   ldap \
   mysqli \
   opcache \
   pdo_mysql \
@@ -113,7 +112,6 @@ RUN docker-php-ext-install -j$(nproc) \
 RUN pecl install -o -f \
   igbinary-3.2.12 \
   imagick-3.7.0 \
-#   msgpack-2.1.1 \
   oauth-2.0.7 \
   redis-5.3.7 \
   yaml-2.2.2 \
@@ -143,8 +141,6 @@ RUN docker-php-ext-enable \
   igbinary \
   imagick \
   intl \
-#   ldap \
-#   msgpack \
   mysqli \
   oauth \
   opcache \
