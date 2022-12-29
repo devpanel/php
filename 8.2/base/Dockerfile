@@ -199,7 +199,7 @@ COPY scripts /scripts
 USER ${USER}
 
 #== Install Drush
-ARG DRUSH_VERSION=8.x
+ARG DRUSH_VERSION=11.x
 RUN composer global require drush/drush:${DRUSH_VERSION} \
   && echo "PATH=/home/${USER}/.composer/vendor/bin/:${PATH}" >> ~/.bashrc
 ENV PATH "/home/${USER}/.composer/vendor/bin/:${PATH}"
