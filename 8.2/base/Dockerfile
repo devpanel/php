@@ -172,15 +172,15 @@ RUN mkdir -p ${APP_ROOT} \
     && chown -R ${UID}:${GID} ${APP_ROOT}
 
 #== Install Codeserver [AMD Chip]
-# ARG CODESERVER_VERSION="4.9.1"
-# ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb /tmp/
-# RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
-#     && rm /tmp/code-server_${CODESERVER_VERSION}_amd64.deb
-#== Install Codeserver [ARM Chip]
 ARG CODESERVER_VERSION="4.9.1"
-ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_arm64.deb /tmp/
-RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_arm64.deb \
-    && rm /tmp/code-server_${CODESERVER_VERSION}_arm64.deb
+ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb /tmp/
+RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
+    && rm /tmp/code-server_${CODESERVER_VERSION}_amd64.deb
+#== Install Codeserver [ARM Chip]
+# ARG CODESERVER_VERSION="4.9.1"
+# ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_arm64.deb /tmp/
+# RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_arm64.deb \
+#     && rm /tmp/code-server_${CODESERVER_VERSION}_arm64.deb
 
 #== Install Composer
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.3.10
