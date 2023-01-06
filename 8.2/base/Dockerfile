@@ -68,6 +68,7 @@ RUN apt-get update \
   zip unzip \
   git \
   rsync \
+  ssh \
   default-mysql-client \
   && rm -rf /var/lib/apt/lists/*
 
