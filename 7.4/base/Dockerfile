@@ -185,6 +185,8 @@ RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
 
 #== Install Composer
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.3.10
+RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer2 --version=2.3.10
+RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
 
 #== Install Wordpress CLI
 ARG WP_CLI_VERSION=2.4.0
