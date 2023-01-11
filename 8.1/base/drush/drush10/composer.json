@@ -1,0 +1,6 @@
+{
+    "require": {
+        "drush/drush": "10.x",
+        "symfony/http-kernel": "4.4.49"
+    }
+}
