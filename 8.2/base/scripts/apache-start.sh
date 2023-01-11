@@ -18,6 +18,9 @@ sudo cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
 [ ! -z "$WEB_ROOT" ] &&  sudo sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|" /etc/apache2/sites-enabled/000-default.conf
 [ ! -z "$SERVER_NAME" ] && sudo sed -i "s|{{SERVER_NAME}}|${SERVER_NAME}|" /etc/apache2/sites-enabled/000-default.conf
 
+# install Drush 7, 8, 9, 10, 11
+bash source ~/.bashrc
+
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
 # Start the primary process and put it in the background

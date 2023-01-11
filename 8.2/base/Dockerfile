@@ -16,7 +16,7 @@ ENV PHP_CUSTOM_INI $APP_ROOT/php.ini
 ENV PHP_EXT_DIR /usr/local/etc/php/conf.d
 
 ENV PHP_CLEAR_ENV false
-ENV PHP_MEMORY_LIMIT 2048M
+ENV PHP_MEMORY_LIMIT 4096M
 ENV PHP_UPLOAD_MAX_FILESIZE 64M
 ENV PHP_POST_MAX_SIZE 64M
 ENV PHP_MAX_EXECUTION_TIME 600
@@ -68,6 +68,7 @@ RUN apt-get update \
   zip unzip \
   git \
   rsync \
+  ssh \
   default-mysql-client \
   && rm -rf /var/lib/apt/lists/*
 
@@ -184,6 +185,8 @@ RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
 
 #== Install Composer
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.3.10
+RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer2 --version=2.3.10
+RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
 
 #== Install Wordpress CLI
 ARG WP_CLI_VERSION=2.4.0
@@ -195,13 +198,24 @@ WORKDIR ${APP_ROOT}
 
 COPY templates /templates
 COPY scripts /scripts
+COPY drush /drush
 
 USER ${USER}
+RUN sudo chown -R ${USER} /drush
 
 #== Install Drush
 ARG DRUSH_VERSION=11.x
-RUN composer global require drush/drush:${DRUSH_VERSION} \
+RUN composer global require drush/drush:${DRUSH_VERSION} symfony/http-kernel \
   && echo "PATH=/home/${USER}/.composer/vendor/bin/:${PATH}" >> ~/.bashrc
+RUN composer update --working-dir=/drush/drush8 \
+  && echo "alias drush8=/drush/drush8/vendor/bin/drush" >> ~/.bashrc
+RUN  composer update --working-dir=/drush/drush9 \
+  && echo "alias drush9=/drush/drush9/vendor/bin/drush" >> ~/.bashrc
+RUN  composer update --working-dir=/drush/drush10 \
+  && echo "alias drush10=/drush/drush10/vendor/bin/drush" >> ~/.bashrc
+RUN  composer update --working-dir=/drush/drush11 \
+  && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
+RUN bash ~/.bashrc
 ENV PATH "/home/${USER}/.composer/vendor/bin/:${PATH}"
 
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
