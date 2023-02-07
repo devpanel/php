@@ -15,13 +15,11 @@ ENV WEB_ROOT $APP_ROOT
 ENV PHP_CUSTOM_INI $APP_ROOT/php.ini
 ENV PHP_EXT_DIR /usr/local/etc/php/conf.d
 
+ENV PHP_CLEAR_ENV false
 ENV PHP_MEMORY_LIMIT 4096M
-ENV PHP_MAX_EXECUTION_TIME 600
-ENV PHP_MAX_INPUT_TIME 600
-ENV PHP_MAX_INPUT_VARS 3000
 ENV PHP_UPLOAD_MAX_FILESIZE 64M
 ENV PHP_POST_MAX_SIZE 64M
-ENV PHP_CLEAR_ENV false
+ENV PHP_MAX_EXECUTION_TIME 600
 
 ENV SERVER_NAME default
 
@@ -189,6 +187,11 @@ RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.3.10
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer2 --version=2.3.10
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
+
+#== Install DevPanel CLI client
+COPY bin/devpanel /usr/local/bin/devpanel
+RUN chmod +x /usr/local/bin/devpanel \
+  && devpanel version
 
 #== Install Wordpress CLI
 ARG WP_CLI_VERSION=2.4.0
