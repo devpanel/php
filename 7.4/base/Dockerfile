@@ -190,6 +190,11 @@ RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/loc
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer2 --version=2.3.10
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
 
+#== Install DevPanel CLI client
+COPY bin/devpanel /usr/local/bin/devpanel
+RUN chmod +x /usr/local/bin/devpanel \
+  && devpanel version
+
 #== Install Wordpress CLI
 ARG WP_CLI_VERSION=2.4.0
 RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar \
