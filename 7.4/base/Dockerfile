@@ -174,6 +174,9 @@ RUN groupadd -g ${GID} ${GROUP} \
 RUN mkdir -p ${APP_ROOT} \
     && chown -R ${UID}:${GID} ${APP_ROOT}
 
+#== Enable mode_rewrite by default
+RUN a2enmod rewrite
+
 #== Install Codeserver [AMD Chip]
 ARG CODESERVER_VERSION="4.9.1"
 ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb /tmp/
@@ -189,6 +192,11 @@ RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.3.10
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer2 --version=2.3.10
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
+
+#== Install DevPanel CLI client
+COPY bin/devpanel /usr/local/bin/devpanel
+RUN chmod +x /usr/local/bin/devpanel \
+  && devpanel version
 
 #== Install Wordpress CLI
 ARG WP_CLI_VERSION=2.4.0
