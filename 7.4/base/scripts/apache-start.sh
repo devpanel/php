@@ -1,6 +1,7 @@
 #!/bin/bash
 # Turn on bash's job control
 
+sudo cp /templates/apache2.conf /etc/apache2/apache2.conf
 sudo cp /templates/000-default.conf /etc/apache2/sites-enabled/000-default.conf
 sudo cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
 
@@ -19,6 +20,9 @@ sudo cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
 # Custom Environment variables in /etc/apache2/sites-enabled/000-default.conf
 [ ! -z "$WEB_ROOT" ] &&  sudo sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|" /etc/apache2/sites-enabled/000-default.conf
 [ ! -z "$SERVER_NAME" ] && sudo sed -i "s|{{SERVER_NAME}}|${SERVER_NAME}|" /etc/apache2/sites-enabled/000-default.conf
+
+# Custom Environment variable in /etc/apache2/apache2.conf
+[ ! -z "$WEB_ROOT" ] && sudo sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|" /etc/apache2/apache2.conf
 
 # install Drush 7, 8, 9, 10, 11
 bash source ~/.bashrc
