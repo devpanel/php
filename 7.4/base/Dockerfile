@@ -230,4 +230,10 @@ RUN  composer update --working-dir=/drush/drush11 \
 RUN bash ~/.bashrc
 ENV PATH "/home/${USER}/.composer/vendor/bin/:${PATH}"
 
+#== Install Drush backdrop extention
+RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
+  && unzip 1.x-1.x.zip -d /home/${USER}/.composer/vendor/drush/drush/commands/backdrop \
+  && drush cc drush
+
+
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
