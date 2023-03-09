@@ -217,11 +217,6 @@ RUN sudo chown -R ${USER} /drush
 ARG DRUSH_VERSION=8.x
 RUN composer global require drush/drush:${DRUSH_VERSION} \
   && echo "PATH=/home/${USER}/.composer/vendor/bin/:${PATH}" >> ~/.bashrc
-#== Install Drush backdrop extention
-RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
-  && unzip 1.x-1.x.zip -d /home/${USER}/.composer/vendor/drush/drush/commands/backdrop \
-  && drush cc drush
-
 RUN composer update --working-dir=/drush/drush7 \
   && echo "alias drush7=/drush/drush7/vendor/bin/drush" >> ~/.bashrc
 RUN composer update --working-dir=/drush/drush8 \
@@ -234,5 +229,11 @@ RUN  composer update --working-dir=/drush/drush11 \
   && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
 RUN bash ~/.bashrc
 ENV PATH "/home/${USER}/.composer/vendor/bin/:${PATH}"
+
+#== Install Drush backdrop extention
+RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
+  && unzip 1.x-1.x.zip -d /home/${USER}/.composer/vendor/drush/drush/commands/backdrop \
+  && drush cc drush
+
 
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
