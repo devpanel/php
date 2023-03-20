@@ -2,13 +2,26 @@ name: Docker build and push PHP7.4-base
 
 on:
   push:
+    paths:
+      - "7.4/base/**"
     branches:
-      - php/7.4-base
+      - main
+      - develop
 
 jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
+      - name: Set env to testing environment
+        if: endsWith(github.ref, '/develop')
+        run: |
+          echo "IMAGE_TAG=devpanel/php:7.4-base-rc" >> $GITHUB_ENV
+
+      - name: Set env to production environment
+        if: endsWith(github.ref, '/main')
+        run: |
+          echo "IMAGE_TAG=devpanel/php:7.4-base" >> $GITHUB_ENV
+
       - name: Checkout repository
         uses: actions/checkout@v3
 
@@ -30,4 +43,4 @@ jobs:
           file: ./7.4/base/Dockerfile
           context: ./7.4/base/
           push: true
-          tags: devpanel/php:7.4-base
+          tags: ${{ env.IMAGE_TAG }}

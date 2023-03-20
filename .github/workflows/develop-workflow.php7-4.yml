@@ -1,9 +1,11 @@
-name: Docker build and push PHP8.2 Base
+name: Docker build and push devpanel/php:7.4-base-rc
 
 on:
   push:
+    paths:
+      - "7.4/base/**"
     branches:
-      - php/8.2-base
+      - develop
 
 jobs:
   docker:
@@ -27,7 +29,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v3
         with:
-          file: ./8.2/base/Dockerfile
-          context: ./8.2/base/
+          file: ./7.4/base/Dockerfile
+          context: ./7.4/base/
           push: true
-          tags: devpanel/php:8.2-base
+          tags: devpanel/php:7.4-base-rc
