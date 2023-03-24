@@ -239,7 +239,7 @@ RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/re
 #== Install BEE CLI client
 COPY bee /bee
 RUN chmod +x /bee/bee.php \
-  && && echo "alias bee=/bee/bee.php" >> ~/.bashrc
+  && echo "alias bee=/bee/bee.php" >> ~/.bashrc
 
 
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
