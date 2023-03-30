@@ -52,6 +52,7 @@ RUN apt-get update \
   libbz2-dev \
   libjpeg62-turbo-dev \
   libpng-dev \
+  libwebp-dev \
   libfreetype6-dev \
   libgeoip-dev \
   wget \
@@ -81,7 +82,7 @@ RUN apt-get update \
 
 # Configure the gd library
 RUN docker-php-ext-configure \
-  gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/
+  gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ --with-webp=/usr/include/
 # RUN docker-php-ext-configure \
 #   ldap --with-libdir=lib/x86_64-linux-gnu
 RUN docker-php-ext-configure \
