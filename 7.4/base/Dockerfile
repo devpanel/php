@@ -52,6 +52,7 @@ RUN apt-get update \
   libbz2-dev \
   libjpeg62-turbo-dev \
   libpng-dev \
+  libwebp-dev \
   libfreetype6-dev \
   libgeoip-dev \
   wget \
@@ -81,7 +82,7 @@ RUN apt-get update \
 
 # Configure the gd library
 RUN docker-php-ext-configure \
-  gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/
+  gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ --with-webp=/usr/include/
 # RUN docker-php-ext-configure \
 #   ldap --with-libdir=lib/x86_64-linux-gnu
 RUN docker-php-ext-configure \
@@ -198,6 +199,7 @@ COPY bin/devpanel /usr/local/bin/devpanel
 RUN chmod +x /usr/local/bin/devpanel \
   && devpanel version
 
+
 #== Install Wordpress CLI
 ARG WP_CLI_VERSION=2.4.0
 RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar \
@@ -234,6 +236,11 @@ ENV PATH "/home/${USER}/.composer/vendor/bin/:${PATH}"
 RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
   && unzip 1.x-1.x.zip -d /home/${USER}/.composer/vendor/drush/drush/commands/backdrop \
   && drush cc drush
+
+#== Install BEE CLI client
+COPY bee /bee
+RUN sudo chmod +x /bee/bee.php \
+  && echo "alias bee=/bee/bee.php" >> ~/.bashrc
 
 
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
