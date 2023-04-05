@@ -176,7 +176,7 @@ RUN mkdir -p ${APP_ROOT} \
     && chown -R ${UID}:${GID} ${APP_ROOT}
 
 #== Enable mode_rewrite by default
-RUN a2enmod rewrite
+RUN a2enmod rewrite remoteip
 
 #== Install Codeserver [AMD Chip]
 ARG CODESERVER_VERSION="4.9.1"
@@ -242,5 +242,6 @@ COPY bee /bee
 RUN sudo chmod +x /bee/bee.php \
   && echo "alias bee=/bee/bee.php" >> ~/.bashrc
 
+USER root
 
-CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
+ENTRYPOINT ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
