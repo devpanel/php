@@ -15,11 +15,13 @@ ENV WEB_ROOT $APP_ROOT
 ENV PHP_CUSTOM_INI $APP_ROOT/php.ini
 ENV PHP_EXT_DIR /usr/local/etc/php/conf.d
 
-ENV PHP_CLEAR_ENV false
 ENV PHP_MEMORY_LIMIT 4096M
+ENV PHP_MAX_EXECUTION_TIME 600
+ENV PHP_MAX_INPUT_TIME 600
+ENV PHP_MAX_INPUT_VARS 3000
 ENV PHP_UPLOAD_MAX_FILESIZE 64M
 ENV PHP_POST_MAX_SIZE 64M
-ENV PHP_MAX_EXECUTION_TIME 600
+ENV PHP_CLEAR_ENV false
 
 ENV SERVER_NAME default
 
@@ -50,6 +52,7 @@ RUN apt-get update \
   libbz2-dev \
   libjpeg62-turbo-dev \
   libpng-dev \
+  libwebp-dev \
   libfreetype6-dev \
   libgeoip-dev \
   wget \
@@ -79,7 +82,7 @@ RUN apt-get update \
 
 # Configure the gd library
 RUN docker-php-ext-configure \
-  gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/
+  gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ --with-webp=/usr/include/
 # RUN docker-php-ext-configure \
 #   ldap --with-libdir=lib/x86_64-linux-gnu
 RUN docker-php-ext-configure \
@@ -172,6 +175,9 @@ RUN groupadd -g ${GID} ${GROUP} \
 RUN mkdir -p ${APP_ROOT} \
     && chown -R ${UID}:${GID} ${APP_ROOT}
 
+#== Enable mode_rewrite by default
+RUN a2enmod rewrite remoteip
+
 #== Install Codeserver [AMD Chip]
 ARG CODESERVER_VERSION="4.9.1"
 ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb /tmp/
@@ -187,6 +193,11 @@ RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.3.10
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer2 --version=2.3.10
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
+
+#== Install DevPanel CLI client
+COPY bin/devpanel /usr/local/bin/devpanel
+RUN chmod +x /usr/local/bin/devpanel \
+  && devpanel version
 
 #== Install Wordpress CLI
 ARG WP_CLI_VERSION=2.4.0

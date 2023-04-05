@@ -2,13 +2,27 @@ name: Docker build and push PHP8.1 Base
 
 on:
   push:
+    paths:
+      - "8.1/base/**"
     branches:
-      - php/8.1-base
+      - main
+      - develop
 
 jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
+
+      - name: Set env to testing environment
+        if: endsWith(github.ref, '/develop')
+        run: |
+          echo "IMAGE_TAG=devpanel/php:8.1-base-rc" >> $GITHUB_ENV
+
+      - name: Set env to production environment
+        if: endsWith(github.ref, '/main')
+        run: |
+          echo "IMAGE_TAG=devpanel/php:8.1-base" >> $GITHUB_ENV
+
       - name: Checkout repository
         uses: actions/checkout@v3
 
@@ -30,4 +44,4 @@ jobs:
           file: ./8.1/base/Dockerfile
           context: ./8.1/base/
           push: true
-          tags: devpanel/php:8.1-base
+          tags: ${{ env.IMAGE_TAG }}
