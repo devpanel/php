@@ -1,6 +1,7 @@
 {
     "require": {
         "drush/drush": "11.x",
+        "psr/log": "~1.1",
         "symfony/http-kernel": "6.2.4"
     }
 }
