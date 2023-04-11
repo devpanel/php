@@ -243,6 +243,5 @@ COPY bee /bee
 RUN sudo chmod +x /bee/bee.php \
   && echo "alias bee=/bee/bee.php" >> ~/.bashrc
 
-USER root
 
-ENTRYPOINT ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
+CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ] 
