@@ -235,7 +235,7 @@ ENV PATH "/home/${USER}/.composer/vendor/bin/:${PATH}"
 #== Install Drush backdrop extention
 RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
   && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
-  && drush cc drush
+  && /drush/drush${DRUSH_VERSION}/vendor/bin/drush cc drush
 
 
 #== Install BEE CLI client
