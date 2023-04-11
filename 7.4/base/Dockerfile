@@ -233,10 +233,10 @@ RUN bash ~/.bashrc
 ENV PATH "/home/${USER}/.composer/vendor/bin/:${PATH}"
 
 #== Install Drush backdrop extention
-RUN mkdir -p  /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
-  && wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
+RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
   && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
   && drush cc drush
+
 
 #== Install BEE CLI client
 COPY bee /bee
