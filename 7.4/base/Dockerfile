@@ -216,9 +216,7 @@ USER ${USER}
 RUN sudo chown -R ${USER} /drush
 
 #== Install Drush
-ARG DRUSH_VERSION=8.x
-RUN composer global require drush/drush:${DRUSH_VERSION} \
-  && echo "PATH=/home/${USER}/.composer/vendor/bin/:${PATH}" >> ~/.bashrc
+ARG DRUSH_VERSION=8
 RUN composer update --working-dir=/drush/drush7 \
   && echo "alias drush7=/drush/drush7/vendor/bin/drush" >> ~/.bashrc
 RUN composer update --working-dir=/drush/drush8 \
@@ -229,12 +227,15 @@ RUN  composer update --working-dir=/drush/drush10 \
   && echo "alias drush10=/drush/drush10/vendor/bin/drush" >> ~/.bashrc
 RUN  composer update --working-dir=/drush/drush11 \
   && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
+RUN echo "alias drush=/drush/drush${DRUSH_VERSION}/vendor/bin/drush" >> ~/.bashrc
+
 RUN bash ~/.bashrc
 ENV PATH "/home/${USER}/.composer/vendor/bin/:${PATH}"
 
 #== Install Drush backdrop extention
-RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
-  && unzip 1.x-1.x.zip -d /home/${USER}/.composer/vendor/drush/drush/commands/backdrop \
+RUN mkdir -p  /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
+  && wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
+  && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
   && drush cc drush
 
 #== Install BEE CLI client
