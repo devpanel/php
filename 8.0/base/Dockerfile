@@ -228,6 +228,6 @@ RUN  composer update --working-dir=/drush/drush11 \
 RUN echo "alias drush=/drush/drush${DRUSH_VERSION}/vendor/bin/drush" >> ~/.bashrc
 
 RUN bash ~/.bashrc
-ENV PATH "/home/${USER}/.composer/vendor/bin/:${PATH}"
+ENV PATH "/drush/drush${DRUSH_VERSION}/vendor/bin/:${PATH}"
 
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
