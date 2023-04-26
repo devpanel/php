@@ -1,6 +1,6 @@
 #!/bin/bash
 # Turn on bash's job control
-
+sudo cp /templates/apache2.conf /etc/apache2/apache2.conf
 sudo cp /templates/000-default.conf /etc/apache2/sites-enabled/000-default.conf
 sudo cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
 
