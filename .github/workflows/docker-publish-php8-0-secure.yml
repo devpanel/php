@@ -8,7 +8,7 @@ on:
       - main
       - develop
   workflow_run:
-    workflows: ["Docker build and push PHP8.0 Base"]
+    workflows: ["Docker build and push PHP8.0-base"]
     types:
       - completed
 jobs:
