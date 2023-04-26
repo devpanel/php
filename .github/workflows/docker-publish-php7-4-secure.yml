@@ -11,6 +11,7 @@ on:
       workflows: ["Docker build and push PHP7.4-base"]
       types:
         - completed
+        
 jobs:
   docker:
     runs-on: ubuntu-latest
