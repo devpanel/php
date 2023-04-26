@@ -1,16 +1,13 @@
-name: Docker build and push PHP7.4-secure
+name: Docker build and push PHP8.0-secure
 
 on:
   push:
     paths:
-      - "7.4/secure/**"
+      - "8.0/secure/**"
     branches:
       - main
       - develop
-    workflow_run:
-      workflows: ["Docker build and push PHP7.4-base"]
-      types:
-        - completed
+
 jobs:
   docker:
     runs-on: ubuntu-latest
@@ -18,12 +15,12 @@ jobs:
       - name: Set env to testing environment
         if: endsWith(github.ref, '/develop')
         run: |
-          echo "IMAGE_TAG=devpanel/php:7.4-secure-rc" >> $GITHUB_ENV
+          echo "IMAGE_TAG=devpanel/php:8.0-secure-rc" >> $GITHUB_ENV
 
       - name: Set env to production environment
         if: endsWith(github.ref, '/main')
         run: |
-          echo "IMAGE_TAG=devpanel/php:7.4-secure" >> $GITHUB_ENV
+          echo "IMAGE_TAG=devpanel/php:8.0-secure" >> $GITHUB_ENV
 
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -43,7 +40,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v3
         with:
-          file: ./7.4/secure/Dockerfile
-          context: ./7.4/secure/
+          file: ./8.0/secure/Dockerfile
+          context: ./8.0/secure/
           push: true
           tags: ${{ env.IMAGE_TAG }}
