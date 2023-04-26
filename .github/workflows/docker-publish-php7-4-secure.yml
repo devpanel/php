@@ -1,4 +1,4 @@
-name: Docker build and push PHP7.4-secure
+name: Docker build and push PHP7.4-secure 
 
 on:
   push:
