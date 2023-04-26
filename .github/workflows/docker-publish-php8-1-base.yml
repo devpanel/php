@@ -1,4 +1,4 @@
-name: Docker build and push PHP8.1 Base
+name: Docker build and push PHP8.1-base
 
 on:
   push:

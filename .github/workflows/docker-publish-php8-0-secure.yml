@@ -3,12 +3,12 @@ name: Docker build and push PHP8.0-secure
 on:
   push:
     paths:
-      - "8.0/secure/**"
+      - "8.0/**"
     branches:
       - main
       - develop
   workflow_run:
-    workflows: ["Docker build and push PHP8.0 Base"]
+    workflows: ["Docker build and push PHP8.0-base"]
     types:
       - completed
 jobs:
