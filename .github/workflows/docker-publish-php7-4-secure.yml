@@ -3,7 +3,7 @@ name: Docker build and push PHP7.4-secure
 on:
   push:
     paths:
-      - "7.4/**"
+      - "7.4/secure/**"
     branches:
       - main
       - develop
