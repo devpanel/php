@@ -214,10 +214,9 @@ COPY drush /drush
 USER ${USER}
 RUN sudo chown -R ${USER} /drush
 
+
 #== Install Drush
-ARG DRUSH_VERSION=11.x
-RUN composer global require drush/drush:${DRUSH_VERSION} symfony/http-kernel \
-  && echo "PATH=/home/${USER}/.composer/vendor/bin/:${PATH}" >> ~/.bashrc
+ARG DRUSH_VERSION=8
 RUN composer update --working-dir=/drush/drush8 \
   && echo "alias drush8=/drush/drush8/vendor/bin/drush" >> ~/.bashrc
 RUN  composer update --working-dir=/drush/drush9 \
@@ -226,7 +225,9 @@ RUN  composer update --working-dir=/drush/drush10 \
   && echo "alias drush10=/drush/drush10/vendor/bin/drush" >> ~/.bashrc
 RUN  composer update --working-dir=/drush/drush11 \
   && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
+RUN echo "alias drush=/drush/drush${DRUSH_VERSION}/vendor/bin/drush" >> ~/.bashrc
+
 RUN bash ~/.bashrc
-ENV PATH "/home/${USER}/.composer/vendor/bin/:${PATH}"
+ENV PATH "/drush/drush${DRUSH_VERSION}/vendor/bin/:${PATH}"
 
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
