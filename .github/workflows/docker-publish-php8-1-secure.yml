@@ -3,7 +3,7 @@ name: Docker build and push PHP8.1-secure
 on:
   push:
     paths:
-      - "8.1/secure/**"
+      - "8.1/**"
     branches:
       - main
       - develop
