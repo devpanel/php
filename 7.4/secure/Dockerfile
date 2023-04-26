@@ -39,7 +39,7 @@ RUN mkdir /etc/apache2/modsecurity.d && \
 	cp modsecurity-v3.0.4/unicode.mapping /etc/apache2/modsecurity.d/ && \
 	sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/apache2/modsecurity.d/modsecurity.conf
 
-RUN cp /templates/modsec_rules.conf /etc/apache2/modsecurity.d/
+COPY templates/modsec_rules.conf /etc/apache2/modsecurity.d/
 
 # Install OWASP ModSecurity Core Rule Set (CRS) on Ubuntu
 RUN git clone https://github.com/SpiderLabs/owasp-modsecurity-crs.git /etc/apache2/modsecurity.d/owasp-crs && \
