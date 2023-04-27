@@ -229,5 +229,5 @@ RUN echo "alias drush=/drush/drush${DRUSH_VERSION}/vendor/bin/drush" >> ~/.bashr
 RUN bash ~/.bashrc
 ENV PATH "/drush/drush${DRUSH_VERSION}/vendor/bin/:${PATH}"
 
-#== Start apache
+#== Start apache 
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
