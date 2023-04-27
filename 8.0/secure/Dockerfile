@@ -5,14 +5,17 @@ FROM devpanel/php:8.0-base
 USER root
 WORKDIR /home/root
 
+ARG MODSECURE_VERSION="v3.0.4"
+
 # Download LibModsecurity
-RUN  wget https://github.com/SpiderLabs/ModSecurity/releases/download/v3.0.4/modsecurity-v3.0.4.tar.gz
+RUN wget https://github.com/SpiderLabs/ModSecurity/releases/download/${MODSECURE_VERSION}/modsecurity-${MODSECURE_VERSION}.tar.gz
 
 # Extract the Downloaded File
-RUN tar xzf modsecurity-v3.0.4.tar.gz && rm -rf modsecurity-v3.0.4.tar.gz
+RUN tar xzf modsecurity-${MODSECURE_VERSION}.tar.gz && rm -rf modsecurity-${MODSECURE_VERSION}.tar.gz
 
 # Compile and Install LibModsecurity
-RUN cd modsecurity-v3.0.4 && \
+RUN  --mount=type=cache,target=/var/cache/mod_security_${MODSECURE_VERSION} \
+	cd modsecurity-${MODSECURE_VERSION} && \
 	./build.sh && ./configure && \
 	make && make install
 
@@ -27,7 +30,8 @@ RUN apt-get update \
     libyajl-dev ssdeep liblua5.2-dev libtool dh-autoreconf \
     libcurl4-gnutls-dev libxml2 libpcre++-dev libxml2-dev
 
-RUN cd ~/ModSecurity-apache && \
+RUN --mount=type=cache,target=/var/cache/mod_security_apache_${MODSECURE_VERSION} \
+	cd ~/ModSecurity-apache && \
 	./autogen.sh && \
 	./configure --with-libmodsecurity=/usr/local/modsecurity/ && \
 	make && \
@@ -35,8 +39,8 @@ RUN cd ~/ModSecurity-apache && \
 
 # Configure ModSecurity
 RUN mkdir /etc/apache2/modsecurity.d && \
-	cp modsecurity-v3.0.4/modsecurity.conf-recommended /etc/apache2/modsecurity.d/modsecurity.conf && \
-	cp modsecurity-v3.0.4/unicode.mapping /etc/apache2/modsecurity.d/ && \
+	cp modsecurity-${MODSECURE_VERSION}/modsecurity.conf-recommended /etc/apache2/modsecurity.d/modsecurity.conf && \
+	cp modsecurity-${MODSECURE_VERSION}/unicode.mapping /etc/apache2/modsecurity.d/ && \
 	sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/apache2/modsecurity.d/modsecurity.conf
 
 COPY templates/modsec_rules.conf /etc/apache2/modsecurity.d/
