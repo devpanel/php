@@ -14,6 +14,13 @@ on:
       - develop
     types:
       - completed
+  workflow_dispatch:
+    inputs:
+      DEBUG:
+        default: true
+        description: Option to send debug to token requestor.
+        required: false
+        type: boolean
 jobs:
   docker:
     runs-on: ubuntu-latest
