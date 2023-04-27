@@ -1,4 +1,4 @@
-FROM devpanel/php:8.0-base-rc
+FROM devpanel/php:8.0-base
 
 
 # Set user as root to avoid access denied
