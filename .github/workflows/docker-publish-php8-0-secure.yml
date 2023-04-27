@@ -11,20 +11,17 @@ on:
     workflows: ["Docker build and push PHP8.0-base"]
     types:
       - completed
-    branches:
-      - main
-      - develop
 jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
       - name: Set env to testing environment
-        if: endsWith(github.ref, '/develop')
+        if: endsWith(github.ref, '/develop') || ${{ github.event.workflow_run.head_branch == 'develop' }}
         run: |
           echo "IMAGE_TAG=devpanel/php:8.0-secure-rc" >> $GITHUB_ENV
 
       - name: Set env to production environment
-        if: endsWith(github.ref, '/main')
+        if: endsWith(github.ref, '/main')  || ${{ github.event.workflow_run.head_branch == 'main' }}
         run: |
           echo "IMAGE_TAG=devpanel/php:8.0-secure" >> $GITHUB_ENV
 
