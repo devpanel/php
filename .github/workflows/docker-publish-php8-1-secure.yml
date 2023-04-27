@@ -11,6 +11,9 @@ on:
     workflows: ["Docker build and push PHP8.1-base"]
     types:
       - completed
+    branches:
+      - main
+      - develop
 
 jobs:
   docker:
