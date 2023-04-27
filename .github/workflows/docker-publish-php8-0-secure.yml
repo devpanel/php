@@ -9,22 +9,22 @@ on:
       - develop
   workflow_run:
     workflows: ["Docker build and push PHP8.0-base"]
+    types:
+      - completed
     branches:
       - main
       - develop
-    types:
-      - completed
 jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
       - name: Set env to testing environment
-        if:  ${{ github.event.workflow_run.head_branch == 'develop' }}
+        if:  ${{ (github.event_name == 'push' && endsWith(github.ref, '/develop'))  || (github.event_name == 'workflow_run' &&  github.event.workflow_run.head_branch == 'develop') }}
         run: |
           echo "IMAGE_TAG=devpanel/php:8.0-secure-rc" >> $GITHUB_ENV
 
       - name: Set env to production environment
-        if: ${{ github.event.workflow_run.head_branch == 'main' }}
+        if:  ${{ (github.event_name == 'push' && endsWith(github.ref, '/main'))  || (github.event_name == 'workflow_run' &&  github.event.workflow_run.head_branch == 'main') }}
         run: |
           echo "IMAGE_TAG=devpanel/php:8.0-secure" >> $GITHUB_ENV
 
