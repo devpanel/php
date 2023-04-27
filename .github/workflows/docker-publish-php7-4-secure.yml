@@ -1,5 +1,8 @@
 name: Docker build and push PHP7.4-secure
 
+env:
+  DOCKER_BUILDKIT: 1
+
 on:
   push:
     paths:
@@ -13,7 +16,6 @@ on:
       - completed
     branches:
       - main
-      - develop
 jobs:
   docker:
     runs-on: ubuntu-latest

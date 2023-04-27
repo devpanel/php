@@ -16,7 +16,6 @@ on:
       - completed
     branches:
       - main
-      - develop
 jobs:
   docker:
     runs-on: ubuntu-latest
