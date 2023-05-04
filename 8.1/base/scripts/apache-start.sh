@@ -3,6 +3,7 @@
 sudo cp /templates/apache2.conf /etc/apache2/apache2.conf
 sudo cp /templates/000-default.conf /etc/apache2/sites-enabled/000-default.conf
 sudo cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
+sudo ln -s /drush/drush11/vendor/bin/drush /usr/bin/drush
 
 # Substitute in php.ini values
 [ ! -z "${PHP_CLEAR_ENV}" ] && sed -i "s|{{PHP_CLEAR_ENV}}|${PHP_CLEAR_ENV}|" ${PHP_EXT_DIR}/zz-www.ini
