@@ -1,5 +1,8 @@
 name: Docker build and push PHP8.0-base
 
+env:
+  DOCKER_BUILDKIT: 1
+  
 on:
   push:
     paths:
