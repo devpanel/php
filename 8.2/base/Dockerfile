@@ -215,7 +215,7 @@ USER ${USER}
 RUN sudo chown -R ${USER} /drush
 
 #== Install Drush
-ARG DRUSH_VERSION=11
+ARG DRUSH_VERSION=8
 RUN composer update --working-dir=/drush/drush8 \
   && echo "alias drush8=/drush/drush8/vendor/bin/drush" >> ~/.bashrc
 RUN  composer update --working-dir=/drush/drush9 \
