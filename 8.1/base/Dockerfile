@@ -226,7 +226,7 @@ RUN  composer update --working-dir=/drush/drush11 \
   && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
 
 RUN bash ~/.bashrc
-RUN ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush
+RUN sudo ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush
 
 #== Start apache
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
