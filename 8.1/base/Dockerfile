@@ -215,7 +215,7 @@ USER ${USER}
 RUN sudo chown -R ${USER} /drush
 
 #== Install Drush
-ARG DRUSH_VERSION=11
+ARG DRUSH_VERSION=8
 RUN composer update --working-dir=/drush/drush8 \
   && echo "alias drush8=/drush/drush8/vendor/bin/drush" >> ~/.bashrc
 RUN  composer update --working-dir=/drush/drush9 \
@@ -224,10 +224,9 @@ RUN  composer update --working-dir=/drush/drush10 \
   && echo "alias drush10=/drush/drush10/vendor/bin/drush" >> ~/.bashrc
 RUN  composer update --working-dir=/drush/drush11 \
   && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
-RUN echo "alias drush=/drush/drush${DRUSH_VERSION}/vendor/bin/drush" >> ~/.bashrc
 
 RUN bash ~/.bashrc
-ENV PATH "/drush/drush${DRUSH_VERSION}/vendor/bin/:${PATH}"
+RUN sudo ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush
 
-#== Start apache 
+#== Start apache
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
