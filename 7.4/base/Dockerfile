@@ -243,5 +243,8 @@ COPY bee /bee
 RUN sudo chmod +x /bee/bee.php \
   && echo "alias bee=/bee/bee.php" >> ~/.bashrc
 
+#== Expose port 22 for SSH connection
+EXPOSE 22
+
 #== Start apache.
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
