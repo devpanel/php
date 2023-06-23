@@ -1,4 +1,4 @@
-FROM devpanel/php:7.4-secure
+FROM devpanel/php8.2-secure
 
 ENV VARNISH_SIZE 100M
 
