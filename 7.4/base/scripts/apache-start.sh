@@ -27,6 +27,10 @@ sudo cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
 # install Drush 7, 8, 9, 10, 11
 bash source ~/.bashrc
 
+# Install custom packages if have
+[ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] &&  sudo /bin/bash $APP_ROOT/.devpanel/custom_package_installer.sh  >> /tmp/custom_package_installer.log
+
+
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
 # Start the primary process and put it in the background
