@@ -18,8 +18,11 @@ sudo ln -s /drush/drush11/vendor/bin/drush /usr/bin/drush
 [ -f "$PHP_CUSTOM_INI" ] && sudo cp $PHP_CUSTOM_INI ${PHP_EXT_DIR}/zzz-www-custom.ini
 
 # Custom Environment variables in /etc/apache2/sites-enabled/000-default.conf
+[ ! -z "$APP_ROOT" ] &&  sudo sed -i "s|{{APP_ROOT}}|${APP_ROOT}|" /etc/apache2/sites-enabled/000-default.conf
 [ ! -z "$WEB_ROOT" ] &&  sudo sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|" /etc/apache2/sites-enabled/000-default.conf
 [ ! -z "$SERVER_NAME" ] && sudo sed -i "s|{{SERVER_NAME}}|${SERVER_NAME}|" /etc/apache2/sites-enabled/000-default.conf
+# Replace // by /
+sudo sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 
 # install Drush 7, 8, 9, 10, 11
 bash source ~/.bashrc
