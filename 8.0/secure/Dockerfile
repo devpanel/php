@@ -40,9 +40,9 @@ RUN --mount=type=cache,target=/var/cache/mod_security_apache_${MODSECURE_VERSION
 # Configure ModSecurity
 RUN mkdir /etc/apache2/modsecurity.d && \
 	cp modsecurity-${MODSECURE_VERSION}/modsecurity.conf-recommended /etc/apache2/modsecurity.d/modsecurity.conf && \
-	cp modsecurity-${MODSECURE_VERSION}/unicode.mapping /etc/apache2/modsecurity.d/ && \
-	sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/apache2/modsecurity.d/modsecurity.conf
+	cp modsecurity-${MODSECURE_VERSION}/unicode.mapping /etc/apache2/modsecurity.d/
 
+COPY templates/modsecurity.conf /etc/apache2/modsecurity.d/
 COPY templates/modsec_rules.conf /etc/apache2/modsecurity.d/
 
 # Install OWASP ModSecurity Core Rule Set (CRS) on Ubuntu
