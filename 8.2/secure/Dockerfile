@@ -42,12 +42,12 @@ RUN mkdir /etc/apache2/modsecurity.d && \
 	cp modsecurity-${MODSECURE_VERSION}/modsecurity.conf-recommended /etc/apache2/modsecurity.d/modsecurity.conf && \
 	cp modsecurity-${MODSECURE_VERSION}/unicode.mapping /etc/apache2/modsecurity.d/
 
+# Install OWASP ModSecurity Core Rule Set (CRS) on Ubuntu
+RUN git clone https://github.com/SpiderLabs/owasp-modsecurity-crs.git /etc/apache2/modsecurity.d/owasp-crs
+
+COPY templates/crs-setup.conf  /etc/apache2/modsecurity.d/owasp-crs/
 COPY templates/modsecurity.conf /etc/apache2/modsecurity.d/
 COPY templates/modsec_rules.conf /etc/apache2/modsecurity.d/
-
-# Install OWASP ModSecurity Core Rule Set (CRS) on Ubuntu
-RUN git clone https://github.com/SpiderLabs/owasp-modsecurity-crs.git /etc/apache2/modsecurity.d/owasp-crs && \
-	cp /etc/apache2/modsecurity.d/owasp-crs/crs-setup.conf.example /etc/apache2/modsecurity.d/owasp-crs/crs-setup.conf
 
 # Revert back to normal user
 USER ${USER}
