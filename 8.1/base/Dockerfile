@@ -200,7 +200,7 @@ RUN chmod +x /usr/local/bin/devpanel \
   && devpanel version
 
 #== Install Wordpress CLI
-ARG WP_CLI_VERSION=2.4.0
+ARG WP_CLI_VERSION=2.9.0
 RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar \
     && chmod +x wp-cli-${WP_CLI_VERSION}.phar \
     && mv wp-cli-${WP_CLI_VERSION}.phar /usr/local/bin/wp
