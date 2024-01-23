@@ -65,6 +65,9 @@ RUN apt-get install -y --no-install-recommends \
   libyaml-dev \
   libzip-dev \
   libmemcached-dev \
+  libpcre3 \
+  libpcre3-dev \
+  libssl-dev \
   zlib1g-dev \
   zip unzip \
   git \
