@@ -1,4 +1,4 @@
-FROM php:7.4.3-apache-buster
+FROM php:7.4-apache
 
 ARG POLYVER_CUSTOMER_KEY
 
@@ -42,9 +42,7 @@ RUN if [ ! -z "$POLYVER_CUSTOMER_KEY" ]; then \
   fi; fi;
 
 # Install dependencies
-RUN apt-get update \
-  && apt-get upgrade -y \
-  && apt-get install -y --no-install-recommends \
+RUN apt-get install -y --no-install-recommends \
   apt-utils \
   sendmail-bin \
   sendmail \
@@ -180,7 +178,7 @@ RUN a2enmod rewrite remoteip headers
 
 #== Install Codeserver [AMD Chip]
 ARG CODESERVER_VERSION="4.9.1"
-ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb /tmp/
+RUN wget -O /tmp/code-server_${CODESERVER_VERSION}_amd64.deb https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb
 RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
     && rm /tmp/code-server_${CODESERVER_VERSION}_amd64.deb
 #== Install Codeserver [ARM Chip]
@@ -208,8 +206,7 @@ RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSIO
 
 WORKDIR ${APP_ROOT}
 
-COPY templates /templates
-COPY scripts /scripts
+
 COPY drush /drush
 
 USER ${USER}
@@ -244,4 +241,6 @@ RUN sudo chmod +x /bee/bee.php \
   && echo "alias bee=/bee/bee.php" >> ~/.bashrc
 
 #== Start apache.
+COPY templates /templates
+COPY scripts /scripts
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]

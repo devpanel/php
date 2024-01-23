@@ -28,12 +28,11 @@ sudo sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 [ ! -z "$WEB_ROOT" ] && sudo sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|" /etc/apache2/apache2.conf
 
 # install Drush 7, 8, 9, 10, 11
-bash source ~/.bashrc
+/bin/bash source ~/.bashrc
 
 # Install custom packages if have
-[ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] &&  sudo /bin/bash $APP_ROOT/.devpanel/custom_package_installer.sh  >> /tmp/custom_package_installer.log
-
-
+[ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] && /bin/bash $APP_ROOT/.devpanel/custom_package_installer.sh  >> /tmp/custom_package_installer.log
+ 
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
 # Start the primary process and put it in the background
