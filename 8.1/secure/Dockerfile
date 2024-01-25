@@ -1,53 +1,21 @@
-FROM devpanel/php:8.1-base
-
+FROM devpanel/php:7.4-base
 
 # Set user as root to avoid access denied
 USER root
 WORKDIR /home/root
 
-ARG MODSECURE_VERSION="v3.0.4"
+# Install mod security
+ARG CORERULSET_VERSION="3.3.5"
+RUN apt update -y && apt -y install libapache2-mod-security2
+RUN rm -rf /usr/share/modsecurity-crs
+RUN wget -O /tmp/modsecurity-crs.zip https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CORERULSET_VERSION}.zip
+RUN unzip /tmp/modsecurity-crs.zip -d /usr/share/
+RUN mv /usr/share/coreruleset-${CORERULSET_VERSION} /usr/share/modsecurity-crs
 
-# Download LibModsecurity
-RUN wget https://github.com/SpiderLabs/ModSecurity/releases/download/${MODSECURE_VERSION}/modsecurity-${MODSECURE_VERSION}.tar.gz
-
-# Extract the Downloaded File
-RUN tar xzf modsecurity-${MODSECURE_VERSION}.tar.gz && rm -rf modsecurity-${MODSECURE_VERSION}.tar.gz
-
-# Compile and Install LibModsecurity
-RUN  --mount=type=cache,target=/var/cache/mod_security_${MODSECURE_VERSION} \
-	cd modsecurity-${MODSECURE_VERSION} && \
-	./build.sh && ./configure && \
-	make && make install
-
-# Install ModSecurity-Apache Connector
-RUN cd ~ && git clone https://github.com/SpiderLabs/ModSecurity-apache
-
-# Install dependencies
-RUN apt-get update \
-  && apt-get upgrade -y \
-  && apt-get install -y \
-    apache2-dev flex bison doxygen \
-    libyajl-dev ssdeep liblua5.2-dev libtool dh-autoreconf \
-    libcurl4-gnutls-dev libxml2 libpcre++-dev libxml2-dev
-
-RUN --mount=type=cache,target=/var/cache/mod_security_apache_${MODSECURE_VERSION} \
-	cd ~/ModSecurity-apache && \
-	./autogen.sh && \
-	./configure --with-libmodsecurity=/usr/local/modsecurity/ && \
-	make && \
-	make install
-
-# Configure ModSecurity
-RUN mkdir /etc/apache2/modsecurity.d && \
-	cp modsecurity-${MODSECURE_VERSION}/modsecurity.conf-recommended /etc/apache2/modsecurity.d/modsecurity.conf && \
-	cp modsecurity-${MODSECURE_VERSION}/unicode.mapping /etc/apache2/modsecurity.d/ && \
-	sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/apache2/modsecurity.d/modsecurity.conf
-
-COPY templates/modsec_rules.conf /etc/apache2/modsecurity.d/
-
-# Install OWASP ModSecurity Core Rule Set (CRS) on Ubuntu
-RUN git clone https://github.com/SpiderLabs/owasp-modsecurity-crs.git /etc/apache2/modsecurity.d/owasp-crs && \
-	cp /etc/apache2/modsecurity.d/owasp-crs/crs-setup.conf.example /etc/apache2/modsecurity.d/owasp-crs/crs-setup.conf
+#Config mod_security
+COPY templates/modsecurity.conf /etc/modsecurity/modsecurity.conf
+COPY templates/crs-setup.conf /usr/share/modsecurity-crs/crs-setup.conf
+COPY templates/security2.conf  /etc/apache2/mods-available/security2.conf
 
 # Revert back to normal user
 USER ${USER}
