@@ -18,6 +18,10 @@ COPY templates/modsecurity.conf /etc/modsecurity/modsecurity.conf
 COPY templates/crs-setup.conf /usr/share/modsecurity-crs/crs-setup.conf
 COPY templates/security2.conf  /etc/apache2/mods-available/security2.conf
 
+#This rule require mod_security:2.9.6 but default Debian 11 is mod_security:2.9.3
+#So we removed this rule
+RUN rm /usr/share/modsecurity-crs/rules/REQUEST-922-MULTIPART-ATTACK.conf
+
 # Revert back to normal user
 USER ${USER}
 WORKDIR ${APP_ROOT}
