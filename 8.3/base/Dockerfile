@@ -115,7 +115,7 @@ RUN docker-php-ext-install -j$(nproc) \
   pcntl
 
 RUN pecl install -o -f \
-  igbinary-3.2.12 \
+  igbinary \
   imagick-3.7.0 \
   oauth-2.0.7 \
   redis-5.3.7 \
