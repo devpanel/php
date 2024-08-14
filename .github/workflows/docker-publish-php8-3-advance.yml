@@ -1,0 +1,55 @@
+name: Docker build and push PHP8.3-advance
+
+env:
+  DOCKER_BUILDKIT: 1
+
+on:
+  push:
+    paths:
+      - "8.3/advance/**"
+    branches:
+      - main
+      - develop
+  workflow_run:
+    workflows: ["Docker build and push PHP8.3-secure"]
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set env to testing environment
+        if:  ${{ (github.event_name == 'push' && endsWith(github.ref, '/develop'))  || (github.event_name == 'workflow_run' &&  github.event.workflow_run.head_branch == 'develop') }}
+        run: |
+          echo "IMAGE_TAG=devpanel/php:8.3-advance-rc" >> $GITHUB_ENV
+
+      - name: Set env to production environment
+        if:  ${{ (github.event_name == 'push' && endsWith(github.ref, '/main'))  || (github.event_name == 'workflow_run' &&  github.event.workflow_run.head_branch == 'main') }}
+        run: |
+          echo "IMAGE_TAG=devpanel/php:8.3-advance" >> $GITHUB_ENV
+
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v3
+        with:
+          file: ./8.3/advance/Dockerfile
+          context: ./8.3/advance/
+          push: true
+          tags: ${{ env.IMAGE_TAG }}
