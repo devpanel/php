@@ -33,7 +33,6 @@ sudo sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 # Configure code server
 if [[ ! -d "$CODES_USER_DATA_DIR" ]]; then
   mkdir -p $CODES_USER_DATA_DIR
-  [! -f "$CODES_USER_DATA_DIR/.gitignore" ] &&   echo "*" > $APP_ROOT/.vscode/.gitignore
   sudo chown -R www:www $CODES_USER_DATA_DIR
 fi
 
