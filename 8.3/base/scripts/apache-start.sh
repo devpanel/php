@@ -27,6 +27,12 @@ sudo sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 # install Drush 7, 8, 9, 10, 11
 /bin/bash source ~/.bashrc
 
+# Configure code server
+if [[ ! -d "$CODES_USER_DATA_DIR" ]]; then
+  mkdir -p $CODES_USER_DATA_DIR
+  sudo chown -R www:www $CODES_USER_DATA_DIR
+fi
+
 # Install custom packages if have
 [ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] && /bin/bash $APP_ROOT/.devpanel/custom_package_installer.sh  >> /tmp/custom_package_installer.log
 
@@ -35,7 +41,7 @@ if [[ "$CODES_ENABLE" == "yes" ]]; then
 # Start the primary process and put it in the background
 sudo -E apache2-foreground &
 # Start the helper process
-sudo -u www -E -- code-server --auth none --port $CODES_PORT --host 0.0.0.0 $CODES_WORKING_DIR
+sudo -u www -E -- code-server --auth none --port $CODES_PORT --host 0.0.0.0 $CODES_WORKING_DIR --user-data-dir=$CODES_USER_DATA_DIR
 # and leave it there
 fg %1
 else
