@@ -117,11 +117,19 @@ RUN docker-php-ext-install -j$(nproc) \
 
 RUN pecl install -o -f \
   igbinary \
-  imagick-3.7.0 \
   oauth-2.0.7 \
   redis-5.3.7 \
   yaml-2.2.2 \
   memcached-3.2.0
+
+RUN curl -L -o /tmp/imagick.tar.gz https://github.com/Imagick/imagick/archive/7088edc353f53c4bc644573a79cdcd67a726ae16.tar.gz \
+    && tar --strip-components=1 -xf /tmp/imagick.tar.gz \
+    && phpize \
+    && ./configure \
+    && make \
+    && make install \
+    && echo "extension=imagick.so" > /usr/local/etc/php/conf.d/ext-imagick.ini \
+    && rm -rf /tmp/* \
 
 RUN rm -f /usr/local/etc/php/conf.d/*sodium.ini \
   && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
@@ -148,7 +156,6 @@ RUN docker-php-ext-enable \
   imagick \
   intl \
   mysqli \
-  oauth \
   opcache \
   pdo_mysql \
   pspell \
@@ -181,7 +188,7 @@ RUN mkdir -p ${APP_ROOT} \
 RUN a2enmod rewrite remoteip headers
 
 #== Install Codeserver [AMD Chip]
-ARG CODESERVER_VERSION="4.9.1"
+ARG CODESERVER_VERSION="4.92.2"
 RUN wget -O /tmp/code-server_${CODESERVER_VERSION}_amd64.deb https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb
 RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
     && rm /tmp/code-server_${CODESERVER_VERSION}_amd64.deb
