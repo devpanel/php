@@ -198,6 +198,10 @@ RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
 # RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_arm64.deb \
 #     && rm /tmp/code-server_${CODESERVER_VERSION}_arm64.deb
 
+
+#== Enable xdebug
+RUN pecl install xdebug
+
 #== Install Composer
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.7.7
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer2 --version=2.7.7
