@@ -229,10 +229,6 @@ RUN  composer update --working-dir=/drush/drush10 \
 RUN  composer update --working-dir=/drush/drush11 \
   && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
 
-
-RUN bash ~/.bashrc
-RUN sudo ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush
-
 #== Install Drush backdrop extention
 RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
   && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
@@ -240,9 +236,13 @@ RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/re
 
 
 #== Install BEE CLI client
-COPY bee /bee
+RUN sudo mkdir /bee && sudo git clone https://github.com/backdrop-contrib/bee.git /bee
 RUN sudo chmod +x /bee/bee.php \
-  && echo "alias bee=/bee/bee.php" >> ~/.bashrc
+  && sudo ln -s /bee/bee.php /usr/bin/bee
+
+
+RUN bash ~/.bashrc
+RUN sudo ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush
 
 #== Start apache.
 COPY templates /templates
