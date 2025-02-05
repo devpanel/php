@@ -257,4 +257,8 @@ RUN sudo ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush
 #== Start apache.
 COPY templates /templates
 COPY scripts /scripts
+
+#== Empty APP_ROOT to make container smaller
+RUN sudo rm -rf ${APP_ROOT} && sudo sudo mkdir -p ${APP_ROOT}
+
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
