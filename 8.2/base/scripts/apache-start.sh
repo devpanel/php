@@ -33,9 +33,6 @@ if [[ ! -d "$CODES_USER_DATA_DIR" ]]; then
   sudo chown -R www:www $CODES_USER_DATA_DIR
 fi
 
-# Install custom packages if have
-[ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] && /bin/bash $APP_ROOT/.devpanel/custom_package_installer.sh  >> /tmp/custom_package_installer.log
-
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
 # Start the primary process and put it in the background
@@ -52,3 +49,6 @@ else
 # Start the primary process and put it in the background
 sudo -E apache2-foreground
 fi
+
+# Install custom packages if have
+[ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] && /bin/bash $APP_ROOT/.devpanel/custom_package_installer.sh  >> /tmp/custom_package_installer.log
