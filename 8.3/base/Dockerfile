@@ -187,7 +187,7 @@ RUN mkdir -p ${APP_ROOT} \
 #== Enable mode_rewrite by default
 RUN a2enmod rewrite remoteip headers
 
-#== Install Codeserver [AMD Chip]
+#== Install Code-server [AMD Chip]
 ARG CODESERVER_VERSION="4.99.3"
 RUN wget -O /tmp/code-server_${CODESERVER_VERSION}_amd64.deb https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb
 RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \

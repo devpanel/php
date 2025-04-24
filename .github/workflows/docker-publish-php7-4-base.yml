@@ -23,7 +23,7 @@ jobs:
       - name: Set env to special environment
         if: endsWith(github.ref, '/dev-ai')
         run: |
-          echo "IMAGE_TAG=devpanel/php:8.3-base-ai" >> $GITHUB_ENV
+          echo "IMAGE_TAG=devpanel/php:7.4-base-ai" >> $GITHUB_ENV
 
       - name: Set env to production environment
         if: endsWith(github.ref, '/main')
