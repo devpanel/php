@@ -10,6 +10,7 @@ on:
     branches:
       - main
       - develop
+      - dev-ai
 
 jobs:
   docker:
@@ -20,6 +21,11 @@ jobs:
         if: endsWith(github.ref, '/develop')
         run: |
           echo "IMAGE_TAG=devpanel/php:8.1-base-rc" >> $GITHUB_ENV
+      
+      - name: Set env to special environment
+        if: endsWith(github.ref, '/dev-ai')
+        run: |
+          echo "IMAGE_TAG=devpanel/php:8.3-base-ai" >> $GITHUB_ENV
 
       - name: Set env to production environment
         if: endsWith(github.ref, '/main')
