@@ -198,7 +198,6 @@ RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
 # RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_arm64.deb \
 #     && rm /tmp/code-server_${CODESERVER_VERSION}_arm64.deb
 
-
 #== Enable xdebug
 RUN pecl install xdebug
 
