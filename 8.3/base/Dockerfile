@@ -244,7 +244,6 @@ RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/re
   && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
   && /drush/drush${DRUSH_VERSION}/vendor/bin/drush cc drush
 
-
 #== Install BEE CLI client
 RUN sudo mkdir /bee && sudo git clone https://github.com/backdrop-contrib/bee.git /bee
 RUN sudo chmod +x /bee/bee.php \
