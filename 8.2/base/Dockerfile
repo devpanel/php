@@ -186,6 +186,7 @@ ARG CODESERVER_VERSION="4.99.4"
 RUN wget -O /tmp/code-server_${CODESERVER_VERSION}_amd64.deb https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb
 RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
     && rm /tmp/code-server_${CODESERVER_VERSION}_amd64.deb
+
 #== Install Codeserver [ARM Chip]
 # ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_arm64.deb /tmp/
 # RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_arm64.deb \
