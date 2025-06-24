@@ -74,7 +74,7 @@ RUN apt-get install -y --no-install-recommends \
 
 # Configure the gd library
 RUN docker-php-ext-configure \
-  gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ --with-webp=/usr/include/
+  gd --with-avif --with-freetype --with-jpeg --with-webp
 RUN docker-php-ext-configure \
   opcache --enable-opcache
 
