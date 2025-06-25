@@ -46,3 +46,4 @@ jobs:
           context: ./7.4/base/
           push: true
           tags: ${{ env.IMAGE_TAG }}
+          platforms: linux/amd64,linux/arm64
