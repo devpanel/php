@@ -53,3 +53,4 @@ jobs:
           context: ./8.2/secure/
           push: true
           tags: ${{ env.IMAGE_TAG }}
+          platforms: linux/amd64,linux/arm64
