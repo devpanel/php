@@ -49,6 +49,7 @@ RUN apt-get install -y --no-install-recommends \
   sendmail-bin \
   sendmail \
   sudo \
+  libavif-dev \
   libbz2-dev \
   libjpeg62-turbo-dev \
   libpng-dev \
