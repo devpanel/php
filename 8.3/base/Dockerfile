@@ -190,7 +190,15 @@ RUN mkdir -p ${APP_ROOT} \
 RUN a2enmod rewrite remoteip headers
 
 #== Install Codeserver
-RUN curl -fsSL https://code-server.dev/install.sh | sh
+ARG CODESERVER_MAJOR_VERSION=4
+RUN LATEST_VERSION=$(curl -s https://api.github.com/repos/coder/code-server/releases/latest | grep -oP '"tag_name": "v\K[^"]*') && \
+  LATEST_MAJOR=$(echo $LATEST_VERSION | cut -d. -f1) && \
+  if [ "$LATEST_MAJOR" = "$CODESERVER_MAJOR_VERSION" ]; then \
+    CODESERVER_VERSION=$LATEST_VERSION; \
+  else \
+    CODESERVER_VERSION=$(curl -s https://api.github.com/repos/coder/code-server/releases | grep -oP '"tag_name": "v\K'$CODESERVER_MAJOR_VERSION'\.[^"]*' | head -1); \
+  fi && \
+  curl -fsSL https://code-server.dev/install.sh | sh -s -- --version=$CODESERVER_VERSION
 
 #== Enable xdebug
 RUN pecl install xdebug
