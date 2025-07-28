@@ -10,7 +10,7 @@ ENV GID 1000
 ENV SHELL /bin/bash
 
 #== Default Environments
-ENV APP_ROOT /var/www/html/
+ENV APP_ROOT /var/www/html
 ENV WEB_ROOT $APP_ROOT
 ENV PHP_CUSTOM_INI $APP_ROOT/php.ini
 ENV PHP_EXT_DIR /usr/local/etc/php/conf.d
