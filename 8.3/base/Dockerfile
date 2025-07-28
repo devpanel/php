@@ -188,16 +188,16 @@ RUN mkdir -p ${APP_ROOT} \
 #== Enable mode_rewrite by default
 RUN a2enmod rewrite remoteip headers
 
-#== Install Codeserver [AMD Chip]
-ARG CODESERVER_VERSION="4.99.4"
-RUN wget -O /tmp/code-server_${CODESERVER_VERSION}_amd64.deb https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb
-RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
-    && rm /tmp/code-server_${CODESERVER_VERSION}_amd64.deb
-
-#== Install Codeserver [ARM Chip]
-# ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_arm64.deb /tmp/
-# RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_arm64.deb \
-#     && rm /tmp/code-server_${CODESERVER_VERSION}_arm64.deb
+#== Install Codeserver
+ARG CODESERVER_MAJOR_VERSION=4
+RUN LATEST_VERSION=$(curl -s https://api.github.com/repos/coder/code-server/releases/latest | grep -oP '"tag_name": "v\K[^"]*') && \
+  LATEST_MAJOR=$(echo $LATEST_VERSION | cut -d. -f1) && \
+  if [ "$LATEST_MAJOR" = "$CODESERVER_MAJOR_VERSION" ]; then \
+    CODESERVER_VERSION=$LATEST_VERSION; \
+  else \
+    CODESERVER_VERSION=$(curl -s https://api.github.com/repos/coder/code-server/releases | grep -oP '"tag_name": "v\K'$CODESERVER_MAJOR_VERSION'\.[^"]*' | head -1); \
+  fi && \
+  curl -fsSL https://code-server.dev/install.sh | sh -s -- --version=$CODESERVER_VERSION
 
 #== Enable xdebug
 RUN pecl install xdebug
