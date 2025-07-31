@@ -7,6 +7,7 @@ ENV USER www
 ENV GROUP www
 ENV UID 1000
 ENV GID 1000
+ENV HOME /home/www
 ENV SHELL /bin/bash
 
 #== Default Environments
