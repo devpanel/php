@@ -1,7 +1,7 @@
 name: Docker build and push PHP8.3-secure
 
 env:
-  IMAGE_TAG: devpanel/php:8.3-secure-rc
+  IMAGE_TAG: ${{ secrets.DOCKERHUB_USERNAME }}/php:8.3-secure-rc
 
 on:
   push:
@@ -34,7 +34,7 @@ jobs:
       - name: Set env to production environment
         if:  ${{ github.event_name == 'push' && github.ref == 'refs/heads/main'  || github.event_name == 'workflow_run' &&  github.event.workflow_run.head_branch == 'main' }}
         run: |
-          echo "IMAGE_TAG=devpanel/php:8.3-secure" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${{ secrets.DOCKERHUB_USERNAME }}/php:8.3-secure" >> $GITHUB_ENV
 
       - name: Checkout repository
         uses: actions/checkout@v4
