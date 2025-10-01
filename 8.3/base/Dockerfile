@@ -67,8 +67,8 @@ RUN apt-get install -y --no-install-recommends \
   libyaml-dev \
   libzip-dev \
   libmemcached-dev \
-  libpcre3 \
-  libpcre3-dev \
+  # libpcre3 \
+  # libpcre3-dev \
   libssl-dev \
   zlib1g-dev \
   zip unzip \
@@ -118,10 +118,11 @@ RUN docker-php-ext-install -j$(nproc) \
 
 RUN pecl install -o -f \
   igbinary \
-  oauth-2.0.7 \
-  redis-5.3.7 \
-  yaml-2.2.2 \
-  memcached-3.2.0
+  xdebug \
+  # redis-5.3.7 \
+  # memcached-3.2.0 \
+  # oauth-2.0.7 \
+  yaml-2.2.2
 
 RUN curl -L -o /tmp/imagick.tar.gz https://github.com/Imagick/imagick/archive/7088edc353f53c4bc644573a79cdcd67a726ae16.tar.gz \
     && tar --strip-components=1 -xf /tmp/imagick.tar.gz \
@@ -160,7 +161,6 @@ RUN docker-php-ext-enable \
   opcache \
   pdo_mysql \
   pspell \
-  redis \
   shmop \
   soap \
   sockets \
@@ -171,9 +171,10 @@ RUN docker-php-ext-enable \
   tidy \
   xsl \
   yaml \
-  zip \
   pcntl \
-  memcached
+  # redis \
+  # memcached \
+  zip
 
 RUN groupadd -g ${GID} ${GROUP} \
     && useradd --system --shell /bin/bash --uid ${UID} --gid ${GROUP}  --create-home --home-dir /home/${USER} ${USER} \
@@ -198,10 +199,6 @@ RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
 # ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_arm64.deb /tmp/
 # RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_arm64.deb \
 #     && rm /tmp/code-server_${CODESERVER_VERSION}_arm64.deb
-
-
-#== Enable xdebug
-RUN pecl install xdebug
 
 #== Install Composer
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.7.7
