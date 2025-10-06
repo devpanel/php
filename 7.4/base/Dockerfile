@@ -1,39 +1,32 @@
 FROM php:7.4-apache
 
-ARG POLYVER_CUSTOMER_KEY
-
 #== System Environments
-ENV USER www
-ENV GROUP www
-ENV UID 1000
-ENV GID 1000
-ENV HOME /home/www
-ENV SHELL /bin/bash
+ENV USER=www
+ENV GROUP=www
+ENV UID=1000
+ENV GID=1000
+ENV HOME=/home/www
+ENV SHELL=/bin/bash
 
 #== Default Environments
-ENV APP_ROOT /var/www/html
-ENV WEB_ROOT $APP_ROOT
-ENV PHP_CUSTOM_INI $APP_ROOT/php.ini
-ENV PHP_EXT_DIR /usr/local/etc/php/conf.d
+ENV APP_ROOT=/var/www/html
+ENV WEB_ROOT=$APP_ROOT
+ENV PHP_CUSTOM_INI=$APP_ROOT/php.ini
+ENV PHP_EXT_DIR=/usr/local/etc/php/conf.d
 
-ENV PHP_MEMORY_LIMIT 4096M
-ENV PHP_MAX_EXECUTION_TIME 600
-ENV PHP_MAX_INPUT_TIME 600
-ENV PHP_MAX_INPUT_VARS 3000
-ENV PHP_UPLOAD_MAX_FILESIZE 64M
-ENV PHP_POST_MAX_SIZE 64M
-ENV PHP_CLEAR_ENV false
+ENV PHP_MEMORY_LIMIT=4096M
+ENV PHP_MAX_EXECUTION_TIME=600
+ENV PHP_MAX_INPUT_TIME=600
+ENV PHP_MAX_INPUT_VARS=3000
+ENV PHP_UPLOAD_MAX_FILESIZE=64M
+ENV PHP_POST_MAX_SIZE=64M
+ENV PHP_CLEAR_ENV=false
 
-ENV SERVER_NAME default
-
-ENV CODES_PORT 8080
-ENV CODES_WORKING_DIR $APP_ROOT
-ENV CODES_USER_DATA_DIR $APP_ROOT/.vscode
-ENV CODES_ENABLE yes
-
-ENV GIT_BRANCH master
-
-ENV PHP_EXTENSIONS bcmath bz2 calendar exif gd gettext intl mysqli opcache pdo_mysql redis soap sockets sysvmsg sysvsem sysvshm xsl zip pcntl
+ENV SERVER_NAME=default
+ENV CODES_PORT=8080
+ENV CODES_WORKING_DIR=$APP_ROOT
+ENV CODES_USER_DATA_DIR=$APP_ROOT/.vscode
+ENV CODES_ENABLE=yes
 
 # Install polimorphing if needed
 RUN apt -y update && apt -y upgrade;
@@ -78,16 +71,9 @@ RUN apt-get install -y --no-install-recommends \
   default-mysql-client \
   && rm -rf /var/lib/apt/lists/*
 
-# Install MailHog
-# RUN wget https://github.com/mailhog/mhsendmail/releases/download/v0.2.0/mhsendmail_linux_amd64 \
-#     && sudo chmod +x mhsendmail_linux_amd64 \
-#     && sudo mv mhsendmail_linux_amd64 /usr/local/bin/mhsendmail
-
 # Configure the gd library
 RUN docker-php-ext-configure \
   gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ --with-webp=/usr/include/
-# RUN docker-php-ext-configure \
-#   ldap --with-libdir=lib/x86_64-linux-gnu
 RUN docker-php-ext-configure \
   opcache --enable-opcache
 

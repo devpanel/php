@@ -1,39 +1,32 @@
 FROM php:8.0-apache
 
-ARG POLYVER_CUSTOMER_KEY
-
 #== System Environments
-ENV USER www
-ENV GROUP www
-ENV UID 1000
-ENV GID 1000
-ENV HOME /home/www
-ENV SHELL /bin/bash
+ENV USER=www
+ENV GROUP=www
+ENV UID=1000
+ENV GID=1000
+ENV HOME=/home/www
+ENV SHELL=/bin/bash
 
 #== Default Environments
-ENV APP_ROOT /var/www/html
-ENV WEB_ROOT $APP_ROOT
-ENV PHP_CUSTOM_INI $APP_ROOT/php.ini
-ENV PHP_EXT_DIR /usr/local/etc/php/conf.d
+ENV APP_ROOT=/var/www/html
+ENV WEB_ROOT=$APP_ROOT
+ENV PHP_CUSTOM_INI=$APP_ROOT/php.ini
+ENV PHP_EXT_DIR=/usr/local/etc/php/conf.d
 
-ENV PHP_MEMORY_LIMIT 4096M
-ENV PHP_MAX_EXECUTION_TIME 600
-ENV PHP_MAX_INPUT_TIME 600
-ENV PHP_MAX_INPUT_VARS 3000
-ENV PHP_UPLOAD_MAX_FILESIZE 64M
-ENV PHP_POST_MAX_SIZE 64M
-ENV PHP_CLEAR_ENV false
+ENV PHP_MEMORY_LIMIT=4096M
+ENV PHP_MAX_EXECUTION_TIME=600
+ENV PHP_MAX_INPUT_TIME=600
+ENV PHP_MAX_INPUT_VARS=3000
+ENV PHP_UPLOAD_MAX_FILESIZE=64M
+ENV PHP_POST_MAX_SIZE=64M
+ENV PHP_CLEAR_ENV=false
 
-ENV SERVER_NAME default
-
-ENV CODES_PORT 8080
-ENV CODES_WORKING_DIR $APP_ROOT
-ENV CODES_USER_DATA_DIR $APP_ROOT/.vscode
-ENV CODES_ENABLE yes
-
-ENV GIT_BRANCH master
-
-ENV PHP_EXTENSIONS bcmath bz2 calendar exif gd gettext intl mysqli opcache pdo_mysql redis soap sockets sysvmsg sysvsem sysvshm xsl zip pcntl
+ENV SERVER_NAME=default
+ENV CODES_PORT=8080
+ENV CODES_WORKING_DIR=$APP_ROOT
+ENV CODES_USER_DATA_DIR=$APP_ROOT/.vscode
+ENV CODES_ENABLE=yes
 
 # Install polimorphing if needed
 RUN apt -y update && apt -y upgrade;
@@ -67,8 +60,7 @@ RUN apt-get install -y --no-install-recommends \
   libyaml-dev \
   libzip-dev \
   libmemcached-dev \
-  libpcre3 \
-  libpcre3-dev \
+  libpcre2-dev \
   libssl-dev \
   zlib1g-dev \
   zip unzip \
@@ -78,16 +70,9 @@ RUN apt-get install -y --no-install-recommends \
   default-mysql-client \
   && rm -rf /var/lib/apt/lists/*
 
-# Install MailHog
-# RUN wget https://github.com/mailhog/mhsendmail/releases/download/v0.2.0/mhsendmail_linux_amd64 \
-#     && sudo chmod +x mhsendmail_linux_amd64 \
-#     && sudo mv mhsendmail_linux_amd64 /usr/local/bin/mhsendmail
-
 # Configure the gd library
 RUN docker-php-ext-configure \
   gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ --with-webp=/usr/include/
-# RUN docker-php-ext-configure \
-#   ldap --with-libdir=lib/x86_64-linux-gnu
 RUN docker-php-ext-configure \
   opcache --enable-opcache
 
@@ -119,7 +104,7 @@ RUN docker-php-ext-install -j$(nproc) \
 RUN pecl install -o -f \
   igbinary-3.2.12 \
   imagick-3.7.0 \
-  oauth-2.0.7 \
+  league/oauth2-client \
   redis-5.3.7 \
   yaml-2.2.2 \
   memcached-3.2.0
@@ -149,7 +134,6 @@ RUN docker-php-ext-enable \
   imagick \
   intl \
   mysqli \
-  oauth \
   opcache \
   pdo_mysql \
   pspell \
@@ -201,7 +185,6 @@ COPY bin/devpanel /usr/local/bin/devpanel
 RUN chmod +x /usr/local/bin/devpanel \
   && devpanel version
 
-
 #== Install Wordpress CLI
 ARG WP_CLI_VERSION=2.9.0
 RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar \
@@ -209,8 +192,6 @@ RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSIO
     && mv wp-cli-${WP_CLI_VERSION}.phar /usr/local/bin/wp
 
 WORKDIR ${APP_ROOT}
-
-
 COPY drush /drush
 
 USER ${USER}
@@ -227,18 +208,15 @@ RUN  composer update --working-dir=/drush/drush10 \
 RUN  composer update --working-dir=/drush/drush11 \
   && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
 
-
 #== Install Drush backdrop extention
 RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
   && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
   && /drush/drush${DRUSH_VERSION}/vendor/bin/drush cc drush
 
-
 #== Install BEE CLI client
 RUN sudo mkdir /bee && sudo git clone https://github.com/backdrop-contrib/bee.git /bee
 RUN sudo chmod +x /bee/bee.php \
   && sudo ln -s /bee/bee.php /usr/bin/bee
-
 
 RUN bash ~/.bashrc
 RUN sudo ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush
