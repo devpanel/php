@@ -195,11 +195,13 @@ RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSIO
     && mv wp-cli-${WP_CLI_VERSION}.phar /usr/local/bin/wp
 
 WORKDIR ${APP_ROOT}
-
-
 COPY drush /drush
+RUN mkdir -p /home/$USER/.config/code-server \
+    && chown -R $USER:$USER /home/$USER/.config/code-server
 
 USER ${USER}
+
+RUN touch /home/$USER/.config/code-server/config.yaml
 RUN sudo chown -R ${USER} /drush
 
 #== Install Drush
