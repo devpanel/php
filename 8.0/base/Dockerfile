@@ -165,15 +165,55 @@ RUN mkdir -p ${APP_ROOT} \
 #== Enable mode_rewrite by default
 RUN a2enmod rewrite remoteip headers
 
-#== Install Codeserver [AMD Chip]
-ARG CODESERVER_VERSION="4.99.4"
-RUN wget -O /tmp/code-server_${CODESERVER_VERSION}_amd64.deb https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb
-RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
-    && rm /tmp/code-server_${CODESERVER_VERSION}_amd64.deb
-#== Install Codeserver [ARM Chip]
-# ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_arm64.deb /tmp/
-# RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_arm64.deb \
-#     && rm /tmp/code-server_${CODESERVER_VERSION}_arm64.deb
+#== Install Codeserver
+ARG CODESERVER_MAJOR_VERSION=4
+ARG CODESERVER_PINNED_HASH_VERSION=4.99.4
+ARG CODESERVER_VERSION
+ARG CODESERVER_DEB_SHA256_AMD64=74c107b33643ed11223263b86431530fbc9c9f7c8202997579a6f0c41b4cb102
+ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e5de9d55f1e2077c3
+RUN set -e; \
+  CODESERVER_VERSION="${CODESERVER_VERSION-$CODESERVER_PINNED_HASH_VERSION}"; \
+  if [ -z "$CODESERVER_VERSION" ]; then \
+    RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
+  CODESERVER_VERSION="$(printf '%s' "$RELEASES_JSON" | php -r '
+$major = $argv[1];
+$releases = json_decode(stream_get_contents(STDIN), true);
+
+if (!is_array($releases)) {
+  fwrite(STDERR, "Failed to parse releases JSON\n");
+  exit(2);
+}
+
+foreach ($releases as $release) {
+  if (($release["draft"] ?? false) || ($release["prerelease"] ?? false)) {
+    continue;
+  }
+
+  $tag = $release["tag_name"] ?? "";
+  if (preg_match("/^v?" . preg_quote($major, "/") . "\\.[0-9]+\\.[0-9]+(?:[-+].*)?$/", $tag)) {
+    echo ltrim($tag, "v");
+    exit(0);
+  }
+}
+
+exit(1);
+' "$CODESERVER_MAJOR_VERSION")" || { echo "Unable to resolve code-server major $CODESERVER_MAJOR_VERSION from GitHub releases" >&2; exit 1; }; \
+  fi; \
+  # code-server is required: fail build if version is empty
+  [ -n "$CODESERVER_VERSION" ] || { echo "CODESERVER_VERSION is empty" >&2; exit 1; }; \
+  DEB_ARCH="$(dpkg --print-architecture)"; \
+  case "$DEB_ARCH" in amd64|arm64) ;; *) echo "Unsupported architecture for code-server: $DEB_ARCH" >&2; exit 1 ;; esac; \
+  DEB_URL="https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
+  curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o /tmp/code-server.deb; \
+  if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
+    case "$DEB_ARCH" in \
+      amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
+      arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
+    esac; \
+    echo "$DEB_SHA256 /tmp/code-server.deb" | sha256sum -c -; \
+  fi; \
+  dpkg -i /tmp/code-server.deb || { apt-get update && apt-get install -y -f --no-install-recommends; rm -rf /var/lib/apt/lists/*; dpkg -i /tmp/code-server.deb; }; \
+  rm -f /tmp/code-server.deb
 
 #== Install Composer
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.3.10
