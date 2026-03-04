@@ -69,17 +69,19 @@ jobs:
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
+        id: export-digest
         run: |
           mkdir -p ${{ runner.temp }}/digests
           digest="${{ steps.build.outputs.digest }}"
           platform="${{ matrix.platform }}"
-          echo "PLATFORM_SAFE=${platform//\//-}" >> $GITHUB_ENV
-          echo $digest > ${{ runner.temp }}/digests/${platform//\//-}.digest
+          platform_safe="${platform//\//-}"
+          echo "platform_safe=$platform_safe" >> $GITHUB_OUTPUT
+          echo $digest > ${{ runner.temp }}/digests/$platform_safe.digest
 
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ env.PLATFORM_SAFE }}
+          name: digests-${{ steps.export-digest.outputs.platform_safe }}
           path: ${{ runner.temp }}/digests/
           if-no-files-found: error
           retention-days: 1

@@ -7,6 +7,9 @@ on:
   push:
     paths:
       - "8.3/advance/**"
+    paths-ignore:
+      - "8.3/secure/**"
+      - "8.3/base/**"
     branches:
       - main
       - develop
@@ -23,6 +26,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.image-tag.outputs.image_tag }}
@@ -34,7 +38,7 @@ jobs:
           - linux/arm64
     steps:
       - name: Set env to production environment
-        if:  ${{ github.event_name == 'push' && github.ref == 'refs/heads/main'  || github.event_name == 'workflow_run' &&  github.event.workflow_run.head_branch == 'main' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main' }}
         run: |
           echo "IMAGE_TAG=${{ secrets.DOCKERHUB_USERNAME }}/php:8.3-advance" >> $GITHUB_ENV
 
@@ -69,17 +73,19 @@ jobs:
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
+        id: export-digest
         run: |
           mkdir -p ${{ runner.temp }}/digests
           digest="${{ steps.build.outputs.digest }}"
           platform="${{ matrix.platform }}"
-          echo "PLATFORM_SAFE=${platform//\//-}" >> $GITHUB_ENV
-          echo $digest > ${{ runner.temp }}/digests/${platform//\//-}.digest
+          platform_safe="${platform//\//-}"
+          echo "platform_safe=$platform_safe" >> $GITHUB_OUTPUT
+          echo $digest > ${{ runner.temp }}/digests/$platform_safe.digest
 
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ env.PLATFORM_SAFE }}
+          name: digests-${{ steps.export-digest.outputs.platform_safe }}
           path: ${{ runner.temp }}/digests/
           if-no-files-found: error
           retention-days: 1
