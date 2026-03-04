@@ -61,12 +61,14 @@ jobs:
         run: |
           mkdir -p ${{ runner.temp }}/digests
           digest="${{ steps.build.outputs.digest }}"
-          echo $digest > ${{ runner.temp }}/digests/${{ matrix.platform }}.digest
+          platform="${{ matrix.platform }}"
+          echo "PLATFORM_SAFE=${platform//\//-}" >> $GITHUB_ENV
+          echo $digest > ${{ runner.temp }}/digests/${platform//\//-}.digest
 
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.platform }}
+          name: digests-${{ env.PLATFORM_SAFE }}
           path: ${{ runner.temp }}/digests/
           if-no-files-found: error
           retention-days: 1
