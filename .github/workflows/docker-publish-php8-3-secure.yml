@@ -67,6 +67,9 @@ jobs:
         with:
           file: ./8.3/secure/Dockerfile
           context: ./8.3/secure/
+          build-args: |
+            # Allow overriding upstream base image namespace; defaults to devpanel in Dockerfile
+            DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}
           tags: ${{ env.IMAGE_TAG }}
           platforms: ${{ matrix.platform }}
           cache-from: type=gha,scope=${{ github.workflow }}-${{ matrix.platform }}

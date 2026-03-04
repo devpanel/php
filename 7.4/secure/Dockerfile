@@ -1,4 +1,5 @@
-FROM devpanel/php:7.4-base
+ARG DOCKERHUB_USERNAME=devpanel
+FROM ${DOCKERHUB_USERNAME}/php:7.4-base
 
 # Set user as root to avoid access denied
 USER root

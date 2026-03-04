@@ -39,3 +39,24 @@ if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
 fi; \
 dpkg -i /tmp/code-server.deb
 ```
+
+## Docker Hub namespace for secure/advance images
+
+`secure/Dockerfile` and `advance/Dockerfile` files now support a `DOCKERHUB_USERNAME` build argument for upstream image references.
+
+- Default (if omitted): `devpanel`
+- Override example:
+
+```bash
+docker build \
+	--build-arg DOCKERHUB_USERNAME=mydockerhubuser \
+	-f 8.3/secure/Dockerfile \
+	8.3/secure
+```
+
+```bash
+docker build \
+	--build-arg DOCKERHUB_USERNAME=mydockerhubuser \
+	-f 8.3/advance/Dockerfile \
+	8.3/advance
+```

@@ -1,4 +1,5 @@
-FROM devpanel/php:7.4-secure
+ARG DOCKERHUB_USERNAME=devpanel
+FROM ${DOCKERHUB_USERNAME}/php:7.4-secure
 
 ENV VARNISH_SIZE 100M
 
