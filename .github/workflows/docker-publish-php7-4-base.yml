@@ -20,6 +20,8 @@ jobs:
   build:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.image-tag.outputs.image_tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +33,11 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           echo "IMAGE_TAG=${{ secrets.DOCKERHUB_USERNAME }}/php:7.4-base" >> $GITHUB_ENV
+
+      - name: Export image tag output
+        id: image-tag
+        run: |
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -97,5 +104,5 @@ jobs:
         working-directory: ${{ runner.temp }}/digests
         run: |
           docker buildx imagetools create \
-            -t ${{ env.IMAGE_TAG }} \
-            $(for f in *.digest; do echo "${{ env.IMAGE_TAG }}@$(cat $f)"; done)
+            -t ${{ needs.build.outputs.image_tag }} \
+            $(for f in *.digest; do echo "${{ needs.build.outputs.image_tag }}@$(cat $f)"; done)
