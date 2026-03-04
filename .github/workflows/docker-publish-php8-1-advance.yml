@@ -8,7 +8,6 @@ on:
     paths:
       - "8.1/advance/**"
     branches:
-      - main
       - develop
   workflow_run:
     workflows: ["Docker build and push PHP8.1-secure"]
