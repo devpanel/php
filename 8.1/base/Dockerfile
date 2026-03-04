@@ -198,7 +198,12 @@ exit(1);
   fi; \
   # code-server is required: fail build if version is empty
   [ -n "$CODESERVER_VERSION" ] || { echo "CODESERVER_VERSION is empty" >&2; exit 1; }; \
-  curl -fsSL https://code-server.dev/install.sh | sh -s -- --version="$CODESERVER_VERSION"
+  DEB_ARCH="$(dpkg --print-architecture)"; \
+  case "$DEB_ARCH" in amd64|arm64) ;; *) echo "Unsupported architecture for code-server: $DEB_ARCH" >&2; exit 1 ;; esac; \
+  DEB_URL="https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
+  curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o /tmp/code-server.deb; \
+  dpkg -i /tmp/code-server.deb || { apt-get update && apt-get install -y -f; dpkg -i /tmp/code-server.deb; }; \
+  rm -f /tmp/code-server.deb
 
 #== Install Composer
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.3.10
