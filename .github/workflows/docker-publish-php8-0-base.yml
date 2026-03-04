@@ -1,7 +1,7 @@
 name: Docker build and push PHP8.0-base
 
 env:
-  IMAGE_TAG: devpanel/php:8.0-base-rc
+  IMAGE_TAG: ${{ secrets.DOCKERHUB_USERNAME }}/php:8.0-base-rc
 
 on:
   push:
@@ -30,7 +30,7 @@ jobs:
       - name: Set env to production environment
         if: github.ref == 'refs/heads/main'
         run: |
-          echo "IMAGE_TAG=devpanel/php:8.0-base" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${{ secrets.DOCKERHUB_USERNAME }}/php:8.0-base" >> $GITHUB_ENV
 
       - name: Checkout repository
         uses: actions/checkout@v4

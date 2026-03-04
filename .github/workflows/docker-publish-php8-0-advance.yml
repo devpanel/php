@@ -1,7 +1,7 @@
 name: Docker build and push PHP8.0-advance
 
 env:
-  IMAGE_TAG: devpanel/php:8.0-advance-rc
+  IMAGE_TAG: ${{ secrets.DOCKERHUB_USERNAME }}/php:8.0-advance-rc
 
 on:
   push:
@@ -34,7 +34,7 @@ jobs:
       - name: Set env to production environment
         if:  ${{ github.event_name == 'push' && github.ref == 'refs/heads/main'  || github.event_name == 'workflow_run' &&  github.event.workflow_run.head_branch == 'main' }}
         run: |
-          echo "IMAGE_TAG=devpanel/php:8.0-advance" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${{ secrets.DOCKERHUB_USERNAME }}/php:8.0-advance" >> $GITHUB_ENV
 
       - name: Checkout repository
         uses: actions/checkout@v4
