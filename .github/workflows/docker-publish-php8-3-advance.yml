@@ -70,6 +70,8 @@ jobs:
           context: ./8.3/advance/
           tags: ${{ env.IMAGE_TAG }}
           platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ github.workflow }}-${{ matrix.platform }}
+          cache-to: type=gha,scope=${{ github.workflow }}-${{ matrix.platform }},mode=max
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
