@@ -175,28 +175,28 @@ RUN set -e; \
   CODESERVER_VERSION="${CODESERVER_VERSION-$CODESERVER_PINNED_HASH_VERSION}"; \
   if [ -z "$CODESERVER_VERSION" ]; then \
     RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
-  CODESERVER_VERSION="$(printf '%s' "$RELEASES_JSON" | php -r '
-$major = $argv[1];
-$releases = json_decode(stream_get_contents(STDIN), true);
-
-if (!is_array($releases)) {
-  fwrite(STDERR, "Failed to parse releases JSON\n");
-  exit(2);
-}
-
-foreach ($releases as $release) {
-  if (($release["draft"] ?? false) || ($release["prerelease"] ?? false)) {
-    continue;
-  }
-
-  $tag = $release["tag_name"] ?? "";
-  if (preg_match("/^v?" . preg_quote($major, "/") . "\\.[0-9]+\\.[0-9]+(?:[-+].*)?$/", $tag)) {
-    echo ltrim($tag, "v");
-    exit(0);
-  }
-}
-
-exit(1);
+  CODESERVER_VERSION="$(printf '%s' "$RELEASES_JSON" | php -r ' \
+$major = $argv[1]; \
+$releases = json_decode(stream_get_contents(STDIN), true); \
+ \
+if (!is_array($releases)) { \
+  fwrite(STDERR, "Failed to parse releases JSON\n"); \
+  exit(2); \
+} \
+ \
+foreach ($releases as $release) { \
+  if (($release["draft"] ?? false) || ($release["prerelease"] ?? false)) { \
+    continue; \
+  } \
+ \
+  $tag = $release["tag_name"] ?? ""; \
+  if (preg_match("/^v?" . preg_quote($major, "/") . "\\.[0-9]+\\.[0-9]+(?:[-+].*)?$/", $tag)) { \
+    echo ltrim($tag, "v"); \
+    exit(0); \
+  } \
+} \
+ \
+exit(1); \
 ' "$CODESERVER_MAJOR_VERSION")" || { echo "Unable to resolve code-server major $CODESERVER_MAJOR_VERSION from GitHub releases" >&2; exit 1; }; \
   fi; \
   # code-server is required: fail build if version is empty
