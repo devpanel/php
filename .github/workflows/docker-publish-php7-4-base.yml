@@ -60,9 +60,9 @@ jobs:
         with:
           file: ./7.4/base/Dockerfile
           context: ./7.4/base/
+          # Intentionally empty: Dockerfile resolves latest patch within CODESERVER_MAJOR_VERSION
+          # code-server is mandatory; build fails if version cannot be resolved
           build-args: |
-            # Intentionally empty: Dockerfile resolves latest patch within CODESERVER_MAJOR_VERSION
-            # code-server is mandatory; build fails if version cannot be resolved
             CODESERVER_VERSION=
           tags: ${{ env.IMAGE_TAG }}
           platforms: ${{ matrix.platform }}
