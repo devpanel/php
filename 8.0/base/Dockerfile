@@ -212,7 +212,7 @@ exit(1);
     esac; \
     echo "$DEB_SHA256 /tmp/code-server.deb" | sha256sum -c -; \
   fi; \
-  dpkg -i /tmp/code-server.deb || { apt-get update && apt-get install -y -f; dpkg -i /tmp/code-server.deb; }; \
+  dpkg -i /tmp/code-server.deb || { apt-get update && apt-get install -y -f --no-install-recommends; rm -rf /var/lib/apt/lists/*; dpkg -i /tmp/code-server.deb; }; \
   rm -f /tmp/code-server.deb
 
 #== Install Composer
