@@ -170,14 +170,37 @@ RUN a2enmod rewrite remoteip headers
 
 #== Install Codeserver
 ARG CODESERVER_MAJOR_VERSION=4
-RUN LATEST_VERSION=$(curl -s https://api.github.com/repos/coder/code-server/releases/latest | grep -oP '"tag_name": "v\K[^"]*') && \
-  LATEST_MAJOR=$(echo $LATEST_VERSION | cut -d. -f1) && \
-  if [ "$LATEST_MAJOR" = "$CODESERVER_MAJOR_VERSION" ]; then \
-    CODESERVER_VERSION=$LATEST_VERSION; \
-  else \
-    CODESERVER_VERSION=$(curl -s https://api.github.com/repos/coder/code-server/releases | grep -oP '"tag_name": "v\K'$CODESERVER_MAJOR_VERSION'\.[^"]*' | head -1); \
-  fi && \
-  curl -fsSL https://code-server.dev/install.sh | sh -s -- --version=$CODESERVER_VERSION
+ARG CODESERVER_VERSION=4.99.4
+RUN set -e; \
+  if [ -z "$CODESERVER_VERSION" ]; then \
+    RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
+  CODESERVER_VERSION="$(printf '%s' "$RELEASES_JSON" | php -r '
+$major = $argv[1];
+$releases = json_decode(stream_get_contents(STDIN), true);
+
+if (!is_array($releases)) {
+  fwrite(STDERR, "Failed to parse releases JSON\n");
+  exit(2);
+}
+
+foreach ($releases as $release) {
+  if (($release["draft"] ?? false) || ($release["prerelease"] ?? false)) {
+    continue;
+  }
+
+  $tag = $release["tag_name"] ?? "";
+  if (preg_match("/^v?" . preg_quote($major, "/") . "\\.[0-9]+\\.[0-9]+(?:[-+].*)?$/", $tag)) {
+    echo ltrim($tag, "v");
+    exit(0);
+  }
+}
+
+exit(1);
+' "$CODESERVER_MAJOR_VERSION")" || { echo "Unable to resolve code-server major $CODESERVER_MAJOR_VERSION from GitHub releases" >&2; exit 1; }; \
+  fi; \
+  # code-server is required: fail build if version is empty
+  [ -n "$CODESERVER_VERSION" ] || { echo "CODESERVER_VERSION is empty" >&2; exit 1; }; \
+  curl -fsSL https://code-server.dev/install.sh | sh -s -- --version="$CODESERVER_VERSION"
 
 #== Install Composer
 RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.3.10
