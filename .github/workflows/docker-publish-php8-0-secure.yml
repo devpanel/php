@@ -2,6 +2,7 @@ name: Docker build and push PHP8.0-secure
 
 env:
   DOCKER_BUILDKIT: 1
+  IMAGE_TAG: devpanel/php:8.0-secure-rc
 
 on:
   push:
@@ -20,11 +21,6 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - name: Set env to testing environment
-        if:  ${{ (github.event_name == 'push' && endsWith(github.ref, '/develop'))  || (github.event_name == 'workflow_run' &&  github.event.workflow_run.head_branch == 'develop') }}
-        run: |
-          echo "IMAGE_TAG=devpanel/php:8.0-secure-rc" >> $GITHUB_ENV
-
       - name: Set env to production environment
         if:  ${{ (github.event_name == 'push' && endsWith(github.ref, '/main'))  || (github.event_name == 'workflow_run' &&  github.event.workflow_run.head_branch == 'main') }}
         run: |

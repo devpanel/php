@@ -2,6 +2,7 @@ name: Docker build and push PHP8.3-base
 
 env:
   DOCKER_BUILDKIT: 1
+  IMAGE_TAG: devpanel/php:8.3-base-rc
 
 on:
   push:
@@ -14,14 +15,9 @@ on:
 
 jobs:
   docker:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     steps:
-
-      - name: Set env to testing environment
-        if: endsWith(github.ref, '/develop')
-        run: |
-          echo "IMAGE_TAG=devpanel/php:8.3-base-rc" >> $GITHUB_ENV
-
       - name: Set env to production environment
         if: endsWith(github.ref, '/main')
         run: |
