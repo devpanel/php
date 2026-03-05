@@ -27,9 +27,6 @@ jobs:
           - linux/amd64
           - linux/arm64
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -46,12 +43,14 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          file: ./8.3/base/Dockerfile
-          context: ./8.3/base/
+          file: Dockerfile
+          context: "{{defaultContext}}:8.3/base"
           # Intentionally empty: Dockerfile resolves latest patch within CODESERVER_MAJOR_VERSION
           # code-server is mandatory; build fails if version cannot be resolved
           build-args: |
             CODESERVER_VERSION=
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
           platforms: ${{ matrix.platform }}
           cache-from: type=gha,scope=${{ github.workflow }}-${{ matrix.platform }}
           cache-to: type=gha,scope=${{ github.workflow }}-${{ matrix.platform }},mode=max

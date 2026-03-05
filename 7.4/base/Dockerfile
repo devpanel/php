@@ -173,9 +173,21 @@ ARG CODESERVER_PINNED_HASH_VERSION=4.99.4
 ARG CODESERVER_VERSION=$CODESERVER_PINNED_HASH_VERSION
 ARG CODESERVER_DEB_SHA256_AMD64=74c107b33643ed11223263b86431530fbc9c9f7c8202997579a6f0c41b4cb102
 ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e5de9d55f1e2077c3
-RUN set -e; \
+RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN \
+  set -e; \
   if [ -z "$CODESERVER_VERSION" ]; then \
-    RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
+    if [ -n "${GITHUB_TOKEN:-}" ]; then \
+      RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'X-GitHub-Api-Version: 2022-11-28' \
+        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+        https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
+    else \
+      RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'X-GitHub-Api-Version: 2022-11-28' \
+        https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
+    fi; \
   CODESERVER_VERSION="$(printf '%s' "$RELEASES_JSON" | php -r ' \
 $major = $argv[1]; \
 $releases = json_decode(stream_get_contents(STDIN), true); \
