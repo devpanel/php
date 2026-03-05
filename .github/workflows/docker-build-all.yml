@@ -1,0 +1,220 @@
+name: Build all Docker images
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      tag_suffix: ${{ steps.vars.outputs.tag_suffix }}
+    steps:
+      - name: Determine image tag suffix
+        id: vars
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "tag_suffix=" >> $GITHUB_OUTPUT
+          else
+            echo "tag_suffix=-rc" >> $GITHUB_OUTPUT
+          fi
+
+  # ── PHP 7.4 ──────────────────────────────────────────────────────────────
+
+  build-php74-base:
+    permissions: {}
+    needs: setup
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "7.4"
+      image_type: base
+      image_tag: ${{ github.repository }}:7.4-base${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php74-base
+      use_cache: false
+    secrets: inherit
+
+  build-php74-secure:
+    permissions: {}
+    needs: [setup, build-php74-base]
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "7.4"
+      image_type: secure
+      image_tag: ${{ github.repository }}:7.4-secure${{ needs.setup.outputs.tag_suffix }}
+      base_image: ${{ github.repository }}:7.4-base${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php74-secure
+      use_cache: false
+    secrets: inherit
+
+  build-php74-advance:
+    permissions: {}
+    needs: [setup, build-php74-secure]
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "7.4"
+      image_type: advance
+      image_tag: ${{ github.repository }}:7.4-advance${{ needs.setup.outputs.tag_suffix }}
+      base_image: ${{ github.repository }}:7.4-secure${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php74-advance
+      use_cache: false
+    secrets: inherit
+
+  # ── PHP 8.0 ──────────────────────────────────────────────────────────────
+
+  build-php80-base:
+    permissions: {}
+    needs: setup
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.0"
+      image_type: base
+      image_tag: ${{ github.repository }}:8.0-base${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php80-base
+      use_cache: false
+    secrets: inherit
+
+  build-php80-secure:
+    permissions: {}
+    needs: [setup, build-php80-base]
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.0"
+      image_type: secure
+      image_tag: ${{ github.repository }}:8.0-secure${{ needs.setup.outputs.tag_suffix }}
+      base_image: ${{ github.repository }}:8.0-base${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php80-secure
+      use_cache: false
+    secrets: inherit
+
+  build-php80-advance:
+    permissions: {}
+    needs: [setup, build-php80-secure]
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.0"
+      image_type: advance
+      image_tag: ${{ github.repository }}:8.0-advance${{ needs.setup.outputs.tag_suffix }}
+      base_image: ${{ github.repository }}:8.0-secure${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php80-advance
+      use_cache: false
+    secrets: inherit
+
+  # ── PHP 8.1 ──────────────────────────────────────────────────────────────
+
+  build-php81-base:
+    permissions: {}
+    needs: setup
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.1"
+      image_type: base
+      image_tag: ${{ github.repository }}:8.1-base${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php81-base
+      use_cache: false
+    secrets: inherit
+
+  build-php81-secure:
+    permissions: {}
+    needs: [setup, build-php81-base]
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.1"
+      image_type: secure
+      image_tag: ${{ github.repository }}:8.1-secure${{ needs.setup.outputs.tag_suffix }}
+      base_image: ${{ github.repository }}:8.1-base${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php81-secure
+      use_cache: false
+    secrets: inherit
+
+  build-php81-advance:
+    permissions: {}
+    needs: [setup, build-php81-secure]
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.1"
+      image_type: advance
+      image_tag: ${{ github.repository }}:8.1-advance${{ needs.setup.outputs.tag_suffix }}
+      base_image: ${{ github.repository }}:8.1-secure${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php81-advance
+      use_cache: false
+    secrets: inherit
+
+  # ── PHP 8.2 ──────────────────────────────────────────────────────────────
+
+  build-php82-base:
+    permissions: {}
+    needs: setup
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.2"
+      image_type: base
+      image_tag: ${{ github.repository }}:8.2-base${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php82-base
+      use_cache: false
+    secrets: inherit
+
+  build-php82-secure:
+    permissions: {}
+    needs: [setup, build-php82-base]
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.2"
+      image_type: secure
+      image_tag: ${{ github.repository }}:8.2-secure${{ needs.setup.outputs.tag_suffix }}
+      base_image: ${{ github.repository }}:8.2-base${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php82-secure
+      use_cache: false
+    secrets: inherit
+
+  build-php82-advance:
+    permissions: {}
+    needs: [setup, build-php82-secure]
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.2"
+      image_type: advance
+      image_tag: ${{ github.repository }}:8.2-advance${{ needs.setup.outputs.tag_suffix }}
+      base_image: ${{ github.repository }}:8.2-secure${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php82-advance
+      use_cache: false
+    secrets: inherit
+
+  # ── PHP 8.3 ──────────────────────────────────────────────────────────────
+
+  build-php83-base:
+    permissions: {}
+    needs: setup
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.3"
+      image_type: base
+      image_tag: ${{ github.repository }}:8.3-base${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php83-base
+      use_cache: false
+    secrets: inherit
+
+  build-php83-secure:
+    permissions: {}
+    needs: [setup, build-php83-base]
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.3"
+      image_type: secure
+      image_tag: ${{ github.repository }}:8.3-secure${{ needs.setup.outputs.tag_suffix }}
+      base_image: ${{ github.repository }}:8.3-base${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php83-secure
+      use_cache: false
+    secrets: inherit
+
+  build-php83-advance:
+    permissions: {}
+    needs: [setup, build-php83-secure]
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: "8.3"
+      image_type: advance
+      image_tag: ${{ github.repository }}:8.3-advance${{ needs.setup.outputs.tag_suffix }}
+      base_image: ${{ github.repository }}:8.3-secure${{ needs.setup.outputs.tag_suffix }}
+      artifact_prefix: php83-advance
+      use_cache: false
+    secrets: inherit
