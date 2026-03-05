@@ -29,7 +29,6 @@ Then update each `*/base/Dockerfile` so the version condition and both SHA256 va
 Example pattern used in `base/Dockerfile` files:
 
 ```dockerfile
-CODESERVER_VERSION="${CODESERVER_VERSION-$CODESERVER_PINNED_HASH_VERSION}"; \
 if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
 	case "$DEB_ARCH" in \
 		amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
@@ -38,25 +37,4 @@ if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
 	echo "$DEB_SHA256  /tmp/code-server.deb" | sha256sum -c -; \
 fi; \
 dpkg -i /tmp/code-server.deb
-```
-
-## Docker Hub namespace for secure/advance images
-
-`secure/Dockerfile` and `advance/Dockerfile` files now support a `DOCKERHUB_USERNAME` build argument for upstream image references.
-
-- Default (if omitted): `devpanel`
-- Override example:
-
-```bash
-docker build \
-	--build-arg DOCKERHUB_USERNAME=mydockerhubuser \
-	-f 8.3/secure/Dockerfile \
-	8.3/secure
-```
-
-```bash
-docker build \
-	--build-arg DOCKERHUB_USERNAME=mydockerhubuser \
-	-f 8.3/advance/Dockerfile \
-	8.3/advance
 ```
