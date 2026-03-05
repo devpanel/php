@@ -11,6 +11,7 @@ jobs:
     outputs:
       matrix: ${{ steps.detect.outputs.matrix }}
       tag_suffix: ${{ steps.vars.outputs.tag_suffix }}
+      latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,9 +30,12 @@ jobs:
         run: |
           # Build a JSON array of all version directories (names starting with a
           # digit), sorted semantically. Non-numeric directories are ignored.
-          MATRIX=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
-            | sed 's|./||' | sort -V | jq -R . | jq -sc .)
+          VERSIONS=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
+            | sed 's|./||' | sort -V)
+          MATRIX=$(printf '%s\n' $VERSIONS | jq -R . | jq -sc .)
+          LATEST=$(printf '%s\n' $VERSIONS | tail -1)
           echo "matrix=${MATRIX}" >> $GITHUB_OUTPUT
+          echo "latest_php_version=${LATEST}" >> $GITHUB_OUTPUT
 
   build:
     needs: detect-versions
@@ -45,4 +49,5 @@ jobs:
       php_version: ${{ matrix.version }}
       tag_suffix: ${{ needs.detect-versions.outputs.tag_suffix }}
       use_cache: false
+      latest_php_version: ${{ needs.detect-versions.outputs.latest_php_version }}
     secrets: inherit

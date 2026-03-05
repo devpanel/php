@@ -32,6 +32,10 @@ on:
         required: false
         type: boolean
         default: true
+      latest_php_version:
+        description: The highest PHP version directory in the repo (e.g. 8.3), used as the downloader stage base
+        required: true
+        type: string
 
 jobs:
   build-base:
@@ -44,6 +48,7 @@ jobs:
       image_tag: ${{ github.repository }}:${{ inputs.php_version }}-base${{ inputs.tag_suffix }}
       artifact_prefix: php${{ replace(inputs.php_version, '.', '') }}-base
       use_cache: ${{ inputs.use_cache }}
+      latest_php_version: ${{ inputs.latest_php_version }}
     secrets: inherit
 
   build-secure:

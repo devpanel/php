@@ -18,6 +18,7 @@ jobs:
     outputs:
       tag_suffix: ${{ steps.vars.outputs.tag_suffix }}
       matrix: ${{ steps.detect.outputs.matrix }}
+      latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -50,11 +51,13 @@ jobs:
           fi
 
           VERSIONS_TO_BUILD=()
+          LATEST_PHP_VERSION=""
 
           # Iterate only over directories whose names start with a digit
           # (i.e. PHP version directories such as 7.4, 8.0, 8.1 …).
           while IFS= read -r VER; do
             KEY="${VER//./}"
+            LATEST_PHP_VERSION="$VER"  # sort -V ensures last iteration is highest
 
             if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
               BASE=true; SECURE=true; ADVANCE=true
@@ -84,6 +87,7 @@ jobs:
             MATRIX="[]"
           fi
           echo "matrix=${MATRIX}" >> $GITHUB_OUTPUT
+          echo "latest_php_version=${LATEST_PHP_VERSION}" >> $GITHUB_OUTPUT
 
   build:
     needs: detect-changes
@@ -101,4 +105,5 @@ jobs:
       secure_changed: ${{ needs.detect-changes.outputs[format('php{0}_secure', replace(matrix.version, '.', ''))] == 'true' }}
       advance_changed: ${{ needs.detect-changes.outputs[format('php{0}_advance', replace(matrix.version, '.', ''))] == 'true' }}
       use_cache: true
+      latest_php_version: ${{ needs.detect-changes.outputs.latest_php_version }}
     secrets: inherit

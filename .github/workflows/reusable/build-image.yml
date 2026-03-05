@@ -29,6 +29,11 @@ on:
         description: Unique prefix for artifact names within the workflow run (e.g. php74-base)
         required: true
         type: string
+      latest_php_version:
+        description: The highest PHP version directory in the repo, passed as LATEST_PHP_VERSION build-arg for base builds
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -66,6 +71,7 @@ jobs:
             echo "build_args<<EOF"
             if [[ "${{ inputs.image_type }}" == "base" ]]; then
               echo "PHP_VERSION=${{ inputs.php_version }}"
+              echo "LATEST_PHP_VERSION=${{ inputs.latest_php_version }}"
               # Intentionally empty: Dockerfile resolves latest patch within
               # CODESERVER_MAJOR_VERSION. code-server is mandatory; build fails
               # if version cannot be resolved.
