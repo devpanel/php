@@ -17,21 +17,7 @@ jobs:
       contents: read
     outputs:
       tag_suffix: ${{ steps.vars.outputs.tag_suffix }}
-      php74-base: ${{ steps.changes.outputs.php74-base }}
-      php74-secure: ${{ steps.changes.outputs.php74-secure }}
-      php74-advance: ${{ steps.changes.outputs.php74-advance }}
-      php80-base: ${{ steps.changes.outputs.php80-base }}
-      php80-secure: ${{ steps.changes.outputs.php80-secure }}
-      php80-advance: ${{ steps.changes.outputs.php80-advance }}
-      php81-base: ${{ steps.changes.outputs.php81-base }}
-      php81-secure: ${{ steps.changes.outputs.php81-secure }}
-      php81-advance: ${{ steps.changes.outputs.php81-advance }}
-      php82-base: ${{ steps.changes.outputs.php82-base }}
-      php82-secure: ${{ steps.changes.outputs.php82-secure }}
-      php82-advance: ${{ steps.changes.outputs.php82-advance }}
-      php83-base: ${{ steps.changes.outputs.php83-base }}
-      php83-secure: ${{ steps.changes.outputs.php83-secure }}
-      php83-advance: ${{ steps.changes.outputs.php83-advance }}
+      matrix: ${{ steps.detect.outputs.matrix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -47,243 +33,72 @@ jobs:
             echo "tag_suffix=-rc" >> $GITHUB_OUTPUT
           fi
 
-      - name: Detect changed paths
-        id: changes
+      - name: Detect versions and changed paths
+        id: detect
         run: |
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
-          declare -A VERSIONS=(["74"]="7.4" ["80"]="8.0" ["81"]="8.1" ["82"]="8.2" ["83"]="8.3")
+
+          # Detect changes to shared Dockerfiles; a change there affects all
+          # versions that use the shared file.
           if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
-            for V in 74 80 81 82 83; do
-              for T in base secure advance; do
-                echo "php${V}-${T}=true" >> $GITHUB_OUTPUT
-              done
-            done
+            SECURE_DF_CHANGED=1
+            ADVANCE_DF_CHANGED=1
           else
-            for V in 74 80 81 82 83; do
-              VER="${VERSIONS[$V]}"
-              for T in base secure advance; do
-                CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" -- "${VER}/${T}/" 2>/dev/null || true)
-                if [[ -n "$CHANGED" ]]; then
-                  echo "php${V}-${T}=true" >> $GITHUB_OUTPUT
-                else
-                  echo "php${V}-${T}=false" >> $GITHUB_OUTPUT
-                fi
-              done
-            done
+            SECURE_DF_CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" -- "secure/Dockerfile" 2>/dev/null | wc -l)
+            ADVANCE_DF_CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" -- "advance/Dockerfile" 2>/dev/null | wc -l)
           fi
 
-  # ── PHP 7.4 ──────────────────────────────────────────────────────────────
+          VERSIONS_TO_BUILD=()
 
-  build-php74-base:
-    permissions: {}
+          # Iterate only over directories whose names start with a digit
+          # (i.e. PHP version directories such as 7.4, 8.0, 8.1 …).
+          while IFS= read -r VER; do
+            KEY="${VER//./}"
+
+            if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+              BASE=true; SECURE=true; ADVANCE=true
+            else
+              N_BASE=$(git diff --name-only "$BEFORE" "$AFTER" -- "${VER}/base/" 2>/dev/null | wc -l)
+              N_SECURE=$(git diff --name-only "$BEFORE" "$AFTER" -- "${VER}/secure/" 2>/dev/null | wc -l)
+              N_ADVANCE=$(git diff --name-only "$BEFORE" "$AFTER" -- "${VER}/advance/" 2>/dev/null | wc -l)
+
+              [[ $N_BASE   -gt 0 ]]                                    && BASE=true   || BASE=false
+              [[ $N_SECURE -gt 0 || $SECURE_DF_CHANGED  -gt 0 ]]      && SECURE=true || SECURE=false
+              [[ $N_ADVANCE -gt 0 || $ADVANCE_DF_CHANGED -gt 0 ]]     && ADVANCE=true || ADVANCE=false
+            fi
+
+            echo "php${KEY}_base=${BASE}"     >> $GITHUB_OUTPUT
+            echo "php${KEY}_secure=${SECURE}" >> $GITHUB_OUTPUT
+            echo "php${KEY}_advance=${ADVANCE}" >> $GITHUB_OUTPUT
+
+            if [[ "$BASE" == "true" || "$SECURE" == "true" || "$ADVANCE" == "true" ]]; then
+              VERSIONS_TO_BUILD+=("$VER")
+            fi
+          done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' | sed 's|./||' | sort -V)
+
+          # Build the matrix JSON array for downstream jobs.
+          if [[ ${#VERSIONS_TO_BUILD[@]} -gt 0 ]]; then
+            MATRIX=$(printf '%s\n' "${VERSIONS_TO_BUILD[@]}" | jq -R . | jq -sc .)
+          else
+            MATRIX="[]"
+          fi
+          echo "matrix=${MATRIX}" >> $GITHUB_OUTPUT
+
+  build:
     needs: detect-changes
-    if: needs.detect-changes.outputs.php74-base == 'true'
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "7.4"
-      image_type: base
-      image_tag: ${{ github.repository }}:7.4-base${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php74-base
-      use_cache: true
-    secrets: inherit
-
-  build-php74-secure:
+    if: ${{ needs.detect-changes.outputs.matrix != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
     permissions: {}
-    needs: [detect-changes, build-php74-base]
-    if: always() && needs.build-php74-base.result != 'failure' && needs.build-php74-base.result != 'cancelled' && (needs.detect-changes.outputs.php74-secure == 'true' || needs.build-php74-base.result == 'success')
-    uses: ./.github/workflows/build-image.yml
+    uses: ./.github/workflows/build-php-version.yml
     with:
-      php_version: "7.4"
-      image_type: secure
-      image_tag: ${{ github.repository }}:7.4-secure${{ needs.detect-changes.outputs.tag_suffix }}
-      base_image: ${{ github.repository }}:7.4-base${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php74-secure
-      use_cache: true
-    secrets: inherit
-
-  build-php74-advance:
-    permissions: {}
-    needs: [detect-changes, build-php74-secure]
-    if: always() && needs.build-php74-secure.result != 'failure' && needs.build-php74-secure.result != 'cancelled' && (needs.detect-changes.outputs.php74-advance == 'true' || needs.build-php74-secure.result == 'success')
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "7.4"
-      image_type: advance
-      image_tag: ${{ github.repository }}:7.4-advance${{ needs.detect-changes.outputs.tag_suffix }}
-      base_image: ${{ github.repository }}:7.4-secure${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php74-advance
-      use_cache: true
-    secrets: inherit
-
-  # ── PHP 8.0 ──────────────────────────────────────────────────────────────
-
-  build-php80-base:
-    permissions: {}
-    needs: detect-changes
-    if: needs.detect-changes.outputs.php80-base == 'true'
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.0"
-      image_type: base
-      image_tag: ${{ github.repository }}:8.0-base${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php80-base
-      use_cache: true
-    secrets: inherit
-
-  build-php80-secure:
-    permissions: {}
-    needs: [detect-changes, build-php80-base]
-    if: always() && needs.build-php80-base.result != 'failure' && needs.build-php80-base.result != 'cancelled' && (needs.detect-changes.outputs.php80-secure == 'true' || needs.build-php80-base.result == 'success')
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.0"
-      image_type: secure
-      image_tag: ${{ github.repository }}:8.0-secure${{ needs.detect-changes.outputs.tag_suffix }}
-      base_image: ${{ github.repository }}:8.0-base${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php80-secure
-      use_cache: true
-    secrets: inherit
-
-  build-php80-advance:
-    permissions: {}
-    needs: [detect-changes, build-php80-secure]
-    if: always() && needs.build-php80-secure.result != 'failure' && needs.build-php80-secure.result != 'cancelled' && (needs.detect-changes.outputs.php80-advance == 'true' || needs.build-php80-secure.result == 'success')
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.0"
-      image_type: advance
-      image_tag: ${{ github.repository }}:8.0-advance${{ needs.detect-changes.outputs.tag_suffix }}
-      base_image: ${{ github.repository }}:8.0-secure${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php80-advance
-      use_cache: true
-    secrets: inherit
-
-  # ── PHP 8.1 ──────────────────────────────────────────────────────────────
-
-  build-php81-base:
-    permissions: {}
-    needs: detect-changes
-    if: needs.detect-changes.outputs.php81-base == 'true'
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.1"
-      image_type: base
-      image_tag: ${{ github.repository }}:8.1-base${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php81-base
-      use_cache: true
-    secrets: inherit
-
-  build-php81-secure:
-    permissions: {}
-    needs: [detect-changes, build-php81-base]
-    if: always() && needs.build-php81-base.result != 'failure' && needs.build-php81-base.result != 'cancelled' && (needs.detect-changes.outputs.php81-secure == 'true' || needs.build-php81-base.result == 'success')
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.1"
-      image_type: secure
-      image_tag: ${{ github.repository }}:8.1-secure${{ needs.detect-changes.outputs.tag_suffix }}
-      base_image: ${{ github.repository }}:8.1-base${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php81-secure
-      use_cache: true
-    secrets: inherit
-
-  build-php81-advance:
-    permissions: {}
-    needs: [detect-changes, build-php81-secure]
-    if: always() && needs.build-php81-secure.result != 'failure' && needs.build-php81-secure.result != 'cancelled' && (needs.detect-changes.outputs.php81-advance == 'true' || needs.build-php81-secure.result == 'success')
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.1"
-      image_type: advance
-      image_tag: ${{ github.repository }}:8.1-advance${{ needs.detect-changes.outputs.tag_suffix }}
-      base_image: ${{ github.repository }}:8.1-secure${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php81-advance
-      use_cache: true
-    secrets: inherit
-
-  # ── PHP 8.2 ──────────────────────────────────────────────────────────────
-
-  build-php82-base:
-    permissions: {}
-    needs: detect-changes
-    if: needs.detect-changes.outputs.php82-base == 'true'
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.2"
-      image_type: base
-      image_tag: ${{ github.repository }}:8.2-base${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php82-base
-      use_cache: true
-    secrets: inherit
-
-  build-php82-secure:
-    permissions: {}
-    needs: [detect-changes, build-php82-base]
-    if: always() && needs.build-php82-base.result != 'failure' && needs.build-php82-base.result != 'cancelled' && (needs.detect-changes.outputs.php82-secure == 'true' || needs.build-php82-base.result == 'success')
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.2"
-      image_type: secure
-      image_tag: ${{ github.repository }}:8.2-secure${{ needs.detect-changes.outputs.tag_suffix }}
-      base_image: ${{ github.repository }}:8.2-base${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php82-secure
-      use_cache: true
-    secrets: inherit
-
-  build-php82-advance:
-    permissions: {}
-    needs: [detect-changes, build-php82-secure]
-    if: always() && needs.build-php82-secure.result != 'failure' && needs.build-php82-secure.result != 'cancelled' && (needs.detect-changes.outputs.php82-advance == 'true' || needs.build-php82-secure.result == 'success')
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.2"
-      image_type: advance
-      image_tag: ${{ github.repository }}:8.2-advance${{ needs.detect-changes.outputs.tag_suffix }}
-      base_image: ${{ github.repository }}:8.2-secure${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php82-advance
-      use_cache: true
-    secrets: inherit
-
-  # ── PHP 8.3 ──────────────────────────────────────────────────────────────
-
-  build-php83-base:
-    permissions: {}
-    needs: detect-changes
-    if: needs.detect-changes.outputs.php83-base == 'true'
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.3"
-      image_type: base
-      image_tag: ${{ github.repository }}:8.3-base${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php83-base
-      use_cache: true
-    secrets: inherit
-
-  build-php83-secure:
-    permissions: {}
-    needs: [detect-changes, build-php83-base]
-    if: always() && needs.build-php83-base.result != 'failure' && needs.build-php83-base.result != 'cancelled' && (needs.detect-changes.outputs.php83-secure == 'true' || needs.build-php83-base.result == 'success')
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.3"
-      image_type: secure
-      image_tag: ${{ github.repository }}:8.3-secure${{ needs.detect-changes.outputs.tag_suffix }}
-      base_image: ${{ github.repository }}:8.3-base${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php83-secure
-      use_cache: true
-    secrets: inherit
-
-  build-php83-advance:
-    permissions: {}
-    needs: [detect-changes, build-php83-secure]
-    if: always() && needs.build-php83-secure.result != 'failure' && needs.build-php83-secure.result != 'cancelled' && (needs.detect-changes.outputs.php83-advance == 'true' || needs.build-php83-secure.result == 'success')
-    uses: ./.github/workflows/build-image.yml
-    with:
-      php_version: "8.3"
-      image_type: advance
-      image_tag: ${{ github.repository }}:8.3-advance${{ needs.detect-changes.outputs.tag_suffix }}
-      base_image: ${{ github.repository }}:8.3-secure${{ needs.detect-changes.outputs.tag_suffix }}
-      artifact_prefix: php83-advance
+      php_version: ${{ matrix.version }}
+      tag_suffix: ${{ needs.detect-changes.outputs.tag_suffix }}
+      base_changed: ${{ needs.detect-changes.outputs[format('php{0}_base', replace(matrix.version, '.', ''))] == 'true' }}
+      secure_changed: ${{ needs.detect-changes.outputs[format('php{0}_secure', replace(matrix.version, '.', ''))] == 'true' }}
+      advance_changed: ${{ needs.detect-changes.outputs[format('php{0}_advance', replace(matrix.version, '.', ''))] == 'true' }}
       use_cache: true
     secrets: inherit

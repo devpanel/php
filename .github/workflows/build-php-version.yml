@@ -1,0 +1,75 @@
+name: Build and push PHP version images
+
+on:
+  workflow_call:
+    inputs:
+      php_version:
+        description: PHP version (e.g. 7.4, 8.2)
+        required: true
+        type: string
+      tag_suffix:
+        description: "Image tag suffix (empty for production, -rc for staging)"
+        required: false
+        type: string
+        default: "-rc"
+      base_changed:
+        description: Whether the base image source changed
+        required: false
+        type: boolean
+        default: true
+      secure_changed:
+        description: Whether the secure image source changed
+        required: false
+        type: boolean
+        default: true
+      advance_changed:
+        description: Whether the advance image source changed
+        required: false
+        type: boolean
+        default: true
+      use_cache:
+        description: Whether to use GitHub Actions cache
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build-base:
+    permissions: {}
+    if: ${{ inputs.base_changed }}
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: ${{ inputs.php_version }}
+      image_type: base
+      image_tag: ${{ github.repository }}:${{ inputs.php_version }}-base${{ inputs.tag_suffix }}
+      artifact_prefix: php${{ replace(inputs.php_version, '.', '') }}-base
+      use_cache: ${{ inputs.use_cache }}
+    secrets: inherit
+
+  build-secure:
+    permissions: {}
+    needs: [build-base]
+    if: ${{ always() && needs.build-base.result != 'failure' && needs.build-base.result != 'cancelled' && (inputs.secure_changed || needs.build-base.result == 'success') }}
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: ${{ inputs.php_version }}
+      image_type: secure
+      image_tag: ${{ github.repository }}:${{ inputs.php_version }}-secure${{ inputs.tag_suffix }}
+      base_image: ${{ github.repository }}:${{ inputs.php_version }}-base${{ inputs.tag_suffix }}
+      artifact_prefix: php${{ replace(inputs.php_version, '.', '') }}-secure
+      use_cache: ${{ inputs.use_cache }}
+    secrets: inherit
+
+  build-advance:
+    permissions: {}
+    needs: [build-secure]
+    if: ${{ always() && needs.build-secure.result != 'failure' && needs.build-secure.result != 'cancelled' && (inputs.advance_changed || needs.build-secure.result == 'success') }}
+    uses: ./.github/workflows/build-image.yml
+    with:
+      php_version: ${{ inputs.php_version }}
+      image_type: advance
+      image_tag: ${{ github.repository }}:${{ inputs.php_version }}-advance${{ inputs.tag_suffix }}
+      base_image: ${{ github.repository }}:${{ inputs.php_version }}-secure${{ inputs.tag_suffix }}
+      artifact_prefix: php${{ replace(inputs.php_version, '.', '') }}-advance
+      use_cache: ${{ inputs.use_cache }}
+    secrets: inherit

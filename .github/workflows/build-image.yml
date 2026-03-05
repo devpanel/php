@@ -41,11 +41,48 @@ jobs:
           - linux/amd64
           - linux/arm64
     steps:
-      - name: Prepare variables
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare build inputs
         id: prep
         run: |
           platform="${{ matrix.platform }}"
           echo "platform_safe=${platform//\//-}" >> $GITHUB_OUTPUT
+
+          # Shared Dockerfiles live at secure/Dockerfile and advance/Dockerfile;
+          # base Dockerfiles remain version-specific.
+          if [[ "${{ inputs.image_type }}" == "base" ]]; then
+            echo "dockerfile=${{ inputs.php_version }}/base/Dockerfile" >> $GITHUB_OUTPUT
+          else
+            echo "dockerfile=${{ inputs.image_type }}/Dockerfile" >> $GITHUB_OUTPUT
+          fi
+
+          # Build args differ by type; PHP 7.4 and 8.0 secure builds need an
+          # extra flag because Debian 11 ships mod_security 2.9.3 (not 2.9.6).
+          {
+            echo "build_args<<EOF"
+            if [[ "${{ inputs.image_type }}" == "base" ]]; then
+              # Intentionally empty: Dockerfile resolves latest patch within
+              # CODESERVER_MAJOR_VERSION. code-server is mandatory; build fails
+              # if version cannot be resolved.
+              echo "CODESERVER_VERSION="
+            else
+              echo "BASE_IMAGE=${{ inputs.base_image }}"
+              if [[ "${{ inputs.image_type }}" == "secure" ]] && \
+                 [[ "${{ inputs.php_version }}" == "7.4" || "${{ inputs.php_version }}" == "8.0" ]]; then
+                echo "REMOVE_MULTIPART_RULE=true"
+              fi
+            fi
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+          # Cache coordinates are only emitted when caching is enabled so that
+          # the uncached build step receives no cache-from / cache-to values.
+          if [[ "${{ inputs.use_cache }}" == "true" ]]; then
+            echo "cache_from=type=gha,scope=${{ inputs.artifact_prefix }}-${platform}" >> $GITHUB_OUTPUT
+            echo "cache_to=type=gha,scope=${{ inputs.artifact_prefix }}-${platform},mode=max" >> $GITHUB_OUTPUT
+          fi
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -59,46 +96,38 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push base image by digest
-        id: build-base
-        if: inputs.image_type == 'base'
+      - name: Build and push by digest (with cache)
+        id: build-cached
+        if: ${{ inputs.use_cache }}
         uses: docker/build-push-action@v6
         with:
-          file: Dockerfile
-          context: "{{defaultContext}}:${{ inputs.php_version }}/base"
-          # Intentionally empty: Dockerfile resolves latest patch within CODESERVER_MAJOR_VERSION
-          # code-server is mandatory; build fails if version cannot be resolved
-          build-args: |
-            CODESERVER_VERSION=
+          file: ${{ steps.prep.outputs.dockerfile }}
+          context: ${{ inputs.php_version }}/${{ inputs.image_type }}
+          build-args: ${{ steps.prep.outputs.build_args }}
           secrets: |
             github_token=${{ secrets.GITHUB_TOKEN }}
           platforms: ${{ matrix.platform }}
-          cache-from: ${{ inputs.use_cache && format('type=gha,scope={0}-{1}', inputs.artifact_prefix, matrix.platform) || '' }}
-          cache-to: ${{ inputs.use_cache && format('type=gha,scope={0}-{1},mode=max', inputs.artifact_prefix, matrix.platform) || '' }}
+          cache-from: ${{ steps.prep.outputs.cache_from }}
+          cache-to: ${{ steps.prep.outputs.cache_to }}
           outputs: type=image,name=${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
 
-      - name: Build and push dependent image by digest
-        id: build-dependent
-        if: inputs.image_type != 'base'
+      - name: Build and push by digest (no cache)
+        id: build-uncached
+        if: ${{ !inputs.use_cache }}
         uses: docker/build-push-action@v6
         with:
-          file: Dockerfile
-          context: "{{defaultContext}}:${{ inputs.php_version }}/${{ inputs.image_type }}"
-          build-args: |
-            BASE_IMAGE=${{ inputs.base_image }}
+          file: ${{ steps.prep.outputs.dockerfile }}
+          context: ${{ inputs.php_version }}/${{ inputs.image_type }}
+          build-args: ${{ steps.prep.outputs.build_args }}
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
           platforms: ${{ matrix.platform }}
-          cache-from: ${{ inputs.use_cache && format('type=gha,scope={0}-{1}', inputs.artifact_prefix, matrix.platform) || '' }}
-          cache-to: ${{ inputs.use_cache && format('type=gha,scope={0}-{1},mode=max', inputs.artifact_prefix, matrix.platform) || '' }}
           outputs: type=image,name=${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
         run: |
           mkdir -p ${{ runner.temp }}/digests
-          if [[ "${{ inputs.image_type }}" == "base" ]]; then
-            digest="${{ steps.build-base.outputs.digest }}"
-          else
-            digest="${{ steps.build-dependent.outputs.digest }}"
-          fi
+          digest="${{ steps.build-cached.outputs.digest || steps.build-uncached.outputs.digest }}"
           echo "$digest" > ${{ runner.temp }}/digests/${{ steps.prep.outputs.platform_safe }}.digest
 
       - name: Upload digest
