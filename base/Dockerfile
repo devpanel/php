@@ -1,7 +1,68 @@
 # syntax=docker/dockerfile:1
 ARG PHP_VERSION
 
-# ─── Stage 1: PHP runtime with extensions ─────────────────────────────────
+# ─── Stage 1: Version-independent artifact downloader ─────────────────────
+# Uses a fixed base image (debian:bookworm-slim) whose layers are completely
+# independent of PHP_VERSION.  BuildKit can reuse these cached layers across
+# all PHP version builds, so large binaries (code-server, libsodium) are only
+# downloaded once regardless of how many PHP versions are being built.
+FROM debian:bookworm-slim AS downloader
+
+ARG CODESERVER_MAJOR_VERSION=4
+ARG CODESERVER_PINNED_HASH_VERSION=4.99.4
+ARG CODESERVER_VERSION=$CODESERVER_PINNED_HASH_VERSION
+ARG CODESERVER_DEB_SHA256_AMD64=74c107b33643ed11223263b86431530fbc9c9f7c8202997579a6f0c41b4cb102
+ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e5de9d55f1e2077c3
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl \
+      ca-certificates \
+      jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download libsodium source (pinned release, identical for every PHP version)
+RUN mkdir -p /tmp/libsodium \
+    && curl -sL https://github.com/jedisct1/libsodium/archive/1.0.18-RELEASE.tar.gz \
+       | tar xzf - -C /tmp/libsodium
+
+# Download code-server deb (identical binary for every PHP version).
+# jq is used for the optional dynamic-version resolution so that this stage
+# does not depend on php-cli (keeping it PHP-version-independent).
+RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN \
+  set -e; \
+  if [ -z "$CODESERVER_VERSION" ]; then \
+    if [ -n "${GITHUB_TOKEN:-}" ]; then \
+      RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'X-GitHub-Api-Version: 2022-11-28' \
+        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+        https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
+    else \
+      RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'X-GitHub-Api-Version: 2022-11-28' \
+        https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
+    fi; \
+    CODESERVER_VERSION="$(printf '%s' "$RELEASES_JSON" | \
+      jq -r --arg major "$CODESERVER_MAJOR_VERSION" \
+      '[.[] | select(.draft == false and .prerelease == false) | .tag_name | ltrimstr("v") | select(test("^" + $major + "\\.[0-9]+\\.[0-9]+([-+].*)?$"))] | first // empty')" \
+      || { echo "Unable to resolve code-server major $CODESERVER_MAJOR_VERSION from GitHub releases" >&2; exit 1; }; \
+  fi; \
+  # code-server is required: fail build if version is empty
+  [ -n "$CODESERVER_VERSION" ] || { echo "CODESERVER_VERSION is empty" >&2; exit 1; }; \
+  DEB_ARCH="$(dpkg --print-architecture)"; \
+  case "$DEB_ARCH" in amd64|arm64) ;; *) echo "Unsupported architecture for code-server: $DEB_ARCH" >&2; exit 1 ;; esac; \
+  DEB_URL="https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
+  curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o /tmp/code-server.deb; \
+  if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
+    case "$DEB_ARCH" in \
+      amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
+      arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
+    esac; \
+    echo "$DEB_SHA256 /tmp/code-server.deb" | sha256sum -c -; \
+  fi
+
+# ─── Stage 2: PHP runtime with extensions ─────────────────────────────────
 # Contains system packages, PHP extension compilation and libsodium. These
 # layers change only when the PHP base image or extension configuration changes,
 # so they form a stable cache layer that does not need to be rebuilt when
@@ -177,11 +238,11 @@ RUN if dpkg --compare-versions "$PHP_VERSION" ge "8.3"; then \
       && rm -rf /tmp/*; \
     fi
 
+# Install libsodium (source pre-downloaded in the 'downloader' stage)
+COPY --from=downloader /tmp/libsodium /tmp/libsodium
 RUN rm -f /usr/local/etc/php/conf.d/*sodium.ini \
   && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
   && apt-get remove libsodium* -y  \
-  && mkdir -p /tmp/libsodium  \
-  && curl -sL https://github.com/jedisct1/libsodium/archive/1.0.18-RELEASE.tar.gz | tar xzf - -C  /tmp/libsodium \
   && cd /tmp/libsodium/libsodium-1.0.18-RELEASE/ \
   && ./configure \
   && make && make check \
@@ -237,7 +298,7 @@ RUN mkdir -p ${APP_ROOT} \
 #== Enable mode_rewrite by default
 RUN a2enmod rewrite remoteip headers
 
-# ─── Stage 2: Final image with application-level tools ────────────────────
+# ─── Stage 3: Final image with application-level tools ────────────────────
 # Inherits the stable PHP + extensions layers from php-ext and adds tools that
 # change more frequently: code-server, Composer, WP-CLI, Drush, BEE, etc.
 # Rebuilding this stage does not invalidate the php-ext layer cache.
@@ -246,66 +307,10 @@ FROM php-ext AS final
 # PHP_VERSION must be re-declared in each stage that uses it (Docker ARG scoping).
 ARG PHP_VERSION
 
-#== Install Codeserver
-ARG CODESERVER_MAJOR_VERSION=4
-ARG CODESERVER_PINNED_HASH_VERSION=4.99.4
-ARG CODESERVER_VERSION=$CODESERVER_PINNED_HASH_VERSION
-ARG CODESERVER_DEB_SHA256_AMD64=74c107b33643ed11223263b86431530fbc9c9f7c8202997579a6f0c41b4cb102
-ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e5de9d55f1e2077c3
-RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN \
-  set -e; \
-  if [ -z "$CODESERVER_VERSION" ]; then \
-    if [ -n "${GITHUB_TOKEN:-}" ]; then \
-      RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
-        -H 'Accept: application/vnd.github+json' \
-        -H 'X-GitHub-Api-Version: 2022-11-28' \
-        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-        https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
-    else \
-      RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
-        -H 'Accept: application/vnd.github+json' \
-        -H 'X-GitHub-Api-Version: 2022-11-28' \
-        https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
-    fi; \
-  CODESERVER_VERSION="$(printf '%s' "$RELEASES_JSON" | php -r ' \
-$major = $argv[1]; \
-$releases = json_decode(stream_get_contents(STDIN), true); \
- \
-if (!is_array($releases)) { \
-  fwrite(STDERR, "Failed to parse releases JSON\n"); \
-  exit(2); \
-} \
- \
-foreach ($releases as $release) { \
-  if (($release["draft"] ?? false) || ($release["prerelease"] ?? false)) { \
-    continue; \
-  } \
- \
-  $tag = $release["tag_name"] ?? ""; \
-  if (preg_match("/^v?" . preg_quote($major, "/") . "\\.[0-9]+\\.[0-9]+(?:[-+].*)?$/", $tag)) { \
-    echo ltrim($tag, "v"); \
-    exit(0); \
-  } \
-} \
- \
-exit(1); \
-' "$CODESERVER_MAJOR_VERSION")" || { echo "Unable to resolve code-server major $CODESERVER_MAJOR_VERSION from GitHub releases" >&2; exit 1; }; \
-  fi; \
-  # code-server is required: fail build if version is empty
-  [ -n "$CODESERVER_VERSION" ] || { echo "CODESERVER_VERSION is empty" >&2; exit 1; }; \
-  DEB_ARCH="$(dpkg --print-architecture)"; \
-  case "$DEB_ARCH" in amd64|arm64) ;; *) echo "Unsupported architecture for code-server: $DEB_ARCH" >&2; exit 1 ;; esac; \
-  DEB_URL="https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
-  curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o /tmp/code-server.deb; \
-  if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
-    case "$DEB_ARCH" in \
-      amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
-      arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
-    esac; \
-    echo "$DEB_SHA256 /tmp/code-server.deb" | sha256sum -c -; \
-  fi; \
-  dpkg -i /tmp/code-server.deb || { apt-get update && apt-get install -y -f --no-install-recommends; rm -rf /var/lib/apt/lists/*; dpkg -i /tmp/code-server.deb; }; \
-  rm -f /tmp/code-server.deb
+#== Install Codeserver (deb pre-downloaded in the 'downloader' stage)
+COPY --from=downloader /tmp/code-server.deb /tmp/code-server.deb
+RUN dpkg -i /tmp/code-server.deb || { apt-get update && apt-get install -y -f --no-install-recommends; rm -rf /var/lib/apt/lists/*; dpkg -i /tmp/code-server.deb; }; \
+    rm -f /tmp/code-server.deb
 
 #== Enable xdebug (PHP 8.3+ only)
 RUN if dpkg --compare-versions "$PHP_VERSION" ge "8.3"; then \
