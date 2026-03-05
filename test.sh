@@ -8,7 +8,11 @@
 #   ./test.sh shell              Run only shell lint.
 #   ./test.sh dockerfile         Run only Dockerfile lint.
 #   ./test.sh build              Run only Docker build tests.
-#   ./test.sh build --version 8.2  Build a specific PHP version.
+#   ./test.sh run                Run only Docker functional (run) tests.
+#   ./test.sh build run --version 8.2  Build and run tests for a specific PHP version.
+#
+# Note: 'run' tests require images to already be built (by the 'build' suite).
+# Run 'build' before 'run', or use './test.sh build run --version 8.2'.
 #
 # Exit code:  0 = all checks passed  |  non-zero = one or more checks failed.
 set -euo pipefail
@@ -33,7 +37,7 @@ VERSION_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --update-baseline) EXTRA_ARGS+=(--update-baseline); shift ;;
-    yaml|shell|dockerfile|build) SUITES+=("$1"); shift ;;
+    yaml|shell|dockerfile|build|run) SUITES+=("$1"); shift ;;
     --version)
       if [[ $# -lt 2 ]]; then
         echo "--version requires a value" >&2; exit 1
@@ -43,7 +47,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ ${#SUITES[@]} -eq 0 ]] && SUITES=(yaml shell dockerfile build)
+[[ ${#SUITES[@]} -eq 0 ]] && SUITES=(yaml shell dockerfile build run)
 
 # ---- runner ---------------------------------------------------------------
 FAILED=()
@@ -64,17 +68,19 @@ run_suite() {
 
 echo
 echo "========================================"
-echo " devpanel/php — lint & build checks"
+echo " devpanel/php — lint, build & run checks"
 echo "========================================"
 echo
 
 for suite in "${SUITES[@]}"; do
   case "$suite" in
-    yaml)       run_suite "YAML lint"       "${TESTS_DIR}/lint-yaml.sh"        "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
-    shell)      run_suite "Shell lint"      "${TESTS_DIR}/lint-shell.sh"       "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
-    dockerfile) run_suite "Dockerfile lint" "${TESTS_DIR}/lint-dockerfile.sh"  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
-    build)      run_suite "Docker build"    "${TESTS_DIR}/build-dockerfile.sh" \
+    yaml)       run_suite "YAML lint"        "${TESTS_DIR}/lint-yaml.sh"        "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
+    shell)      run_suite "Shell lint"       "${TESTS_DIR}/lint-shell.sh"       "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
+    dockerfile) run_suite "Dockerfile lint"  "${TESTS_DIR}/lint-dockerfile.sh"  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
+    build)      run_suite "Docker build"     "${TESTS_DIR}/build-dockerfile.sh" \
                   "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" "${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}" ;;
+    run)        run_suite "Docker run"       "${TESTS_DIR}/run-dockerfile.sh"   \
+                  "${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}" ;;
   esac
 done
 

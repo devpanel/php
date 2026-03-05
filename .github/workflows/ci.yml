@@ -76,3 +76,6 @@ jobs:
 
       - name: Build PHP ${{ matrix.php_version }} images
         run: bash tests/build-dockerfile.sh --version ${{ matrix.php_version }}
+
+      - name: Run PHP ${{ matrix.php_version }} functional tests
+        run: bash tests/run-dockerfile.sh --version ${{ matrix.php_version }}

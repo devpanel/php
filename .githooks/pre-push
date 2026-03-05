@@ -70,11 +70,13 @@ run_if_nonempty "shell"      "${TESTS_DIR}/lint-shell.sh"      "${SH_FILES[@]+"$
 run_if_nonempty "Dockerfile" "${TESTS_DIR}/lint-dockerfile.sh" "${DOCKER_FILES[@]+"${DOCKER_FILES[@]}"}"
 run_if_nonempty "YAML"       "${TESTS_DIR}/lint-yaml.sh"       "${YAML_FILES[@]+"${YAML_FILES[@]}"}"
 
-# Build tests run only when DEVPANEL_BUILD_ON_PUSH=1 is set, because a full
-# Docker image build can take several minutes.  CI always runs build tests.
+# Build + run tests run only when DEVPANEL_BUILD_ON_PUSH=1 is set, because a
+# full Docker image build can take several minutes.  CI always runs both.
 if [[ "${DEVPANEL_BUILD_ON_PUSH:-0}" == "1" && ${#DOCKER_FILES[@]} -gt 0 ]]; then
   echo "pre-push: running Docker build tests on ${#DOCKER_FILES[@]} Dockerfile(s)…"
   bash "${TESTS_DIR}/build-dockerfile.sh" --files "${DOCKER_FILES[@]}" || FAILED=1
+  echo "pre-push: running Docker functional tests on ${#DOCKER_FILES[@]} Dockerfile(s)…"
+  bash "${TESTS_DIR}/run-dockerfile.sh" --files "${DOCKER_FILES[@]}" || FAILED=1
 fi
 
 if [[ $FAILED -ne 0 ]]; then

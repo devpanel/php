@@ -151,7 +151,8 @@ change that justifies the update.
 ./test.sh shell       # Shell lint only
 ./test.sh dockerfile  # Dockerfile lint only
 ./test.sh build       # Docker build tests only
-./test.sh build --version 8.2  # Build a single PHP version
+./test.sh run         # Docker functional (run) tests only
+./test.sh build run --version 8.2  # Build and run tests for a single PHP version
 ```
 
 ### Build tests
@@ -174,9 +175,26 @@ development to keep the feedback loop short:
 ./test.sh build --version 8.2
 ```
 
+### Functional (run) tests
+
+`tests/run-dockerfile.sh` starts each built image as a short-lived container
+and verifies core tools and extensions are working:
+
+| Variant | Checks |
+|---|---|
+| `base` | `php --version`, PHP code execution, `composer --version`, `apache2 -v`, `pdo`/`mbstring` extensions |
+| `secure` | All base checks + `mod_security2.so` present |
+| `advance` | All base checks + `redis-cli --version` |
+
+Run tests require images built by the build suite.  Run both together:
+
+```bash
+./test.sh build run --version 8.2
+```
+
 > **Tip:** Set `DEVPANEL_BUILD_ON_PUSH=1` before a `git push` to have the
-> pre-push hook also run build tests for any changed Dockerfiles.  By default
-> the hook runs lint only (fast); CI always runs the full build suite.
+> pre-push hook also run build and functional tests for any changed Dockerfiles.
+> By default the hook runs lint only (fast); CI always runs the full suite.
 
 ### How baseline tracking works
 
@@ -204,7 +222,7 @@ sync with the repository automatically.
 
 After running `setup-hooks.sh`, `git push` will automatically lint only the
 files you changed.  Set `DEVPANEL_BUILD_ON_PUSH=1` to also run Docker build
-tests for any changed Dockerfiles.
+and functional tests for any changed Dockerfiles.
 
 ---
 
@@ -214,12 +232,12 @@ tests for any changed Dockerfiles.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `ci.yml` | push / pull_request to `main`, `develop` | Lint + build checks (required) |
+| `ci.yml` | push / pull_request to `main`, `develop` | Lint, build & functional checks (required) |
 | `docker-publish-php*-base.yml` | push to `*/base/**`, `workflow_dispatch` | Build & push base image |
 | `docker-publish-php*-secure.yml` | push to `*/secure/**`, workflow_run after base | Build & push secure image |
 | `docker-publish-php*-advance.yml` | push to `*/advance/**`, workflow_run after secure | Build & push advance image |
 
-`ci.yml` runs lint and build checks in parallel.  Configure branch protection
+`ci.yml` runs lint, build, and functional tests in parallel.  Configure branch protection
 rules in GitHub to require all `ci.yml` status checks to pass before pull
 requests to `main` or `develop` can be merged, ensuring no broken Dockerfile
 or script reaches the publish workflows.  See the
@@ -244,8 +262,9 @@ for setup instructions.
   `./test.sh --update-baseline` whenever you make a change that intentionally
   alters lint counts.
 - Build tests (`tests/build-dockerfile.sh`) try to build every Dockerfile
-  without pushing.  Run `./test.sh build --version <v>` to test a single
-  PHP version quickly.
+  without pushing.  Functional tests (`tests/run-dockerfile.sh`) then start each
+  built image and verify PHP, Apache, Composer, and extensions work.
+  Run `./test.sh build run --version <v>` to test a single PHP version quickly.
 - Workflow files follow the naming pattern
   `docker-publish-php<version>-<variant>.yml`.
 - The `advance` variant depends on `secure`, which depends on `base`.

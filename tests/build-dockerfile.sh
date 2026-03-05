@@ -48,7 +48,7 @@ if [[ -n "$TARGET_VERSION" ]]; then
 elif [[ ${#EXTRA_FILES[@]} -gt 0 ]]; then
   for f in "${EXTRA_FILES[@]}"; do
     # Extract version from paths like .../8.2/base/Dockerfile
-    version="$(echo "$f" | grep -oP '(?<=/|^)\d+\.\d+(?=/)' | head -1 || true)"
+    version="$(echo "$f" | sed 's|.*[/]\([0-9][0-9]*\.[0-9][0-9]*\)[/].*|\1|' | grep -E '^[0-9]+\.[0-9]+$' || true)"
     if [[ -n "$version" ]]; then
       BUILD_VERSIONS["$version"]=1
     fi
