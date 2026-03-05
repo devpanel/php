@@ -1,0 +1,12 @@
+{
+  "./7.4/base/scripts/apache-start.sh:SC2086": 19,
+  "./7.4/base/scripts/apache-start.sh:SC2236": 11,
+  "./8.0/base/scripts/apache-start.sh:SC2086": 19,
+  "./8.0/base/scripts/apache-start.sh:SC2236": 10,
+  "./8.1/base/scripts/apache-start.sh:SC2086": 19,
+  "./8.1/base/scripts/apache-start.sh:SC2236": 10,
+  "./8.2/base/scripts/apache-start.sh:SC2086": 19,
+  "./8.2/base/scripts/apache-start.sh:SC2236": 10,
+  "./8.3/base/scripts/apache-start.sh:SC2086": 19,
+  "./8.3/base/scripts/apache-start.sh:SC2236": 10
+}

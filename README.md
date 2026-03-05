@@ -1,4 +1,220 @@
-# php
+# devpanel/php
+
+PHP Docker images for [DevPanel](https://devpanel.com) — multi-version,
+multi-variant images covering PHP 7.4 through 8.3 with Apache, ModSecurity,
+Redis, code-server (VS Code in the browser), Composer, Drush, WP-CLI and more.
+
+---
+
+## Table of Contents
+
+- [Image variants](#image-variants)
+- [Quick start (users)](#quick-start-users)
+- [Environment variables](#environment-variables)
+- [Contributing](#contributing)
+- [Testing](#testing)
+- [CI / CD](#ci--cd)
+- [Agent notes](#agent-notes)
+- [Code-server artifact pinning](#code-server-artifact-pinning)
+
+---
+
+## Image variants
+
+Each PHP version ships three layered variants.
+
+| Variant   | Tag suffix  | What it adds |
+|-----------|-------------|--------------|
+| `base`    | `X.Y-base`  | PHP + Apache + code-server + Composer + Drush + WP-CLI |
+| `secure`  | `X.Y-secure`| `base` + ModSecurity / OWASP Core Rule Set |
+| `advance` | `X.Y-advance`| `secure` + Redis + Supervisor |
+
+Release candidate tags end with `-rc` (e.g. `8.3-base-rc`).
+
+Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3**
+
+---
+
+## Quick start (users)
+
+```bash
+# Pull the latest stable PHP 8.3 advance image
+docker pull devpanel/php:8.3-advance
+
+# Run with code-server enabled on port 8080
+docker run -p 80:80 -p 8080:8080 devpanel/php:8.3-advance
+```
+
+Open `http://localhost` for the web application and `http://localhost:8080`
+for the browser-based editor.
+
+---
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `APP_ROOT` | `/var/www/html` | Application root directory |
+| `WEB_ROOT` | `$APP_ROOT` | Document root for Apache |
+| `PHP_MEMORY_LIMIT` | `4096M` | PHP `memory_limit` |
+| `PHP_MAX_EXECUTION_TIME` | `600` | PHP `max_execution_time` |
+| `PHP_MAX_INPUT_TIME` | `600` | PHP `max_input_time` |
+| `PHP_MAX_INPUT_VARS` | `3000` | PHP `max_input_vars` |
+| `PHP_UPLOAD_MAX_FILESIZE` | `64M` | PHP `upload_max_filesize` |
+| `PHP_POST_MAX_SIZE` | `64M` | PHP `post_max_size` |
+| `PHP_CLEAR_ENV` | `false` | PHP-FPM `clear_env` |
+| `SERVER_NAME` | `default` | Apache `ServerName` |
+| `GIT_BRANCH` | `master` | Default Git branch |
+| `CODES_PORT` | `8080` | code-server listen port |
+| `CODES_ENABLE` | `yes` | Set to `no` to disable code-server |
+| `CODES_AUTH` | _(unset)_ | Set to `yes` to require a password |
+
+---
+
+## Contributing
+
+### Repository layout
+
+```
+<php-version>/
+  base/       # Base image sources
+  secure/     # Secure image sources (extends base)
+  advance/    # Advance image sources (extends secure)
+.github/
+  workflows/  # GitHub Actions CI / build workflows
+  hooks/      # Git hooks (install with ./setup-hooks.sh)
+tests/
+  baselines/  # Stored violation counts for each linter
+  *.sh        # Individual lint test scripts
+  compare-baseline.py  # Shared baseline-comparison helper
+test.sh           # Run all checks locally
+setup-hooks.sh    # Install Git pre-push hook
+.yamllint.yml     # yamllint configuration
+```
+
+### Adding a new PHP version
+
+1. Copy an existing version directory (e.g. `cp -r 8.3 8.4`).
+2. Update the `FROM` line and any version-specific package pins.
+3. Add a matching set of workflow files in `.github/workflows/`.
+4. Run `./test.sh` to make sure there are no new lint violations.
+5. If the new Dockerfiles introduce violations that are intentional or
+   unavoidable, update the baseline:
+
+   ```bash
+   ./test.sh --update-baseline
+   git add tests/baselines/
+   ```
+
+### Updating a baseline
+
+Run any individual suite with `--update-baseline`:
+
+```bash
+bash tests/lint-dockerfile.sh --update-baseline
+bash tests/lint-shell.sh      --update-baseline
+bash tests/lint-yaml.sh       --update-baseline
+```
+
+Or update all baselines at once:
+
+```bash
+./test.sh --update-baseline
+```
+
+Commit the changed `tests/baselines/*.json` files together with the code
+change that justifies the update.
+
+---
+
+## Testing
+
+### Prerequisites
+
+| Tool | Purpose | Install |
+|---|---|---|
+| `shellcheck` | Shell script linting | `apt install shellcheck` |
+| `yamllint` | YAML linting | `pip install yamllint` |
+| `docker` **or** `hadolint` | Dockerfile linting | [docker.com](https://docs.docker.com/get-docker/) or [hadolint releases](https://github.com/hadolint/hadolint/releases) |
+
+### Running all checks
+
+```bash
+./test.sh
+```
+
+### Running a single suite
+
+```bash
+./test.sh yaml        # YAML lint only
+./test.sh shell       # Shell lint only
+./test.sh dockerfile  # Dockerfile lint only
+```
+
+### How baseline tracking works
+
+Lint checks cover **all severities including style warnings**.  Each baseline
+file (`tests/baselines/*.json`) records the number of times each lint rule
+fires per file.  A check **fails only when the count for any rule/file pair
+*increases* above its baseline value** — or when a rule appears in a file
+where it was not present before.  Reducing violations (improving the code) is
+always accepted silently.
+
+This means:
+- Existing known violations do not block your push or the CI build.
+- Any *new* violation introduced by your change will block the push and must
+  be fixed (or explicitly added to the baseline with a justification commit).
+
+### Installing the Git pre-push hook
+
+```bash
+./setup-hooks.sh
+```
+
+After installation, `git push` will automatically lint only the files you
+changed.
+
+---
+
+## CI / CD
+
+### Workflow overview
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `ci.yml` | push / pull_request to `main`, `develop` | Lint checks (required) |
+| `docker-publish-php*-base.yml` | push to `*/base/**`, `workflow_dispatch` | Build & push base image |
+| `docker-publish-php*-secure.yml` | push to `*/secure/**`, workflow_run after base | Build & push secure image |
+| `docker-publish-php*-advance.yml` | push to `*/advance/**`, workflow_run after secure | Build & push advance image |
+
+The `ci.yml` checks are required status checks.  Build workflows run
+independently but should only be promoted to production after CI passes.
+
+### Secrets required
+
+| Secret | Description |
+|---|---|
+| `DOCKERHUB_USERNAME` | Docker Hub username |
+| `DOCKERHUB_TOKEN` | Docker Hub access token |
+
+---
+
+## Agent notes
+
+- All source files live under a version directory (`7.4/`, `8.0/`, …).
+  There is no shared source directory; changes to one version must be
+  replicated manually to others when appropriate.
+- Lint baselines are stored as JSON in `tests/baselines/`.  Update them with
+  `./test.sh --update-baseline` whenever you make a change that intentionally
+  alters lint counts.
+- Workflow files follow the naming pattern
+  `docker-publish-php<version>-<variant>.yml`.
+- The `advance` variant depends on `secure`, which depends on `base`.
+  The build chain is enforced via `workflow_run` triggers.
+- `*/base/bin/devpanel` is a compiled binary, not a shell script; exclude it
+  from shellcheck scans.
+
+---
 
 ## Code-server artifact pinning
 

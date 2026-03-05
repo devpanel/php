@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# .github/hooks/pre-push — Git pre-push hook.
+#
+# Runs lint checks only on files that were changed in the local commits
+# being pushed, so you get fast feedback without linting the whole repo.
+#
+# Install:  ./setup-hooks.sh
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+TESTS_DIR="${REPO_ROOT}/tests"
+
+# Collect the range of commits being pushed.
+# Input lines from git: "<local_ref> <local_sha> <remote_ref> <remote_sha>"
+CHANGED_FILES=()
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  if [[ "$remote_sha" == "0000000000000000000000000000000000000000" ]]; then
+    # New branch — find the merge base with the remote default branch.
+    default_remote_ref="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo 'origin/main')"
+    merge_base="$(git merge-base HEAD "$default_remote_ref" 2>/dev/null || true)"
+    if [[ -n "$merge_base" ]]; then
+      mapfile -t batch < <(git diff --name-only "$merge_base" "$local_sha" 2>/dev/null || true)
+    else
+      mapfile -t batch < <(git diff --name-only HEAD~1 "$local_sha" 2>/dev/null || true)
+    fi
+  else
+    mapfile -t batch < <(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null || true)
+  fi
+  CHANGED_FILES+=("${batch[@]}")
+done
+
+# Deduplicate.
+mapfile -t CHANGED_FILES < <(printf '%s\n' "${CHANGED_FILES[@]}" | sort -u)
+
+if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
+  exit 0
+fi
+
+# Categorise changed files.
+SH_FILES=()
+DOCKER_FILES=()
+YAML_FILES=()
+
+for f in "${CHANGED_FILES[@]}"; do
+  full="${REPO_ROOT}/${f}"
+  [[ -f "$full" ]] || continue
+  case "$f" in
+    *.sh)              SH_FILES+=("$full") ;;
+    */Dockerfile)      DOCKER_FILES+=("$full") ;;
+    .github/workflows/*.yml | .github/workflows/*.yaml) YAML_FILES+=("$full") ;;
+    .yamllint.yml)
+      mapfile -t _wf < <(find "${REPO_ROOT}/.github/workflows" -name "*.yml" -o -name "*.yaml" 2>/dev/null)
+      YAML_FILES+=("${_wf[@]+"${_wf[@]}"}")
+      ;;
+  esac
+done
+
+FAILED=0
+
+run_if_nonempty() {
+  local label="$1"; local script="$2"; shift 2
+  local files=("$@")
+  if [[ ${#files[@]} -gt 0 ]]; then
+    echo "pre-push: running $label lint on ${#files[@]} file(s)…"
+    bash "$script" --files "${files[@]}" || FAILED=1
+  fi
+}
+
+run_if_nonempty "shell"      "${TESTS_DIR}/lint-shell.sh"      "${SH_FILES[@]+"${SH_FILES[@]}"}"
+run_if_nonempty "Dockerfile" "${TESTS_DIR}/lint-dockerfile.sh" "${DOCKER_FILES[@]+"${DOCKER_FILES[@]}"}"
+run_if_nonempty "YAML"       "${TESTS_DIR}/lint-yaml.sh"       "${YAML_FILES[@]+"${YAML_FILES[@]}"}"
+
+if [[ $FAILED -ne 0 ]]; then
+  echo "pre-push: lint checks failed — push aborted." >&2
+  exit 1
+fi
