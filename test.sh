@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# test.sh — Run all lint checks locally.
+# test.sh — Run all checks locally.
 #
 # Usage:
-#   ./test.sh                  Run all checks.
-#   ./test.sh --update-baseline  Re-record current results as the new baseline.
-#   ./test.sh yaml             Run only YAML lint.
-#   ./test.sh shell            Run only shell lint.
-#   ./test.sh dockerfile       Run only Dockerfile lint.
+#   ./test.sh                    Run all checks.
+#   ./test.sh --update-baseline  Re-record current lint results as the new baseline.
+#   ./test.sh yaml               Run only YAML lint.
+#   ./test.sh shell              Run only shell lint.
+#   ./test.sh dockerfile         Run only Dockerfile lint.
+#   ./test.sh build              Run only Docker build tests.
+#   ./test.sh build --version 8.2  Build a specific PHP version.
 #
 # Exit code:  0 = all checks passed  |  non-zero = one or more checks failed.
 set -euo pipefail
@@ -26,16 +28,22 @@ info() { printf '%s  ▸ %s%s\n' "$YELLOW" "$*" "$RESET"; }
 # ---- argument handling ----------------------------------------------------
 SUITES=()
 EXTRA_ARGS=()
+VERSION_ARGS=()
 
-for arg in "$@"; do
-  case "$arg" in
-    --update-baseline) EXTRA_ARGS+=(--update-baseline) ;;
-    yaml|shell|dockerfile) SUITES+=("$arg") ;;
-    *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --update-baseline) EXTRA_ARGS+=(--update-baseline); shift ;;
+    yaml|shell|dockerfile|build) SUITES+=("$1"); shift ;;
+    --version)
+      if [[ $# -lt 2 ]]; then
+        echo "--version requires a value" >&2; exit 1
+      fi
+      VERSION_ARGS+=(--version "$2"); shift 2 ;;
+    *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 
-[[ ${#SUITES[@]} -eq 0 ]] && SUITES=(yaml shell dockerfile)
+[[ ${#SUITES[@]} -eq 0 ]] && SUITES=(yaml shell dockerfile build)
 
 # ---- runner ---------------------------------------------------------------
 FAILED=()
@@ -43,11 +51,12 @@ FAILED=()
 run_suite() {
   local name="$1"
   local script="$2"
-  info "Running $name lint…"
-  if bash "$script" "${EXTRA_ARGS[@]}"; then
-    pass "$name lint passed"
+  shift 2
+  info "Running $name…"
+  if bash "$script" "$@"; then
+    pass "$name passed"
   else
-    fail "$name lint failed"
+    fail "$name failed"
     FAILED+=("$name")
   fi
   echo
@@ -55,15 +64,17 @@ run_suite() {
 
 echo
 echo "========================================"
-echo " devpanel/php — lint checks"
+echo " devpanel/php — lint & build checks"
 echo "========================================"
 echo
 
 for suite in "${SUITES[@]}"; do
   case "$suite" in
-    yaml)       run_suite "YAML"       "${TESTS_DIR}/lint-yaml.sh" ;;
-    shell)      run_suite "Shell"      "${TESTS_DIR}/lint-shell.sh" ;;
-    dockerfile) run_suite "Dockerfile" "${TESTS_DIR}/lint-dockerfile.sh" ;;
+    yaml)       run_suite "YAML lint"       "${TESTS_DIR}/lint-yaml.sh"        "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
+    shell)      run_suite "Shell lint"      "${TESTS_DIR}/lint-shell.sh"       "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
+    dockerfile) run_suite "Dockerfile lint" "${TESTS_DIR}/lint-dockerfile.sh"  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
+    build)      run_suite "Docker build"    "${TESTS_DIR}/build-dockerfile.sh" \
+                  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" "${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}" ;;
   esac
 done
 

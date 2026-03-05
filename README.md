@@ -85,7 +85,7 @@ for the browser-based editor.
 .githooks/    # Git hooks (activated with ./setup-hooks.sh)
 tests/
   baselines/  # Stored violation counts for each linter
-  *.sh        # Individual lint test scripts
+  *.sh        # Lint and build test scripts
   compare-baseline.py  # Shared baseline-comparison helper
 test.sh           # Run all checks locally
 setup-hooks.sh    # Configure Git to use .githooks/ (run once after cloning)
@@ -97,7 +97,7 @@ setup-hooks.sh    # Configure Git to use .githooks/ (run once after cloning)
 1. Copy an existing version directory (e.g. `cp -r 8.3 8.4`).
 2. Update the `FROM` line and any version-specific package pins.
 3. Add a matching set of workflow files in `.github/workflows/`.
-4. Run `./test.sh` to make sure there are no new lint violations.
+4. Run `./test.sh` to make sure there are no new lint or build violations.
 5. If the new Dockerfiles introduce violations that are intentional or
    unavoidable, update the baseline:
 
@@ -136,6 +136,7 @@ change that justifies the update.
 | `shellcheck` | Shell script linting | `apt install shellcheck` |
 | `yamllint` | YAML linting | `pip install yamllint` |
 | `docker` **or** `hadolint` | Dockerfile linting | [docker.com](https://docs.docker.com/get-docker/) or [hadolint releases](https://github.com/hadolint/hadolint/releases) |
+| `docker` | Docker build tests | [docker.com](https://docs.docker.com/get-docker/) |
 
 ### Running all checks
 
@@ -149,7 +150,33 @@ change that justifies the update.
 ./test.sh yaml        # YAML lint only
 ./test.sh shell       # Shell lint only
 ./test.sh dockerfile  # Dockerfile lint only
+./test.sh build       # Docker build tests only
+./test.sh build --version 8.2  # Build a single PHP version
 ```
+
+### Build tests
+
+`tests/build-dockerfile.sh` builds every Dockerfile in the repository (without
+pushing) to verify the images are buildable.  Images are built in dependency
+order per PHP version:
+
+```
+base  →  secure (--build-arg BASE_IMAGE=<local base>)  →  advance (--build-arg BASE_IMAGE=<local secure>)
+```
+
+Locally-created test tags are cleaned up automatically on script exit.
+
+Build tests take several minutes per PHP version because the images download
+packages (code-server, composer, etc.).  Run a single version during
+development to keep the feedback loop short:
+
+```bash
+./test.sh build --version 8.2
+```
+
+> **Tip:** Set `DEVPANEL_BUILD_ON_PUSH=1` before a `git push` to have the
+> pre-push hook also run build tests for any changed Dockerfiles.  By default
+> the hook runs lint only (fast); CI always runs the full build suite.
 
 ### How baseline tracking works
 
@@ -176,7 +203,8 @@ in `.githooks/` are used directly — no copying needed.  The hooks stay in
 sync with the repository automatically.
 
 After running `setup-hooks.sh`, `git push` will automatically lint only the
-files you changed.
+files you changed.  Set `DEVPANEL_BUILD_ON_PUSH=1` to also run Docker build
+tests for any changed Dockerfiles.
 
 ---
 
@@ -186,13 +214,17 @@ files you changed.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `ci.yml` | push / pull_request to `main`, `develop` | Lint checks (required) |
+| `ci.yml` | push / pull_request to `main`, `develop` | Lint + build checks (required) |
 | `docker-publish-php*-base.yml` | push to `*/base/**`, `workflow_dispatch` | Build & push base image |
 | `docker-publish-php*-secure.yml` | push to `*/secure/**`, workflow_run after base | Build & push secure image |
 | `docker-publish-php*-advance.yml` | push to `*/advance/**`, workflow_run after secure | Build & push advance image |
 
-The `ci.yml` checks are required status checks.  Build workflows run
-independently but should only be promoted to production after CI passes.
+`ci.yml` runs lint and build checks in parallel.  Configure branch protection
+rules in GitHub to require all `ci.yml` status checks to pass before pull
+requests to `main` or `develop` can be merged, ensuring no broken Dockerfile
+or script reaches the publish workflows.  See the
+[GitHub docs on required status checks](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging)
+for setup instructions.
 
 ### Secrets required
 
@@ -211,6 +243,9 @@ independently but should only be promoted to production after CI passes.
 - Lint baselines are stored as JSON in `tests/baselines/`.  Update them with
   `./test.sh --update-baseline` whenever you make a change that intentionally
   alters lint counts.
+- Build tests (`tests/build-dockerfile.sh`) try to build every Dockerfile
+  without pushing.  Run `./test.sh build --version <v>` to test a single
+  PHP version quickly.
 - Workflow files follow the naming pattern
   `docker-publish-php<version>-<variant>.yml`.
 - The `advance` variant depends on `secure`, which depends on `base`.
