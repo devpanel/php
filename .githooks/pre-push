@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# .github/hooks/pre-push — Git pre-push hook.
+# .githooks/pre-push — Git pre-push hook.
 #
 # Runs lint checks only on files that were changed in the local commits
 # being pushed, so you get fast feedback without linting the whole repo.
 #
-# Install:  ./setup-hooks.sh
+# Activated automatically after running:  ./setup-hooks.sh
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

@@ -82,13 +82,13 @@ for the browser-based editor.
   advance/    # Advance image sources (extends secure)
 .github/
   workflows/  # GitHub Actions CI / build workflows
-  hooks/      # Git hooks (install with ./setup-hooks.sh)
+.githooks/    # Git hooks (activated with ./setup-hooks.sh)
 tests/
   baselines/  # Stored violation counts for each linter
   *.sh        # Individual lint test scripts
   compare-baseline.py  # Shared baseline-comparison helper
 test.sh           # Run all checks locally
-setup-hooks.sh    # Install Git pre-push hook
+setup-hooks.sh    # Configure Git to use .githooks/ (run once after cloning)
 .yamllint.yml     # yamllint configuration
 ```
 
@@ -171,8 +171,12 @@ This means:
 ./setup-hooks.sh
 ```
 
-After installation, `git push` will automatically lint only the files you
-changed.
+This sets `core.hooksPath = .githooks` in the local Git config so the hooks
+in `.githooks/` are used directly — no copying needed.  The hooks stay in
+sync with the repository automatically.
+
+After running `setup-hooks.sh`, `git push` will automatically lint only the
+files you changed.
 
 ---
 
