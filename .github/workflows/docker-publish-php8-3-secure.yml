@@ -45,11 +45,8 @@ jobs:
             if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
               echo "should-run=true" >> $GITHUB_OUTPUT
             else
-              CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" 2>/dev/null || true)
-              if [[ -z "$CHANGED" ]]; then
-                echo "Warning: could not determine changed files; defaulting to should-run=true"
-                echo "should-run=true" >> $GITHUB_OUTPUT
-              elif echo "$CHANGED" | grep -q "^8.3/base/"; then
+              CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" -- "8.3/base/" 2>/dev/null || true)
+              if [[ -n "$CHANGED" ]]; then
                 echo "should-run=false" >> $GITHUB_OUTPUT
               else
                 echo "should-run=true" >> $GITHUB_OUTPUT
