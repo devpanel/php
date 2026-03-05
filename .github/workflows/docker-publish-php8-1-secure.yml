@@ -8,6 +8,7 @@ on:
     paths:
       - "8.1/secure/**"
     branches:
+      - main
       - develop
   workflow_run:
     workflows: ["Docker build and push PHP8.1-base"]
@@ -21,8 +22,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pre-check:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      should-run: ${{ steps.check.outputs.should-run }}
+    steps:
+      - name: Check if upstream paths changed
+        id: check
+        env:
+          COMMITS: ${{ toJSON(github.event.commits) }}
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            CHANGED=$(echo "$COMMITS" | jq -r '.[].added[], .[].modified[], .[].removed[]' 2>/dev/null || true)
+            if [[ -z "$CHANGED" ]]; then
+              echo "Warning: could not determine changed files; defaulting to should-run=true"
+              echo "should-run=true" >> $GITHUB_OUTPUT
+            elif echo "$CHANGED" | grep -q "^8.1/base/"; then
+              echo "should-run=false" >> $GITHUB_OUTPUT
+            else
+              echo "should-run=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "should-run=true" >> $GITHUB_OUTPUT
+          fi
+
   build:
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    needs: pre-check
+    permissions:
+      contents: read
+    if: ${{ needs.pre-check.outputs.should-run == 'true' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -86,6 +115,7 @@ jobs:
   merge:
     runs-on: ubuntu-latest
     needs: build
+    if: ${{ needs.build.result == 'success' }}
     steps:
       - name: Set env to production environment
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main' }}
