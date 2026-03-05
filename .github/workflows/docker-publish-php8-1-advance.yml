@@ -16,6 +16,7 @@ on:
       - completed
     branches:
       - main
+      - develop
 
 jobs:
   docker:
