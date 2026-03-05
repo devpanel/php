@@ -26,24 +26,34 @@ concurrency:
 jobs:
   pre-check:
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       should-run: ${{ steps.check.outputs.should-run }}
     steps:
+      - name: Checkout repository
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Check if upstream paths changed
         id: check
-        env:
-          COMMITS: ${{ toJSON(github.event.commits) }}
         run: |
           if [[ "${{ github.event_name }}" == "push" ]]; then
-            CHANGED=$(echo "$COMMITS" | jq -r '.[].added[], .[].modified[], .[].removed[]' 2>/dev/null || true)
-            if [[ -z "$CHANGED" ]]; then
-              echo "Warning: could not determine changed files; defaulting to should-run=true"
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.sha }}"
+            if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
               echo "should-run=true" >> $GITHUB_OUTPUT
-            elif echo "$CHANGED" | grep -q "^8.1/base/"; then
-              echo "should-run=false" >> $GITHUB_OUTPUT
             else
-              echo "should-run=true" >> $GITHUB_OUTPUT
+              CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" 2>/dev/null || true)
+              if [[ -z "$CHANGED" ]]; then
+                echo "Warning: could not determine changed files; defaulting to should-run=true"
+                echo "should-run=true" >> $GITHUB_OUTPUT
+              elif echo "$CHANGED" | grep -q "^8.1/base/"; then
+                echo "should-run=false" >> $GITHUB_OUTPUT
+              else
+                echo "should-run=true" >> $GITHUB_OUTPUT
+              fi
             fi
           else
             echo "should-run=true" >> $GITHUB_OUTPUT
