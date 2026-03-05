@@ -65,7 +65,7 @@ jobs:
       - name: Set env to production environment
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main' }}
         run: |
-          echo "BASE_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/php:8.1-advance" >> $GITHUB_ENV
+          echo "BASE_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/php:8.1-secure" >> $GITHUB_ENV
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -89,7 +89,7 @@ jobs:
           file: ./8.1/advance/Dockerfile
           context: ./8.1/advance/
           build-args: |
-            BASE_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/php:8.1-secure
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
           platforms: ${{ matrix.platform }}
           cache-from: type=gha,scope=${{ github.workflow }}-${{ matrix.platform }}
           cache-to: type=gha,scope=${{ github.workflow }}-${{ matrix.platform }},mode=max
