@@ -17,6 +17,7 @@ on:
       - completed
     branches:
       - main
+      - develop
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -34,7 +35,7 @@ jobs:
         env:
           COMMITS: ${{ toJSON(github.event.commits) }}
         run: |
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "${{ github.event_name }}" == "push" ]]; then
             CHANGED=$(echo "$COMMITS" | jq -r '.[].added[], .[].modified[], .[].removed[]' 2>/dev/null || true)
             if [[ -z "$CHANGED" ]]; then
               echo "Warning: could not determine changed files; defaulting to should-run=true"
