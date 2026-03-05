@@ -2,7 +2,7 @@
 # tests/lint-dockerfile.sh — Run hadolint (all severities) on every Dockerfile
 # and compare against the stored baseline.  Only *new* violations cause failure.
 #
-# Requires: Docker (hadolint/hadolint:latest is pulled automatically)
+# Requires: Docker (hadolint/hadolint:v2.12.0 is pulled automatically; override via HADOLINT_IMAGE env var)
 #
 # Options:
 #   --files <f1> [f2 ...]   Lint specific files instead of all Dockerfiles.
@@ -11,9 +11,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASELINE="${REPO_ROOT}/tests/baselines/hadolint-baseline.json"
-TMP_CURRENT="$(mktemp /tmp/hadolint-current-XXXXXX.json)"
+TMP_CURRENT="$(mktemp "${TMPDIR:-/tmp}/hadolint-current-XXXXXX")"
 trap 'rm -f "$TMP_CURRENT"' EXIT
-HADOLINT_IMAGE="hadolint/hadolint:latest"
+HADOLINT_IMAGE="${HADOLINT_IMAGE:-hadolint/hadolint:v2.12.0}"
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -67,12 +67,18 @@ def rel(path):
     return "./" + r.lstrip("./")
 
 counts = {}
+parse_error = False
 
 for f in files:
     cmd = shlex.split(cmd_str) + ["-"]
     with open(f, "rb") as fh:
         content = fh.read()
     result = subprocess.run(cmd, input=content, capture_output=True)
+    # hadolint exit codes: 0 = no issues, 1 = issues found, 2+ = config/fatal error
+    if result.returncode > 1:
+        sys.stderr.write("hadolint fatal error on {} (exit code {}): {}\n".format(
+            f, result.returncode, result.stderr.decode(errors="replace")))
+        sys.exit(result.returncode)
     try:
         issues = json.loads(result.stdout)
         for issue in issues:
@@ -87,10 +93,14 @@ for f in files:
                 issue.get("message", ""),
             ))
     except Exception as e:
-        print("  hadolint parse error for {}: {}".format(f, e), file=sys.stderr)
+        sys.stderr.write("  hadolint parse error for {}: {}\n".format(f, e))
+        parse_error = True
 
 with open(current_path, "w") as fh:
     json.dump(counts, fh, indent=2, sort_keys=True)
+
+if parse_error:
+    sys.exit(1)
 PYEOF
 
 # ---------------------------------------------------------------------------

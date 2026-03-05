@@ -10,7 +10,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASELINE="${REPO_ROOT}/tests/baselines/yamllint-baseline.json"
 YAMLLINT_CONFIG="${REPO_ROOT}/.yamllint.yml"
-TMP_CURRENT="$(mktemp /tmp/yamllint-current-XXXXXX.json)"
+TMP_CURRENT="$(mktemp "${TMPDIR:-/tmp}/yamllint-current-XXXXXX")"
 trap 'rm -f "$TMP_CURRENT"' EXIT
 
 # ---------------------------------------------------------------------------
@@ -61,6 +61,12 @@ for f in files:
         ["yamllint", "--format", "parsable", "-c", config_path, f],
         capture_output=True, text=True
     )
+    # yamllint exit codes: 0 = no issues, 1 = issues found, 2+ = config/fatal error
+    if result.returncode not in (0, 1):
+        sys.stderr.write("yamllint failed on {} with exit code {}\n".format(f, result.returncode))
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+        sys.exit(result.returncode)
     for line in result.stdout.splitlines():
         m = PATTERN.match(line)
         if m:

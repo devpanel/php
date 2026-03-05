@@ -9,7 +9,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASELINE="${REPO_ROOT}/tests/baselines/shellcheck-baseline.json"
-TMP_CURRENT="$(mktemp /tmp/shellcheck-current-XXXXXX.json)"
+TMP_CURRENT="$(mktemp "${TMPDIR:-/tmp}/shellcheck-current-XXXXXX")"
 trap 'rm -f "$TMP_CURRENT"' EXIT
 
 # ---------------------------------------------------------------------------
@@ -51,12 +51,18 @@ def rel(path):
     return "./" + r.lstrip("./")
 
 counts = {}
+parse_error = False
 
 for f in files:
     result = subprocess.run(
         ["shellcheck", "--format=json1", "--severity=style", f],
         capture_output=True, text=True
     )
+    # shellcheck exit codes: 0 = no issues, 1 = issues found, 2+ = fatal/internal error
+    if result.returncode > 1:
+        sys.stderr.write("shellcheck fatal error on {} (exit code {}): {}\n".format(
+            f, result.returncode, result.stderr))
+        sys.exit(result.returncode)
     try:
         data = json.loads(result.stdout)
         comments = data.get("comments", []) if isinstance(data, dict) else []
@@ -72,10 +78,14 @@ for f in files:
                 issue.get("message", ""),
             ))
     except Exception as e:
-        print("  shellcheck parse error for {}: {}".format(f, e), file=sys.stderr)
+        sys.stderr.write("  shellcheck parse error for {}: {}\n".format(f, e))
+        parse_error = True
 
 with open(current_path, "w") as fh:
     json.dump(counts, fh, indent=2, sort_keys=True)
+
+if parse_error:
+    sys.exit(1)
 PYEOF
 
 # ---------------------------------------------------------------------------
