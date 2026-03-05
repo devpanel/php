@@ -44,6 +44,35 @@ Images are published to Docker Hub as `devpanel/php:<version>-<variant>` (e.g. `
 - **Process management**: Apache (base/secure), Supervisor with Redis (advance)
 - **CI/CD**: GitHub Actions → Docker Hub (`devpanel/php`)
 
+## Task Planning
+
+Before starting any non-trivial task, create or update `TODO.md` at the repository root with your plan:
+
+1. **List every step** required to complete the task as a checklist (use `- [ ]` / `- [x]` Markdown checkboxes).
+2. **Define done** — add a "Definition of Done" subsection that states the concrete, verifiable criteria that must be met before the task is considered complete. Examples:
+   - All affected Dockerfiles updated and building without errors.
+   - CI workflows pass on the target branch.
+   - Documentation and/or `AGENTS.md` updated if conventions changed.
+3. **Tick items off** as you complete them and keep `TODO.md` committed so progress is visible in the PR.
+4. **Remove or archive** the `TODO.md` file (or clear its contents) once the task is fully done and the PR is merged.
+
+Example `TODO.md` structure:
+
+```markdown
+# Task: Bump WP-CLI to v2.10.0
+
+## Steps
+- [ ] Update `ARG WP_CLI_VERSION` in `7.4/base/Dockerfile`
+- [ ] Update `ARG WP_CLI_VERSION` in `8.0/base/Dockerfile`
+- [ ] Update `ARG WP_CLI_VERSION` in `8.1/base/Dockerfile`
+- [ ] Update `ARG WP_CLI_VERSION` in `8.2/base/Dockerfile`
+- [ ] Update `ARG WP_CLI_VERSION` in `8.3/base/Dockerfile`
+
+## Definition of Done
+- All five Dockerfiles reference `WP_CLI_VERSION=2.10.0`.
+- CI builds pass for all affected image variants.
+```
+
 ## Conventions
 
 ### Dockerfile Style
