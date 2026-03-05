@@ -1,6 +1,17 @@
+# syntax=docker/dockerfile:1
 ARG PHP_VERSION
-FROM php:${PHP_VERSION}-apache
 
+# ─── Stage 1: PHP runtime with extensions ─────────────────────────────────
+# Contains system packages, PHP extension compilation and libsodium. These
+# layers change only when the PHP base image or extension configuration changes,
+# so they form a stable cache layer that does not need to be rebuilt when
+# higher-level tools (Composer, WP-CLI, Drush, etc.) are updated.
+FROM php:${PHP_VERSION}-apache AS php-ext
+
+# Re-declare so PHP_VERSION is available after FROM.
+# Docker ARG scoping rule: an ARG declared before FROM applies only to the FROM
+# instruction itself. It must be re-declared here to be accessible in
+# subsequent RUN/COPY/ENV instructions within this stage.
 ARG PHP_VERSION
 
 #== System Environments
@@ -225,6 +236,15 @@ RUN mkdir -p ${APP_ROOT} \
 
 #== Enable mode_rewrite by default
 RUN a2enmod rewrite remoteip headers
+
+# ─── Stage 2: Final image with application-level tools ────────────────────
+# Inherits the stable PHP + extensions layers from php-ext and adds tools that
+# change more frequently: code-server, Composer, WP-CLI, Drush, BEE, etc.
+# Rebuilding this stage does not invalidate the php-ext layer cache.
+FROM php-ext AS final
+
+# PHP_VERSION must be re-declared in each stage that uses it (Docker ARG scoping).
+ARG PHP_VERSION
 
 #== Install Codeserver
 ARG CODESERVER_MAJOR_VERSION=4
