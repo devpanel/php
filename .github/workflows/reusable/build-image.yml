@@ -50,10 +50,12 @@ jobs:
           platform="${{ matrix.platform }}"
           echo "platform_safe=${platform//\//-}" >> $GITHUB_OUTPUT
 
-          # Shared Dockerfiles live at secure/Dockerfile and advance/Dockerfile;
-          # base Dockerfiles remain version-specific.
+          # The shared base/Dockerfile is parameterised with ARG PHP_VERSION;
+          # secure and advance use their own shared Dockerfiles. Build context
+          # always points to the version-specific subdirectory so COPY commands
+          # resolve version-specific files (templates, scripts, drush, etc.).
           if [[ "${{ inputs.image_type }}" == "base" ]]; then
-            echo "dockerfile=${{ inputs.php_version }}/base/Dockerfile" >> $GITHUB_OUTPUT
+            echo "dockerfile=base/Dockerfile" >> $GITHUB_OUTPUT
           else
             echo "dockerfile=${{ inputs.image_type }}/Dockerfile" >> $GITHUB_OUTPUT
           fi
@@ -63,6 +65,7 @@ jobs:
           {
             echo "build_args<<EOF"
             if [[ "${{ inputs.image_type }}" == "base" ]]; then
+              echo "PHP_VERSION=${{ inputs.php_version }}"
               # Intentionally empty: Dockerfile resolves latest patch within
               # CODESERVER_MAJOR_VERSION. code-server is mandatory; build fails
               # if version cannot be resolved.

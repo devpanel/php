@@ -40,7 +40,7 @@ jobs:
       matrix:
         version: ${{ fromJson(needs.detect-versions.outputs.matrix) }}
     permissions: {}
-    uses: ./.github/workflows/build-php-version.yml
+    uses: ./.github/workflows/reusable/build-php-version.yml
     with:
       php_version: ${{ matrix.version }}
       tag_suffix: ${{ needs.detect-versions.outputs.tag_suffix }}

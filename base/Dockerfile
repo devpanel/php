@@ -1,4 +1,7 @@
-FROM php:8.0-apache
+ARG PHP_VERSION
+FROM php:${PHP_VERSION}-apache
+
+ARG PHP_VERSION
 
 #== System Environments
 ENV USER=www
@@ -23,12 +26,14 @@ ENV PHP_POST_MAX_SIZE=64M
 ENV PHP_CLEAR_ENV=false
 
 ENV SERVER_NAME=default
+ENV GIT_BRANCH=master
+
 ENV CODES_PORT=8080
 ENV CODES_WORKING_DIR=$APP_ROOT
 ENV CODES_USER_DATA_DIR=$APP_ROOT/.vscode
 ENV CODES_ENABLE=yes
 
-# Install polimorphing if needed
+# Install polymorphing if needed
 RUN apt -y update && apt -y upgrade;
 RUN if [ ! -z "$POLYVER_CUSTOMER_KEY" ]; then \
   curl -s https://repo.polyverse.io/cli | sh -s install cDDwaMuYf7BtSOt4jfJGl3TsA; \
@@ -36,43 +41,61 @@ RUN if [ ! -z "$POLYVER_CUSTOMER_KEY" ]; then \
   curl https://repo.polyverse.io/cli | bash -s replace-installed-elf; \
   fi; fi;
 
-# Install dependencies
-RUN apt-get install -y --no-install-recommends \
-  apt-utils \
-  sendmail-bin \
-  sendmail \
-  sudo \
-  libbz2-dev \
-  libjpeg62-turbo-dev \
-  libpng-dev \
-  libwebp-dev \
-  libfreetype6-dev \
-  libgeoip-dev \
-  wget \
-  libgmp-dev \
-  libmagickwand-dev \
-  libmagickcore-dev \
-  libicu-dev \
-  libldap2-dev \
-  libpspell-dev \
-  libtidy-dev \
-  libxslt1-dev \
-  libyaml-dev \
-  libzip-dev \
-  libmemcached-dev \
-  libpcre2-dev \
-  libssl-dev \
-  zlib1g-dev \
-  zip unzip \
-  git \
-  rsync \
-  ssh \
-  default-mysql-client \
-  && rm -rf /var/lib/apt/lists/*
+# Install dependencies.
+# - libavif-dev required for avif gd support from PHP 8.1+
+# - libpcre2-dev replaces libpcre3/libpcre3-dev from PHP 8.0+
+RUN set -e; \
+    AVIF_PKG=""; \
+    if dpkg --compare-versions "$PHP_VERSION" ge "8.1"; then \
+      AVIF_PKG="libavif-dev"; \
+    fi; \
+    if dpkg --compare-versions "$PHP_VERSION" ge "8.0"; then \
+      PCRE_PKG="libpcre2-dev"; \
+    else \
+      PCRE_PKG="libpcre3 libpcre3-dev"; \
+    fi; \
+    apt-get install -y --no-install-recommends \
+      apt-utils \
+      sendmail-bin \
+      sendmail \
+      sudo \
+      $AVIF_PKG \
+      libbz2-dev \
+      libjpeg62-turbo-dev \
+      libpng-dev \
+      libwebp-dev \
+      libfreetype6-dev \
+      libgeoip-dev \
+      wget \
+      libgmp-dev \
+      libmagickwand-dev \
+      libmagickcore-dev \
+      libicu-dev \
+      libldap2-dev \
+      libpspell-dev \
+      libtidy-dev \
+      libxslt1-dev \
+      libyaml-dev \
+      libzip-dev \
+      libmemcached-dev \
+      $PCRE_PKG \
+      libssl-dev \
+      zlib1g-dev \
+      zip unzip \
+      git \
+      rsync \
+      ssh \
+      default-mysql-client \
+    && rm -rf /var/lib/apt/lists/*
 
-# Configure the gd library
-RUN docker-php-ext-configure \
-  gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ --with-webp=/usr/include/
+# Configure the gd library.
+# PHP 8.1+ uses --with-avif and the shorter flag syntax; earlier versions use
+# the explicit path form and do not support avif.
+RUN if dpkg --compare-versions "$PHP_VERSION" ge "8.1"; then \
+      docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp; \
+    else \
+      docker-php-ext-configure gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ --with-webp=/usr/include/; \
+    fi
 RUN docker-php-ext-configure \
   opcache --enable-opcache
 
@@ -101,13 +124,47 @@ RUN docker-php-ext-install -j$(nproc) \
   zip \
   pcntl
 
-RUN pecl install -o -f \
-  igbinary-3.2.12 \
-  imagick-3.7.0 \
-  league/oauth2-client \
-  redis-5.3.7 \
-  yaml-2.2.2 \
-  memcached-3.2.0
+# Install PECL extensions.
+# - igbinary: pinned to 3.2.12 for PHP < 8.3, latest for PHP 8.3+
+# - imagick: installed via pecl for PHP < 8.3; built from source for PHP 8.3+
+#   because the pecl package does not yet support PHP 8.3
+# - oauth: pecl extension only available for PHP 7.4; PHP 8.0+ does not use it
+RUN set -e; \
+    if dpkg --compare-versions "$PHP_VERSION" ge "8.3"; then \
+      IGBINARY_PKG="igbinary"; \
+    else \
+      IGBINARY_PKG="igbinary-3.2.12"; \
+    fi; \
+    if dpkg --compare-versions "$PHP_VERSION" lt "8.3"; then \
+      pecl install -o -f \
+        $IGBINARY_PKG \
+        imagick-3.7.0 \
+        redis-5.3.7 \
+        yaml-2.2.2 \
+        memcached-3.2.0; \
+    else \
+      pecl install -o -f \
+        $IGBINARY_PKG \
+        redis-5.3.7 \
+        yaml-2.2.2 \
+        memcached-3.2.0; \
+    fi; \
+    # oauth PECL extension only exists for PHP 7.4
+    if dpkg --compare-versions "$PHP_VERSION" lt "8.0"; then \
+      pecl install -o -f oauth-2.0.7; \
+    fi
+
+# Build imagick from source for PHP 8.3+ (pecl package not yet compatible)
+RUN if dpkg --compare-versions "$PHP_VERSION" ge "8.3"; then \
+      curl -L -o /tmp/imagick.tar.gz https://github.com/Imagick/imagick/archive/7088edc353f53c4bc644573a79cdcd67a726ae16.tar.gz \
+      && tar --strip-components=1 -xf /tmp/imagick.tar.gz \
+      && phpize \
+      && ./configure \
+      && make \
+      && make install \
+      && echo "extension=imagick.so" > /usr/local/etc/php/conf.d/ext-imagick.ini \
+      && rm -rf /tmp/*; \
+    fi
 
 RUN rm -f /usr/local/etc/php/conf.d/*sodium.ini \
   && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
@@ -122,6 +179,7 @@ RUN rm -f /usr/local/etc/php/conf.d/*sodium.ini \
   && rm -rf /tmp/libsodium  \
   && pecl install -o -f libsodium
 
+# Enable PHP extensions; oauth is a pecl extension only on PHP 7.4
 RUN docker-php-ext-enable \
   bcmath \
   bz2 \
@@ -151,6 +209,9 @@ RUN docker-php-ext-enable \
   zip \
   pcntl \
   memcached
+RUN if dpkg --compare-versions "$PHP_VERSION" lt "8.0"; then \
+      docker-php-ext-enable oauth; \
+    fi
 
 RUN groupadd -g ${GID} ${GROUP} \
     && useradd --system --shell /bin/bash --uid ${UID} --gid ${GROUP}  --create-home --home-dir /home/${USER} ${USER} \
@@ -226,10 +287,24 @@ exit(1); \
   dpkg -i /tmp/code-server.deb || { apt-get update && apt-get install -y -f --no-install-recommends; rm -rf /var/lib/apt/lists/*; dpkg -i /tmp/code-server.deb; }; \
   rm -f /tmp/code-server.deb
 
+#== Enable xdebug (PHP 8.3+ only)
+RUN if dpkg --compare-versions "$PHP_VERSION" ge "8.3"; then \
+      pecl install xdebug; \
+    fi
+
 #== Install Composer
-RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.3.10
-RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer2 --version=2.3.10
-RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
+# PHP 8.3+ uses composer 2.7.7; earlier versions use 2.3.10.
+# Both `composer` and `composer2` are pinned to the same version so that
+# scripts referencing either alias get consistent behaviour.
+RUN set -e; \
+    if dpkg --compare-versions "$PHP_VERSION" ge "8.3"; then \
+      COMPOSER_VERSION="2.7.7"; \
+    else \
+      COMPOSER_VERSION="2.3.10"; \
+    fi; \
+    curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer  --version=$COMPOSER_VERSION \
+    && curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer2 --version=$COMPOSER_VERSION \
+    && curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
 
 #== Install DevPanel CLI client
 COPY bin/devpanel /usr/local/bin/devpanel
@@ -237,8 +312,17 @@ RUN chmod +x /usr/local/bin/devpanel \
   && devpanel version
 
 #== Install Wordpress CLI
-ARG WP_CLI_VERSION=2.9.0
-RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar \
+# PHP 7.4 ships with WP-CLI 2.4.0; PHP 8.x uses 2.9.0
+ARG WP_CLI_VERSION
+RUN set -e; \
+    if [ -z "$WP_CLI_VERSION" ]; then \
+      if dpkg --compare-versions "$PHP_VERSION" ge "8.0"; then \
+        WP_CLI_VERSION="2.9.0"; \
+      else \
+        WP_CLI_VERSION="2.4.0"; \
+      fi; \
+    fi; \
+    curl -LO https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar \
     && chmod +x wp-cli-${WP_CLI_VERSION}.phar \
     && mv wp-cli-${WP_CLI_VERSION}.phar /usr/local/bin/wp
 
@@ -254,6 +338,11 @@ RUN sudo chown -R ${USER} /drush
 
 #== Install Drush
 ARG DRUSH_VERSION=8
+# drush7 is only available for PHP 7.4
+RUN if dpkg --compare-versions "$PHP_VERSION" lt "8.0"; then \
+      composer update --working-dir=/drush/drush7 \
+      && echo "alias drush7=/drush/drush7/vendor/bin/drush" >> ~/.bashrc; \
+    fi
 RUN composer update --working-dir=/drush/drush8 \
   && echo "alias drush8=/drush/drush8/vendor/bin/drush" >> ~/.bashrc
 RUN  composer update --working-dir=/drush/drush9 \
@@ -263,15 +352,17 @@ RUN  composer update --working-dir=/drush/drush10 \
 RUN  composer update --working-dir=/drush/drush11 \
   && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
 
-#== Install Drush backdrop extention
+#== Install Drush backdrop extension
 RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
   && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
   && /drush/drush${DRUSH_VERSION}/vendor/bin/drush cc drush
+
 
 #== Install BEE CLI client
 RUN sudo mkdir /bee && sudo git clone https://github.com/backdrop-contrib/bee.git /bee
 RUN sudo chmod +x /bee/bee.php \
   && sudo ln -s /bee/bee.php /usr/bin/bee
+
 
 RUN bash ~/.bashrc
 RUN sudo ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush
@@ -279,4 +370,9 @@ RUN sudo ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush
 #== Start apache.
 COPY templates /templates
 COPY scripts /scripts
+# PHP 8.3+ empties APP_ROOT to keep the container smaller
+RUN if dpkg --compare-versions "$PHP_VERSION" ge "8.3"; then \
+      sudo rm -rf ${APP_ROOT} && sudo mkdir -p ${APP_ROOT}; \
+    fi
+
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]

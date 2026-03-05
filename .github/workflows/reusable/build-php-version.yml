@@ -37,7 +37,7 @@ jobs:
   build-base:
     permissions: {}
     if: ${{ inputs.base_changed }}
-    uses: ./.github/workflows/build-image.yml
+    uses: ./.github/workflows/reusable/build-image.yml
     with:
       php_version: ${{ inputs.php_version }}
       image_type: base
@@ -50,7 +50,7 @@ jobs:
     permissions: {}
     needs: [build-base]
     if: ${{ always() && needs.build-base.result != 'failure' && needs.build-base.result != 'cancelled' && (inputs.secure_changed || needs.build-base.result == 'success') }}
-    uses: ./.github/workflows/build-image.yml
+    uses: ./.github/workflows/reusable/build-image.yml
     with:
       php_version: ${{ inputs.php_version }}
       image_type: secure
@@ -64,7 +64,7 @@ jobs:
     permissions: {}
     needs: [build-secure]
     if: ${{ always() && needs.build-secure.result != 'failure' && needs.build-secure.result != 'cancelled' && (inputs.advance_changed || needs.build-secure.result == 'success') }}
-    uses: ./.github/workflows/build-image.yml
+    uses: ./.github/workflows/reusable/build-image.yml
     with:
       php_version: ${{ inputs.php_version }}
       image_type: advance
