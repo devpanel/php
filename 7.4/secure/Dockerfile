@@ -1,5 +1,5 @@
-ARG DOCKERHUB_USERNAME=devpanel
-FROM ${DOCKERHUB_USERNAME}/php:7.4-base
+ARG BASE_IMAGE=devpanel/php:7.4-base
+FROM ${BASE_IMAGE}
 
 # Set user as root to avoid access denied
 USER root
