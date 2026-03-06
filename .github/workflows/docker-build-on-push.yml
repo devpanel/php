@@ -149,5 +149,6 @@ jobs:
         with:
           files:        docker-bake.hcl
           targets:      ${{ needs.detect-changes.outputs.bake_targets }}
+          source:       .
           push:         true
           github-token: ${{ secrets.GITHUB_TOKEN }}
