@@ -61,7 +61,7 @@ jobs:
           if [[ -n "$PHP_MANIFEST" ]]; then
             DETECTED=$(echo "$PHP_MANIFEST" \
               | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
-              | grep -E "^linux/(amd64|arm64)$" | sort | tr '\n' ',' | sed 's/,$//')
+              | grep -E "^linux/(amd64|arm64)(/|$)" | sort | tr '\n' ',' | sed 's/,$//')
           fi
           echo "platforms=${DETECTED:-linux/amd64,linux/arm64}" >> "$GITHUB_OUTPUT"
 
