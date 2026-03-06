@@ -9,11 +9,12 @@ USER root
 WORKDIR /home/root
 
 ARG CORERULESET_VERSION="3.3.5"
-RUN apt update -y && apt -y install libapache2-mod-security2
-RUN rm -rf /usr/share/modsecurity-crs
-RUN wget -O /tmp/modsecurity-crs.zip \
-      https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CORERULESET_VERSION}.zip
-RUN unzip /tmp/modsecurity-crs.zip -d /usr/share/ \
+RUN apt update -y && apt -y install --no-install-recommends libapache2-mod-security2 wget unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/share/modsecurity-crs \
+    && wget -O /tmp/modsecurity-crs.zip \
+         https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CORERULESET_VERSION}.zip \
+    && unzip /tmp/modsecurity-crs.zip -d /usr/share/ \
     && mv /usr/share/coreruleset-${CORERULESET_VERSION} /usr/share/modsecurity-crs \
     && rm /tmp/modsecurity-crs.zip
 

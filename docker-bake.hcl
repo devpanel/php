@@ -10,7 +10,7 @@
 #
 # Key variables (all overridable via environment variables):
 #   REPO                          Docker Hub repository                   (devpanel/php)
-#   TAG_SUFFIX                    Image tag suffix                        ("" on main/develop)
+#   TAG_SUFFIX                    Image tag suffix                        ("" on main, "-rc" on develop)
 #   VERSIONS                      Space-separated PHP version dirs        ("7.4 8.0 8.1 8.2 8.3")
 #   LATEST_PHP_VERSION            Highest PHP version dir in the repo     (8.3)
 #   CODESERVER_VERSION            code-server version to pin ("" = auto)  ("")
