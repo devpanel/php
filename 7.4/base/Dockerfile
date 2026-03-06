@@ -39,9 +39,6 @@ RUN rm -f /usr/local/bin/wp \
     && chmod +x wp-cli-2.4.0.phar \
     && mv wp-cli-2.4.0.phar /usr/local/bin/wp
 
-# Override apache-start.sh with 7.4-specific version
-COPY scripts/apache-start.sh /scripts/apache-start.sh
-
 # Overlay 7.4-specific drush files: drush7 (new) and drush11 symfony-5.4.18
 # Docker COPY merges so common drush8/9/10 are preserved.
 COPY drush /drush
