@@ -160,7 +160,7 @@ RUN docker-php-ext-configure opcache --enable-opcache
 
 # Install PHP extensions common to all versions.
 # NOTE: gd is NOT here — its configure flags differ by version (avif support
-# for 8.1+ vs explicit include paths for 7.4/8.0).  Each version's Dockerfile
+# for 8.1+ vs no avif for 7.4/8.0).  Each version's Dockerfile
 # runs docker-php-ext-configure gd and docker-php-ext-install gd separately.
 RUN docker-php-ext-install -j$(nproc) \
       bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
@@ -223,12 +223,13 @@ RUN dpkg -i /tmp/code-server.deb \
          && rm -rf /var/lib/apt/lists/*; dpkg -i /tmp/code-server.deb; } \
     && rm /tmp/code-server.deb
 
-# Install Composer (default 2.3.10; PHP 8.3 per-version Dockerfile overrides with 2.7.7)
+# Install Composer 2.x (default 2.3.10; PHP 8.3 overrides to 2.7.7 via self-update)
+# and legacy Composer 1.x for projects that require it.
+# 'composer2' and 'composer1' are bash aliases set after USER switch below.
 RUN curl -fsSL https://getcomposer.org/installer \
       | php -- --install-dir=/usr/local/bin --filename=composer  --version=2.3.10 \
-    && ln -s /usr/local/bin/composer /usr/local/bin/composer2 \
     && curl -fsSL https://getcomposer.org/installer \
-      | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
+      | php -- --install-dir=/usr/local/bin --filename=composer-1 --version=1.10.16
 
 # Install WP-CLI (default 2.9.0; PHP 7.4 per-version Dockerfile overrides with 2.4.0)
 RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v2.9.0/wp-cli-2.9.0.phar \
@@ -238,6 +239,7 @@ RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v2.9.0/wp-cli-2.
 ARG DRUSH_VERSION=8
 RUN ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush \
     && mkdir -p /home/${USER}/.config/code-server \
+    && rm -rf ${APP_ROOT} && mkdir -p ${APP_ROOT} \
     && chown -R ${USER}:${GROUP} /drush /bee /home/${USER} ${APP_ROOT}
 
 USER ${USER}
@@ -245,7 +247,11 @@ WORKDIR ${APP_ROOT}
 
 RUN touch /home/${USER}/.config/code-server/config.yaml
 
+# Bash aliases for Composer versions.  The binaries are installed as root above;
+# aliases are set here (as the app user) to keep them in ~/.bashrc.
 RUN composer update --working-dir=/drush/drush8 \
+    && echo "alias composer2=/usr/local/bin/composer" >> ~/.bashrc \
+    && echo "alias composer1=/usr/local/bin/composer-1" >> ~/.bashrc \
     && echo "alias drush8=/drush/drush8/vendor/bin/drush" >> ~/.bashrc
 RUN composer update --working-dir=/drush/drush9 \
     && echo "alias drush9=/drush/drush9/vendor/bin/drush" >> ~/.bashrc

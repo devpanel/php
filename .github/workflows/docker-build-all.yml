@@ -3,6 +3,10 @@ name: Build all Docker images
 on:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   detect-versions:
     runs-on: ubuntu-latest
@@ -23,10 +27,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/develop" ]]; then
             TAG_SUFFIX=""
           else
-            TAG_SUFFIX="-rc"
+            BRANCH="${{ github.ref_name }}"
+            TAG_SUFFIX="-${BRANCH//\//-}"
           fi
 
           TARGETS=()
@@ -34,7 +39,7 @@ jobs:
 
           while IFS= read -r VER; do
             LATEST_PHP_VERSION="$VER"
-            KEY="${VER//./}"
+            KEY="${VER//./_}"
             TARGETS+=("php${KEY}-base" "php${KEY}-secure" "php${KEY}-advance")
           done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
                      | sed 's|./||' | sort -V)

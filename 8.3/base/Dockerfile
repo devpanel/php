@@ -7,7 +7,6 @@
 #   - PECL: igbinary latest (no version pin), xdebug
 #   - imagick built from source (pecl not compatible with 8.3)
 #   - Composer 2.7.7 override (common installs 2.3.10)
-#   - APP_ROOT cleanup (PHP 8.3 base image pre-populates /var/www/html)
 FROM common-php-ext AS final
 
 # Switch to root for version-specific installation
@@ -44,14 +43,7 @@ RUN curl -L -o /tmp/imagick.tar.gz \
 
 RUN docker-php-ext-enable gd igbinary xdebug
 
-# Override Composer with PHP 8.3 version (2.7.7)
-RUN rm -f /usr/local/bin/composer /usr/local/bin/composer2 \
-    && curl -fsSL https://getcomposer.org/installer \
-      | php -- --install-dir=/usr/local/bin --filename=composer  --version=2.7.7 \
-    && ln -s /usr/local/bin/composer /usr/local/bin/composer2
-
-# PHP 8.3: remove default Apache HTML content pre-populated by the base image
-RUN rm -rf ${APP_ROOT} && mkdir -p ${APP_ROOT} \
-    && chown -R ${USER}:${GROUP} ${APP_ROOT}
+# Override Composer with PHP 8.3 version (2.7.7) using self-update
+RUN composer self-update --2.7.7
 
 USER ${USER}

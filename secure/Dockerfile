@@ -3,7 +3,7 @@
 # provided by Docker Bake (contexts.base-image = "target:{v}-base").
 # Never pushed to Docker Hub; cached in GitHub Actions cache.
 ARG BASE_IMAGE=base-image
-FROM ${BASE_IMAGE}
+FROM ${BASE_IMAGE} AS secure-intermediate
 
 USER root
 WORKDIR /home/root
@@ -20,4 +20,13 @@ RUN unzip /tmp/modsecurity-crs.zip -d /usr/share/ \
 COPY templates/modsecurity.conf /etc/modsecurity/modsecurity.conf
 COPY templates/crs-setup.conf   /usr/share/modsecurity-crs/crs-setup.conf
 COPY templates/security2.conf   /etc/apache2/mods-available/security2.conf
-# USER, WORKDIR and CMD are set in the per-version {version}/secure/Dockerfile
+
+USER ${USER}
+WORKDIR ${APP_ROOT}
+
+CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh"]
+
+# Final stage: retag the intermediate as the pushed secure image for versions
+# that need no per-version changes (8.1+).  Versions needing the multipart-rule
+# fix (7.4 and 8.0) use their own per-version Dockerfile instead.
+FROM secure-intermediate AS final

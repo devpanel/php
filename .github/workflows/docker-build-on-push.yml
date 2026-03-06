@@ -32,11 +32,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Determine image tag suffix
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/develop" ]]; then
             TAG_SUFFIX=""
           else
-            TAG_SUFFIX="-rc"
+            BRANCH="${{ github.ref_name }}"
+            TAG_SUFFIX="-${BRANCH//\//-}"
           fi
 
           BEFORE="${{ github.event.before }}"
@@ -65,7 +65,7 @@ jobs:
 
           while IFS= read -r VER; do
             LATEST_PHP_VERSION="$VER"
-            KEY="${VER//./}"
+            KEY="${VER//./_}"
 
             BASE_VER=$(path_changed "${VER}/base/")
             SECURE_VER=$(path_changed "${VER}/secure/")
