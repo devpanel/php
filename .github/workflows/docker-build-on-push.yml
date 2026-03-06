@@ -1,4 +1,4 @@
-name: Build changed Docker images
+name: Build changed Docker images on push
 
 on:
   push:
@@ -16,94 +16,120 @@ jobs:
     permissions:
       contents: read
     outputs:
-      tag_suffix: ${{ steps.vars.outputs.tag_suffix }}
-      matrix: ${{ steps.detect.outputs.matrix }}
-      latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
+      bake_targets:        ${{ steps.detect.outputs.bake_targets }}
+      tag_suffix:          ${{ steps.detect.outputs.tag_suffix }}
+      latest_php_version:  ${{ steps.detect.outputs.latest_php_version }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Determine image tag suffix
-        id: vars
-        run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "tag_suffix=" >> $GITHUB_OUTPUT
-          else
-            echo "tag_suffix=-rc" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Detect versions and changed paths
+      - name: Detect changes and build Bake target list
         id: detect
         run: |
+          set -euo pipefail
+
+          # Determine image tag suffix
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAG_SUFFIX=""
+          else
+            TAG_SUFFIX="-rc"
+          fi
+
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
 
-          # Detect changes to shared Dockerfiles; a change there affects all
-          # versions that use the shared file.
+          # On a brand-new branch push the before SHA is all zeros
+          IS_NEW_BRANCH=false
           if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
-            SECURE_DF_CHANGED=1
-            ADVANCE_DF_CHANGED=1
-          else
-            SECURE_DF_CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" -- "secure/Dockerfile" 2>/dev/null | wc -l)
-            ADVANCE_DF_CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" -- "advance/Dockerfile" 2>/dev/null | wc -l)
+            IS_NEW_BRANCH=true
           fi
 
-          VERSIONS_TO_BUILD=()
+          # Returns 1 if any file under the given path changed, else 0
+          path_changed() {
+            if $IS_NEW_BRANCH; then echo 1; return; fi
+            git diff --name-only "$BEFORE" "$AFTER" -- "$1" 2>/dev/null | wc -l
+          }
+
+          # Common-directory changes affect ALL versions
+          BASE_COMMON=$(path_changed "base/")
+          SECURE_COMMON=$(path_changed "secure/")
+          ADVANCE_COMMON=$(path_changed "advance/")
+          BAKE_CHANGED=$(path_changed "docker-bake.hcl")
+
+          TARGETS=()
           LATEST_PHP_VERSION=""
 
-          # Iterate only over directories whose names start with a digit
-          # (i.e. PHP version directories such as 7.4, 8.0, 8.1 …).
           while IFS= read -r VER; do
+            LATEST_PHP_VERSION="$VER"
             KEY="${VER//./}"
-            LATEST_PHP_VERSION="$VER"  # sort -V ensures last iteration is highest
 
-            if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
-              BASE=true; SECURE=true; ADVANCE=true
-            else
-              N_BASE=$(git diff --name-only "$BEFORE" "$AFTER" -- "${VER}/base/" 2>/dev/null | wc -l)
-              N_SECURE=$(git diff --name-only "$BEFORE" "$AFTER" -- "${VER}/secure/" 2>/dev/null | wc -l)
-              N_ADVANCE=$(git diff --name-only "$BEFORE" "$AFTER" -- "${VER}/advance/" 2>/dev/null | wc -l)
+            BASE_VER=$(path_changed "${VER}/base/")
+            SECURE_VER=$(path_changed "${VER}/secure/")
 
-              [[ $N_BASE   -gt 0 ]]                                    && BASE=true   || BASE=false
-              [[ $N_SECURE -gt 0 || $SECURE_DF_CHANGED  -gt 0 ]]      && SECURE=true || SECURE=false
-              [[ $N_ADVANCE -gt 0 || $ADVANCE_DF_CHANGED -gt 0 ]]     && ADVANCE=true || ADVANCE=false
+            # Rebuild base if common base/ or this version's base/ changed
+            NEED_BASE=false
+            if [[ $BASE_COMMON -gt 0 || $BASE_VER -gt 0 || $BAKE_CHANGED -gt 0 ]]; then
+              NEED_BASE=true
+              TARGETS+=("php${KEY}-base")
             fi
 
-            echo "php${KEY}_base=${BASE}"     >> $GITHUB_OUTPUT
-            echo "php${KEY}_secure=${SECURE}" >> $GITHUB_OUTPUT
-            echo "php${KEY}_advance=${ADVANCE}" >> $GITHUB_OUTPUT
-
-            if [[ "$BASE" == "true" || "$SECURE" == "true" || "$ADVANCE" == "true" ]]; then
-              VERSIONS_TO_BUILD+=("$VER")
+            # Rebuild secure if common secure/ or base/ changed (base is a
+            # dependency), or this version's secure/ changed
+            if [[ $SECURE_COMMON -gt 0 || $SECURE_VER -gt 0 || $BAKE_CHANGED -gt 0 ]] \
+               || $NEED_BASE; then
+              TARGETS+=("php${KEY}-secure")
             fi
-          done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' | sed 's|./||' | sort -V)
 
-          # Build the matrix JSON array for downstream jobs.
-          if [[ ${#VERSIONS_TO_BUILD[@]} -gt 0 ]]; then
-            MATRIX=$(printf '%s\n' "${VERSIONS_TO_BUILD[@]}" | jq -R . | jq -sc .)
-          else
-            MATRIX="[]"
-          fi
-          echo "matrix=${MATRIX}" >> $GITHUB_OUTPUT
-          echo "latest_php_version=${LATEST_PHP_VERSION}" >> $GITHUB_OUTPUT
+            # Rebuild advance if advance/ changed or secure was rebuilt
+            if [[ $ADVANCE_COMMON -gt 0 || $BAKE_CHANGED -gt 0 ]] \
+               || $NEED_BASE \
+               || [[ $SECURE_COMMON -gt 0 || $SECURE_VER -gt 0 ]]; then
+              TARGETS+=("php${KEY}-advance")
+            fi
+          done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
+                     | sed 's|./||' | sort -V)
+
+          # Deduplicate (preserve order)
+          UNIQUE_TARGETS=$(printf '%s\n' "${TARGETS[@]}" | awk '!seen[$0]++')
+
+          echo "tag_suffix=${TAG_SUFFIX}"          >> "$GITHUB_OUTPUT"
+          echo "latest_php_version=${LATEST_PHP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "bake_targets=${UNIQUE_TARGETS//$'\n'/ }" >> "$GITHUB_OUTPUT"
 
   build:
     needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.matrix != '[]' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        version: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    if: ${{ needs.detect-changes.outputs.bake_targets != '' }}
+    runs-on: ubuntu-latest
     permissions: {}
-    uses: ./.github/workflows/reusable/build-php-version.yml
-    with:
-      php_version: ${{ matrix.version }}
-      tag_suffix: ${{ needs.detect-changes.outputs.tag_suffix }}
-      base_changed: ${{ needs.detect-changes.outputs[format('php{0}_base', replace(matrix.version, '.', ''))] == 'true' }}
-      secure_changed: ${{ needs.detect-changes.outputs[format('php{0}_secure', replace(matrix.version, '.', ''))] == 'true' }}
-      advance_changed: ${{ needs.detect-changes.outputs[format('php{0}_advance', replace(matrix.version, '.', ''))] == 'true' }}
-      use_cache: true
-      latest_php_version: ${{ needs.detect-changes.outputs.latest_php_version }}
-    secrets: inherit
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push (with GHA cache)
+        uses: docker/bake-action@v6
+        env:
+          TAG_SUFFIX:         ${{ needs.detect-changes.outputs.tag_suffix }}
+          LATEST_PHP_VERSION: ${{ needs.detect-changes.outputs.latest_php_version }}
+          # CACHE_TYPE defaults to "gha" in docker-bake.hcl
+        with:
+          files:   docker-bake.hcl
+          targets: ${{ needs.detect-changes.outputs.bake_targets }}
+          push:    true
+        secrets: |
+          github_token=${{ secrets.GITHUB_TOKEN }}

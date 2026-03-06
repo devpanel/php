@@ -1,4 +1,6 @@
-ARG BASE_IMAGE
+# 'BASE_IMAGE' defaults to 'base-image' which matches the named context
+# provided by Docker Bake (contexts.base-image = "target:{v}-secure").
+ARG BASE_IMAGE=base-image
 FROM ${BASE_IMAGE}
 
 ENV VARNISH_SIZE 100M
