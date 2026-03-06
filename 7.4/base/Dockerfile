@@ -1,289 +1,58 @@
-FROM php:7.4-apache
+# syntax=docker/dockerfile:1
+# ─── PHP 7.4 base final image ─────────────────────────────────────────────────
+# Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
+# PHP_VERSION=7.4. Contains ONLY PHP 7.4 specific differences:
+#   - libpcre3/libpcre3-dev (no libavif-dev)
+#   - gd configure flags (no avif)
+#   - PECL: igbinary 3.2.12, imagick via pecl, oauth extension
+#   - WP-CLI 2.4.0 override (common installs 2.9.0)
+#   - drush7 + drush11 symfony-5.4.18 override
+#   - apache-start.sh override (extra WEB_ROOT substitution)
+FROM common-php-ext AS final
 
-#== System Environments
-ENV USER=www
-ENV GROUP=www
-ENV UID=1000
-ENV GID=1000
-ENV HOME=/home/www
-ENV SHELL=/bin/bash
+# Switch to root for version-specific installation
+USER root
 
-#== Default Environments
-ENV APP_ROOT=/var/www/html
-ENV WEB_ROOT=$APP_ROOT
-ENV PHP_CUSTOM_INI=$APP_ROOT/php.ini
-ENV PHP_EXT_DIR=/usr/local/etc/php/conf.d
+# PHP 7.4 (Debian 10) specific packages: libpcre3/libpcre3-dev (no libavif-dev)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      libpcre3 \
+      libpcre3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-ENV PHP_MEMORY_LIMIT=4096M
-ENV PHP_MAX_EXECUTION_TIME=600
-ENV PHP_MAX_INPUT_TIME=600
-ENV PHP_MAX_INPUT_VARS=3000
-ENV PHP_UPLOAD_MAX_FILESIZE=64M
-ENV PHP_POST_MAX_SIZE=64M
-ENV PHP_CLEAR_ENV=false
+# Configure gd (PHP 7.4: no avif support)
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp
 
-ENV SERVER_NAME=default
-ENV CODES_PORT=8080
-ENV CODES_WORKING_DIR=$APP_ROOT
-ENV CODES_USER_DATA_DIR=$APP_ROOT/.vscode
-ENV CODES_ENABLE=yes
+RUN docker-php-ext-install -j$(nproc) gd
 
-# Install polimorphing if needed
-RUN apt -y update && apt -y upgrade;
-RUN if [ ! -z "$POLYVER_CUSTOMER_KEY" ]; then \
-  curl -s https://repo.polyverse.io/cli | sh -s install cDDwaMuYf7BtSOt4jfJGl3TsA; \
-  if [ $? -eq 0 ]; then \
-  curl https://repo.polyverse.io/cli | bash -s replace-installed-elf; \
-  fi; fi;
-
-# Install dependencies
-RUN apt-get install -y --no-install-recommends \
-  apt-utils \
-  sendmail-bin \
-  sendmail \
-  sudo \
-  libbz2-dev \
-  libjpeg62-turbo-dev \
-  libpng-dev \
-  libwebp-dev \
-  libfreetype6-dev \
-  libgeoip-dev \
-  wget \
-  libgmp-dev \
-  libmagickwand-dev \
-  libmagickcore-dev \
-  libicu-dev \
-  libldap2-dev \
-  libpspell-dev \
-  libtidy-dev \
-  libxslt1-dev \
-  libyaml-dev \
-  libzip-dev \
-  libmemcached-dev \
-  libpcre3 \
-  libpcre3-dev \
-  libssl-dev \
-  zlib1g-dev \
-  zip unzip \
-  git \
-  rsync \
-  ssh \
-  default-mysql-client \
-  && rm -rf /var/lib/apt/lists/*
-
-# Configure the gd library
-RUN docker-php-ext-configure \
-  gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ --with-webp=/usr/include/
-RUN docker-php-ext-configure \
-  opcache --enable-opcache
-
-# Install required PHP extensions
-RUN docker-php-ext-install -j$(nproc) \
-  bcmath \
-  bz2 \
-  calendar \
-  exif \
-  gd \
-  gettext \
-  gmp \
-  intl \
-  mysqli \
-  opcache \
-  pdo_mysql \
-  pspell \
-  shmop \
-  soap \
-  sockets \
-  sysvmsg \
-  sysvsem \
-  sysvshm \
-  tidy \
-  xsl \
-  zip \
-  pcntl
-
+# PHP 7.4 PECL: igbinary 3.2.12, imagick via pecl, oauth extension
 RUN pecl install -o -f \
-  igbinary-3.2.12 \
-  imagick-3.7.0 \
-  oauth-2.0.7 \
-  redis-5.3.7 \
-  yaml-2.2.2 \
-  memcached-3.2.0
+      igbinary-3.2.12 \
+      imagick-3.7.0 \
+      oauth-2.0.7
 
-RUN rm -f /usr/local/etc/php/conf.d/*sodium.ini \
-  && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
-  && apt-get remove libsodium* -y  \
-  && mkdir -p /tmp/libsodium  \
-  && curl -sL https://github.com/jedisct1/libsodium/archive/1.0.18-RELEASE.tar.gz | tar xzf - -C  /tmp/libsodium \
-  && cd /tmp/libsodium/libsodium-1.0.18-RELEASE/ \
-  && ./configure \
-  && make && make check \
-  && make install  \
-  && cd / \
-  && rm -rf /tmp/libsodium  \
-  && pecl install -o -f libsodium
+RUN docker-php-ext-enable gd igbinary imagick oauth
 
-RUN docker-php-ext-enable \
-  bcmath \
-  bz2 \
-  calendar \
-  exif \
-  gd \
-  gettext \
-  gmp \
-  igbinary \
-  imagick \
-  intl \
-  mysqli \
-  oauth \
-  opcache \
-  pdo_mysql \
-  pspell \
-  redis \
-  shmop \
-  soap \
-  sockets \
-  sodium \
-  sysvmsg \
-  sysvsem \
-  sysvshm \
-  tidy \
-  xsl \
-  yaml \
-  zip \
-  pcntl \
-  memcached
+# Override WP-CLI with 7.4-specific version (2.4.0)
+RUN rm -f /usr/local/bin/wp \
+    && curl -LO https://github.com/wp-cli/wp-cli/releases/download/v2.4.0/wp-cli-2.4.0.phar \
+    && chmod +x wp-cli-2.4.0.phar \
+    && mv wp-cli-2.4.0.phar /usr/local/bin/wp
 
-RUN groupadd -g ${GID} ${GROUP} \
-    && useradd --system --shell /bin/bash --uid ${UID} --gid ${GROUP}  --create-home --home-dir /home/${USER} ${USER} \
-    && adduser ${USER} www-data \
-    && apt install -y sudo \
-    && usermod -aG sudo ${USER} \
-    && echo "www    ALL=(ALL:ALL) NOPASSWD:ALL" >> /etc/sudoers
+# Override apache-start.sh with 7.4-specific version
+COPY scripts/apache-start.sh /scripts/apache-start.sh
 
-RUN mkdir -p ${APP_ROOT} \
-    && chown -R ${UID}:${GID} ${APP_ROOT}
-
-#== Enable mode_rewrite by default
-RUN a2enmod rewrite remoteip headers
-
-#== Install Codeserver
-ARG CODESERVER_MAJOR_VERSION=4
-ARG CODESERVER_PINNED_HASH_VERSION=4.99.4
-ARG CODESERVER_VERSION=$CODESERVER_PINNED_HASH_VERSION
-ARG CODESERVER_DEB_SHA256_AMD64=74c107b33643ed11223263b86431530fbc9c9f7c8202997579a6f0c41b4cb102
-ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e5de9d55f1e2077c3
-RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN \
-  set -e; \
-  if [ -z "$CODESERVER_VERSION" ]; then \
-    if [ -n "${GITHUB_TOKEN:-}" ]; then \
-      RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
-        -H 'Accept: application/vnd.github+json' \
-        -H 'X-GitHub-Api-Version: 2022-11-28' \
-        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-        https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
-    else \
-      RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
-        -H 'Accept: application/vnd.github+json' \
-        -H 'X-GitHub-Api-Version: 2022-11-28' \
-        https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
-    fi; \
-  CODESERVER_VERSION="$(printf '%s' "$RELEASES_JSON" | php -r ' \
-$major = $argv[1]; \
-$releases = json_decode(stream_get_contents(STDIN), true); \
- \
-if (!is_array($releases)) { \
-  fwrite(STDERR, "Failed to parse releases JSON\n"); \
-  exit(2); \
-} \
- \
-foreach ($releases as $release) { \
-  if (($release["draft"] ?? false) || ($release["prerelease"] ?? false)) { \
-    continue; \
-  } \
- \
-  $tag = $release["tag_name"] ?? ""; \
-  if (preg_match("/^v?" . preg_quote($major, "/") . "\\.[0-9]+\\.[0-9]+(?:[-+].*)?$/", $tag)) { \
-    echo ltrim($tag, "v"); \
-    exit(0); \
-  } \
-} \
- \
-exit(1); \
-' "$CODESERVER_MAJOR_VERSION")" || { echo "Unable to resolve code-server major $CODESERVER_MAJOR_VERSION from GitHub releases" >&2; exit 1; }; \
-  fi; \
-  # code-server is required: fail build if version is empty
-  [ -n "$CODESERVER_VERSION" ] || { echo "CODESERVER_VERSION is empty" >&2; exit 1; }; \
-  DEB_ARCH="$(dpkg --print-architecture)"; \
-  case "$DEB_ARCH" in amd64|arm64) ;; *) echo "Unsupported architecture for code-server: $DEB_ARCH" >&2; exit 1 ;; esac; \
-  DEB_URL="https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
-  curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o /tmp/code-server.deb; \
-  if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
-    case "$DEB_ARCH" in \
-      amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
-      arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
-    esac; \
-    echo "$DEB_SHA256 /tmp/code-server.deb" | sha256sum -c -; \
-  fi; \
-  dpkg -i /tmp/code-server.deb || { apt-get update && apt-get install -y -f --no-install-recommends; rm -rf /var/lib/apt/lists/*; dpkg -i /tmp/code-server.deb; }; \
-  rm -f /tmp/code-server.deb
-
-#== Install Composer
-RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.3.10
-RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer2 --version=2.3.10
-RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
-
-#== Install DevPanel CLI client
-COPY bin/devpanel /usr/local/bin/devpanel
-RUN chmod +x /usr/local/bin/devpanel \
-  && devpanel version
-
-
-#== Install Wordpress CLI
-ARG WP_CLI_VERSION=2.4.0
-RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar \
-    && chmod +x wp-cli-${WP_CLI_VERSION}.phar \
-    && mv wp-cli-${WP_CLI_VERSION}.phar /usr/local/bin/wp
-
-WORKDIR ${APP_ROOT}
+# Overlay 7.4-specific drush files: drush7 (new) and drush11 symfony-5.4.18
+# Docker COPY merges so common drush8/9/10 are preserved.
 COPY drush /drush
-RUN mkdir -p /home/$USER/.config/code-server \
-    && chown -R $USER:$USER /home/$USER/.config/code-server
+RUN chown -R ${USER}:${GROUP} /drush
 
 USER ${USER}
 
-RUN touch /home/$USER/.config/code-server/config.yaml
-RUN sudo chown -R ${USER} /drush
-
-#== Install Drush
-ARG DRUSH_VERSION=8
+# drush7 setup (7.4 only)
 RUN composer update --working-dir=/drush/drush7 \
-  && echo "alias drush7=/drush/drush7/vendor/bin/drush" >> ~/.bashrc
-RUN composer update --working-dir=/drush/drush8 \
-  && echo "alias drush8=/drush/drush8/vendor/bin/drush" >> ~/.bashrc
-RUN  composer update --working-dir=/drush/drush9 \
-  && echo "alias drush9=/drush/drush9/vendor/bin/drush" >> ~/.bashrc
-RUN  composer update --working-dir=/drush/drush10 \
-  && echo "alias drush10=/drush/drush10/vendor/bin/drush" >> ~/.bashrc
-RUN  composer update --working-dir=/drush/drush11 \
-  && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
+    && echo "alias drush7=/drush/drush7/vendor/bin/drush" >> ~/.bashrc
 
-#== Install Drush backdrop extention
-RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
-  && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
-  && /drush/drush${DRUSH_VERSION}/vendor/bin/drush cc drush
-
-
-#== Install BEE CLI client
-RUN sudo mkdir /bee && sudo git clone https://github.com/backdrop-contrib/bee.git /bee
-RUN sudo chmod +x /bee/bee.php \
-  && sudo ln -s /bee/bee.php /usr/bin/bee
-
-
-RUN bash ~/.bashrc
-RUN sudo ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush
-
-#== Start apache.
-COPY templates /templates
-COPY scripts /scripts
-CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]
+# Re-run drush11 composer update after symfony-5.4.18 override
+# (alias already set by common stage; only the vendor dependencies change)
+RUN composer update --working-dir=/drush/drush11

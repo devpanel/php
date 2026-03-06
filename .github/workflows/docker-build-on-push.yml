@@ -1,0 +1,154 @@
+name: Build changed Docker images on push
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      bake_targets:        ${{ steps.detect.outputs.bake_targets }}
+      tag_suffix:          ${{ steps.detect.outputs.tag_suffix }}
+      latest_php_version:  ${{ steps.detect.outputs.latest_php_version }}
+      versions:            ${{ steps.detect.outputs.versions }}
+      platforms:           ${{ steps.detect.outputs.platforms }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes and build Bake target list
+        id: detect
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAG_SUFFIX=""
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            TAG_SUFFIX="-rc"
+          else
+            BRANCH="${{ github.ref_name }}"
+            TAG_SUFFIX="-${BRANCH//\//-}"
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          # On a brand-new branch push the before SHA is all zeros
+          IS_NEW_BRANCH=false
+          if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            IS_NEW_BRANCH=true
+          fi
+
+          # Returns 1 if any file under the given path changed, else 0
+          path_changed() {
+            if $IS_NEW_BRANCH; then echo 1; return; fi
+            git diff --name-only "$BEFORE" "$AFTER" -- "$1" 2>/dev/null | wc -l
+          }
+
+          # Common-directory changes affect ALL versions
+          BASE_COMMON=$(path_changed "base/")
+          SECURE_COMMON=$(path_changed "secure/")
+          ADVANCE_COMMON=$(path_changed "advance/")
+          BAKE_CHANGED=$(path_changed "docker-bake.hcl")
+
+          TARGETS=()
+          LATEST_PHP_VERSION=""
+
+          while IFS= read -r VER; do
+            LATEST_PHP_VERSION="$VER"
+            KEY="${VER//./_}"
+
+            BASE_VER=$(path_changed "${VER}/base/")
+            SECURE_VER=$(path_changed "${VER}/secure/")
+
+            # Rebuild base if common base/ or this version's base/ changed
+            NEED_BASE=false
+            if [[ $BASE_COMMON -gt 0 || $BASE_VER -gt 0 || $BAKE_CHANGED -gt 0 ]]; then
+              NEED_BASE=true
+              TARGETS+=("php${KEY}-base")
+            fi
+
+            # Rebuild secure if common secure/ or base/ changed (base is a
+            # dependency), or this version's secure/ changed
+            if [[ $SECURE_COMMON -gt 0 || $SECURE_VER -gt 0 || $BAKE_CHANGED -gt 0 ]] \
+               || $NEED_BASE; then
+              TARGETS+=("php${KEY}-secure")
+            fi
+
+            # Rebuild advance if advance/ changed or secure was rebuilt
+            if [[ $ADVANCE_COMMON -gt 0 || $BAKE_CHANGED -gt 0 ]] \
+               || $NEED_BASE \
+               || [[ $SECURE_COMMON -gt 0 || $SECURE_VER -gt 0 ]]; then
+              TARGETS+=("php${KEY}-advance")
+            fi
+          done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
+                     | sed 's|./||' | sort -V)
+
+          # Deduplicate (preserve order)
+          UNIQUE_TARGETS=$(printf '%s\n' "${TARGETS[@]}" | awk '!seen[$0]++')
+
+          echo "tag_suffix=${TAG_SUFFIX}"          >> "$GITHUB_OUTPUT"
+          echo "latest_php_version=${LATEST_PHP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "bake_targets=${UNIQUE_TARGETS//$'\n'/ }" >> "$GITHUB_OUTPUT"
+          VERSIONS_LIST=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
+                            | sed 's|./||' | sort -V | tr '\n' ' ' | xargs)
+          echo "versions=${VERSIONS_LIST}" >> "$GITHUB_OUTPUT"
+
+          # Determine build platforms from the official PHP base image manifest,
+          # filtered to linux/amd64 and linux/arm64.
+          PHP_MANIFEST=$(docker manifest inspect "php:${LATEST_PHP_VERSION}-apache" 2>/dev/null || echo "")
+          DETECTED=""
+          if [[ -n "$PHP_MANIFEST" ]]; then
+            DETECTED=$(echo "$PHP_MANIFEST" \
+              | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
+              | grep -E "^linux/(amd64|arm64)$" | sort | tr '\n' ',' | sed 's/,$//')
+          fi
+          echo "platforms=${DETECTED:-linux/amd64,linux/arm64}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.bake_targets != '' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push (with GHA cache)
+        uses: docker/bake-action@v6
+        env:
+          TAG_SUFFIX:         ${{ needs.detect-changes.outputs.tag_suffix }}
+          LATEST_PHP_VERSION: ${{ needs.detect-changes.outputs.latest_php_version }}
+          VERSIONS:           ${{ needs.detect-changes.outputs.versions }}
+          PLATFORMS:          ${{ needs.detect-changes.outputs.platforms }}
+        with:
+          files:   docker-bake.hcl
+          targets: ${{ needs.detect-changes.outputs.bake_targets }}
+          push:    true
+        secrets: |
+          github_token=${{ secrets.GITHUB_TOKEN }}
