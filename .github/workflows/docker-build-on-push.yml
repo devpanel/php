@@ -19,6 +19,7 @@ jobs:
       bake_targets:        ${{ steps.detect.outputs.bake_targets }}
       tag_suffix:          ${{ steps.detect.outputs.tag_suffix }}
       latest_php_version:  ${{ steps.detect.outputs.latest_php_version }}
+      versions:            ${{ steps.detect.outputs.versions }}
 
     steps:
       - name: Checkout repository
@@ -98,6 +99,9 @@ jobs:
           echo "tag_suffix=${TAG_SUFFIX}"          >> "$GITHUB_OUTPUT"
           echo "latest_php_version=${LATEST_PHP_VERSION}" >> "$GITHUB_OUTPUT"
           echo "bake_targets=${UNIQUE_TARGETS//$'\n'/ }" >> "$GITHUB_OUTPUT"
+          VERSIONS_LIST=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
+                            | sed 's|./||' | sort -V | tr '\n' ' ' | xargs)
+          echo "versions=${VERSIONS_LIST}" >> "$GITHUB_OUTPUT"
 
   build:
     needs: detect-changes
@@ -126,7 +130,7 @@ jobs:
         env:
           TAG_SUFFIX:         ${{ needs.detect-changes.outputs.tag_suffix }}
           LATEST_PHP_VERSION: ${{ needs.detect-changes.outputs.latest_php_version }}
-          # GHA cache is always enabled in docker-bake.hcl
+          VERSIONS:           ${{ needs.detect-changes.outputs.versions }}
         with:
           files:   docker-bake.hcl
           targets: ${{ needs.detect-changes.outputs.bake_targets }}

@@ -113,7 +113,6 @@ ENV PHP_POST_MAX_SIZE=64M
 ENV PHP_CLEAR_ENV=false
 
 ENV SERVER_NAME=default
-ENV GIT_BRANCH=master
 
 ENV CODES_PORT=8080
 ENV CODES_WORKING_DIR=$APP_ROOT
@@ -211,3 +210,52 @@ RUN chmod +x /usr/local/bin/devpanel && devpanel version
 COPY --from=common templates /templates
 COPY --from=common scripts   /scripts
 COPY --from=common drush     /drush
+
+# Install BEE CLI (identical across all PHP versions)
+RUN mkdir /bee && git clone https://github.com/backdrop-contrib/bee.git /bee \
+    && chmod +x /bee/bee.php \
+    && ln -s /bee/bee.php /usr/bin/bee
+
+# Install code-server (pre-downloaded in the 'downloader' stage)
+COPY --from=common-downloader /tmp/code-server.deb /tmp/code-server.deb
+RUN dpkg -i /tmp/code-server.deb \
+    || { apt-get update && apt-get install -y -f --no-install-recommends \
+         && rm -rf /var/lib/apt/lists/*; dpkg -i /tmp/code-server.deb; } \
+    && rm /tmp/code-server.deb
+
+# Install Composer (default 2.3.10; PHP 8.3 per-version Dockerfile overrides with 2.7.7)
+RUN curl -fsSL https://getcomposer.org/installer \
+      | php -- --install-dir=/usr/local/bin --filename=composer  --version=2.3.10 \
+    && ln -s /usr/local/bin/composer /usr/local/bin/composer2 \
+    && curl -fsSL https://getcomposer.org/installer \
+      | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
+
+# Install WP-CLI (default 2.9.0; PHP 7.4 per-version Dockerfile overrides with 2.4.0)
+RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v2.9.0/wp-cli-2.9.0.phar \
+    && chmod +x wp-cli-2.9.0.phar \
+    && mv wp-cli-2.9.0.phar /usr/local/bin/wp
+
+ARG DRUSH_VERSION=8
+RUN ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush \
+    && mkdir -p /home/${USER}/.config/code-server \
+    && chown -R ${USER}:${GROUP} /drush /bee /home/${USER} ${APP_ROOT}
+
+USER ${USER}
+WORKDIR ${APP_ROOT}
+
+RUN touch /home/${USER}/.config/code-server/config.yaml
+
+RUN composer update --working-dir=/drush/drush8 \
+    && echo "alias drush8=/drush/drush8/vendor/bin/drush" >> ~/.bashrc
+RUN composer update --working-dir=/drush/drush9 \
+    && echo "alias drush9=/drush/drush9/vendor/bin/drush" >> ~/.bashrc
+RUN composer update --working-dir=/drush/drush10 \
+    && echo "alias drush10=/drush/drush10/vendor/bin/drush" >> ~/.bashrc
+RUN composer update --working-dir=/drush/drush11 \
+    && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
+
+RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
+    && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
+    && /drush/drush${DRUSH_VERSION}/vendor/bin/drush cc drush
+
+CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh"]

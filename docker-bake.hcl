@@ -11,25 +11,35 @@
 # Key variables (all overridable via environment variables):
 #   REPO                 Docker Hub repository                   (devpanel/php)
 #   TAG_SUFFIX           Image tag suffix                        (-rc on non-main)
+#   VERSIONS             Space-separated PHP version dirs        ("7.4 8.0 8.1 8.2 8.3")
 #   LATEST_PHP_VERSION   Highest PHP version dir in the repo     (8.3)
 #   CODESERVER_VERSION   code-server version to pin ("" = auto)  ("")
 #   CORERULESET_VERSION  ModSecurity CRS version                 (3.3.5)
+#   CACHE_FROM_ENABLED   Read from GHA cache ("true"/"false")    ("true")
 #
 # Targets that are never pushed to Docker Hub:
 #   downloader, phpXX-php-ext, phpXX-secure-int
 # All of these are still cached in GitHub Actions (type=gha, mode=max).
 
-variable "REPO"                { default = "devpanel/php" }
-variable "TAG_SUFFIX"          { default = "-rc"          }
-variable "LATEST_PHP_VERSION"  { default = "8.3"          }
-variable "CODESERVER_VERSION"  { default = ""             }
-variable "CORERULESET_VERSION" { default = "3.3.5"        }
+variable "REPO"                 { default = "devpanel/php" }
+variable "TAG_SUFFIX"           { default = "-rc"          }
+variable "VERSIONS"             { default = "7.4 8.0 8.1 8.2 8.3" }
+variable "LATEST_PHP_VERSION"   { default = "8.3"          }
+variable "CODESERVER_VERSION"   { default = ""             }
+variable "CORERULESET_VERSION"  { default = "3.3.5"        }
+variable "CACHE_FROM_ENABLED"   { default = "true"         }
 
 # ─── Cache helpers ────────────────────────────────────────────────────────────
-# GHA cache is always enabled; mode=max caches all intermediate layers.
+# cache_from: read from GHA cache (push workflow only; full-rebuild sets CACHE_FROM_ENABLED=false)
+# cache_to:   always write to GHA cache (mode=max caches all intermediate layers)
+function "ver_key" {
+  params = [v]
+  result = replace(v, ".", "")
+}
+
 function "cache_from" {
   params = [scope]
-  result = ["type=gha,scope=${scope}"]
+  result = CACHE_FROM_ENABLED == "true" ? ["type=gha,scope=${scope}"] : []
 }
 
 function "cache_to" {
@@ -58,11 +68,11 @@ target "downloader" {
 
 # ─── Common php-ext intermediates (NOT pushed, cached in GHA) ────────────────
 # Builds the php-ext-common stage from base/Dockerfile for each PHP version.
-# Contains all extensions and packages common to every version.
+# Contains all extensions, packages, and tools common to every version.
 # Version-specific differences (avif, pcre, gd flags, imagick method, etc.)
 # are in each {version}/base/Dockerfile.
 #
-# Referenced by phpXX-base targets via the 'common-php-ext' named context.
+# Matrix generates one target per version: php74-php-ext, php80-php-ext, ...
 
 target "_php-ext-common" {
   dockerfile = "base/Dockerfile"
@@ -77,44 +87,20 @@ target "_php-ext-common" {
   # No tags → not pushed to Docker Hub
 }
 
-target "php74-php-ext" {
+target "php-php-ext" {
+  matrix = {
+    version = split(" ", trimspace(VERSIONS))
+  }
+  name     = "php${ver_key(version)}-php-ext"
   inherits = ["_php-ext-common"]
-  args     = { PHP_VERSION = "7.4" }
-  cache-from = cache_from("php74-php-ext")
-  cache-to   = cache_to("php74-php-ext")
-}
-
-target "php80-php-ext" {
-  inherits = ["_php-ext-common"]
-  args     = { PHP_VERSION = "8.0" }
-  cache-from = cache_from("php80-php-ext")
-  cache-to   = cache_to("php80-php-ext")
-}
-
-target "php81-php-ext" {
-  inherits = ["_php-ext-common"]
-  args     = { PHP_VERSION = "8.1" }
-  cache-from = cache_from("php81-php-ext")
-  cache-to   = cache_to("php81-php-ext")
-}
-
-target "php82-php-ext" {
-  inherits = ["_php-ext-common"]
-  args     = { PHP_VERSION = "8.2" }
-  cache-from = cache_from("php82-php-ext")
-  cache-to   = cache_to("php82-php-ext")
-}
-
-target "php83-php-ext" {
-  inherits = ["_php-ext-common"]
-  args     = { PHP_VERSION = "8.3" }
-  cache-from = cache_from("php83-php-ext")
-  cache-to   = cache_to("php83-php-ext")
+  args     = { PHP_VERSION = version }
+  cache-from = cache_from("php${ver_key(version)}-php-ext")
+  cache-to   = cache_to("php${ver_key(version)}-php-ext")
 }
 
 # ─── Base final images ────────────────────────────────────────────────────────
 # Each version has its own Dockerfile containing only version-specific
-# differences (gd/avif, pcre, PECL extensions, tool versions).
+# differences (gd/avif, pcre, PECL extensions, tool version overrides).
 # 'common-php-ext' provides the shared php-ext intermediate without a registry
 # push.  'common-downloader' provides code-server .deb.  'common' exposes
 # ./base/ for any remaining shared assets.
@@ -124,74 +110,22 @@ target "_base-common" {
   secret     = ["id=github_token"]
 }
 
-target "php74-base" {
+target "php-base" {
+  matrix = {
+    version = split(" ", trimspace(VERSIONS))
+  }
+  name       = "php${ver_key(version)}-base"
   inherits   = ["_base-common"]
-  dockerfile = "7.4/base/Dockerfile"
-  context    = "7.4/base"
+  dockerfile = "${version}/base/Dockerfile"
+  context    = "${version}/base"
   contexts = {
-    common-php-ext    = "target:php74-php-ext"
+    common-php-ext    = "target:php${ver_key(version)}-php-ext"
     common-downloader = "target:downloader"
     common            = "./base"
   }
-  tags       = ["${REPO}:7.4-base${TAG_SUFFIX}"]
-  cache-from = cache_from("php74-base")
-  cache-to   = cache_to("php74-base")
-}
-
-target "php80-base" {
-  inherits   = ["_base-common"]
-  dockerfile = "8.0/base/Dockerfile"
-  context    = "8.0/base"
-  contexts = {
-    common-php-ext    = "target:php80-php-ext"
-    common-downloader = "target:downloader"
-    common            = "./base"
-  }
-  tags       = ["${REPO}:8.0-base${TAG_SUFFIX}"]
-  cache-from = cache_from("php80-base")
-  cache-to   = cache_to("php80-base")
-}
-
-target "php81-base" {
-  inherits   = ["_base-common"]
-  dockerfile = "8.1/base/Dockerfile"
-  context    = "8.1/base"
-  contexts = {
-    common-php-ext    = "target:php81-php-ext"
-    common-downloader = "target:downloader"
-    common            = "./base"
-  }
-  tags       = ["${REPO}:8.1-base${TAG_SUFFIX}"]
-  cache-from = cache_from("php81-base")
-  cache-to   = cache_to("php81-base")
-}
-
-target "php82-base" {
-  inherits   = ["_base-common"]
-  dockerfile = "8.2/base/Dockerfile"
-  context    = "8.2/base"
-  contexts = {
-    common-php-ext    = "target:php82-php-ext"
-    common-downloader = "target:downloader"
-    common            = "./base"
-  }
-  tags       = ["${REPO}:8.2-base${TAG_SUFFIX}"]
-  cache-from = cache_from("php82-base")
-  cache-to   = cache_to("php82-base")
-}
-
-target "php83-base" {
-  inherits   = ["_base-common"]
-  dockerfile = "8.3/base/Dockerfile"
-  context    = "8.3/base"
-  contexts = {
-    common-php-ext    = "target:php83-php-ext"
-    common-downloader = "target:downloader"
-    common            = "./base"
-  }
-  tags       = ["${REPO}:8.3-base${TAG_SUFFIX}"]
-  cache-from = cache_from("php83-base")
-  cache-to   = cache_to("php83-base")
+  tags       = ["${REPO}:${version}-base${TAG_SUFFIX}"]
+  cache-from = cache_from("php${ver_key(version)}-base")
+  cache-to   = cache_to("php${ver_key(version)}-base")
 }
 
 # ─── Secure intermediate targets (NOT pushed, cached in GHA) ─────────────────
@@ -205,39 +139,15 @@ target "_secure-int-common" {
   # No tags → not pushed to Docker Hub
 }
 
-target "php74-secure-int" {
-  inherits   = ["_secure-int-common"]
-  contexts   = { base-image = "target:php74-base" }
-  cache-from = cache_from("php74-secure-int")
-  cache-to   = cache_to("php74-secure-int")
-}
-
-target "php80-secure-int" {
-  inherits   = ["_secure-int-common"]
-  contexts   = { base-image = "target:php80-base" }
-  cache-from = cache_from("php80-secure-int")
-  cache-to   = cache_to("php80-secure-int")
-}
-
-target "php81-secure-int" {
-  inherits   = ["_secure-int-common"]
-  contexts   = { base-image = "target:php81-base" }
-  cache-from = cache_from("php81-secure-int")
-  cache-to   = cache_to("php81-secure-int")
-}
-
-target "php82-secure-int" {
-  inherits   = ["_secure-int-common"]
-  contexts   = { base-image = "target:php82-base" }
-  cache-from = cache_from("php82-secure-int")
-  cache-to   = cache_to("php82-secure-int")
-}
-
-target "php83-secure-int" {
-  inherits   = ["_secure-int-common"]
-  contexts   = { base-image = "target:php83-base" }
-  cache-from = cache_from("php83-secure-int")
-  cache-to   = cache_to("php83-secure-int")
+target "php-secure-int" {
+  matrix = {
+    version = split(" ", trimspace(VERSIONS))
+  }
+  name     = "php${ver_key(version)}-secure-int"
+  inherits = ["_secure-int-common"]
+  contexts = { base-image = "target:php${ver_key(version)}-base" }
+  cache-from = cache_from("php${ver_key(version)}-secure-int")
+  cache-to   = cache_to("php${ver_key(version)}-secure-int")
 }
 
 # ─── Secure final images ──────────────────────────────────────────────────────
@@ -247,54 +157,18 @@ target "_secure-common" {
   args       = { BASE_IMAGE = "secure-intermediate" }
 }
 
-target "php74-secure" {
+target "php-secure" {
+  matrix = {
+    version = split(" ", trimspace(VERSIONS))
+  }
+  name       = "php${ver_key(version)}-secure"
   inherits   = ["_secure-common"]
-  dockerfile = "7.4/secure/Dockerfile"
-  context    = "7.4/secure"
-  contexts   = { secure-intermediate = "target:php74-secure-int" }
-  tags       = ["${REPO}:7.4-secure${TAG_SUFFIX}"]
-  cache-from = cache_from("php74-secure")
-  cache-to   = cache_to("php74-secure")
-}
-
-target "php80-secure" {
-  inherits   = ["_secure-common"]
-  dockerfile = "8.0/secure/Dockerfile"
-  context    = "8.0/secure"
-  contexts   = { secure-intermediate = "target:php80-secure-int" }
-  tags       = ["${REPO}:8.0-secure${TAG_SUFFIX}"]
-  cache-from = cache_from("php80-secure")
-  cache-to   = cache_to("php80-secure")
-}
-
-target "php81-secure" {
-  inherits   = ["_secure-common"]
-  dockerfile = "8.1/secure/Dockerfile"
-  context    = "8.1/secure"
-  contexts   = { secure-intermediate = "target:php81-secure-int" }
-  tags       = ["${REPO}:8.1-secure${TAG_SUFFIX}"]
-  cache-from = cache_from("php81-secure")
-  cache-to   = cache_to("php81-secure")
-}
-
-target "php82-secure" {
-  inherits   = ["_secure-common"]
-  dockerfile = "8.2/secure/Dockerfile"
-  context    = "8.2/secure"
-  contexts   = { secure-intermediate = "target:php82-secure-int" }
-  tags       = ["${REPO}:8.2-secure${TAG_SUFFIX}"]
-  cache-from = cache_from("php82-secure")
-  cache-to   = cache_to("php82-secure")
-}
-
-target "php83-secure" {
-  inherits   = ["_secure-common"]
-  dockerfile = "8.3/secure/Dockerfile"
-  context    = "8.3/secure"
-  contexts   = { secure-intermediate = "target:php83-secure-int" }
-  tags       = ["${REPO}:8.3-secure${TAG_SUFFIX}"]
-  cache-from = cache_from("php83-secure")
-  cache-to   = cache_to("php83-secure")
+  dockerfile = "${version}/secure/Dockerfile"
+  context    = "${version}/secure"
+  contexts   = { secure-intermediate = "target:php${ver_key(version)}-secure-int" }
+  tags       = ["${REPO}:${version}-secure${TAG_SUFFIX}"]
+  cache-from = cache_from("php${ver_key(version)}-secure")
+  cache-to   = cache_to("php${ver_key(version)}-secure")
 }
 
 # ─── Advance final images ─────────────────────────────────────────────────────
@@ -307,42 +181,14 @@ target "_advance-common" {
   args       = { BASE_IMAGE = "base-image" }
 }
 
-target "php74-advance" {
-  inherits   = ["_advance-common"]
-  contexts   = { base-image = "target:php74-secure" }
-  tags       = ["${REPO}:7.4-advance${TAG_SUFFIX}"]
-  cache-from = cache_from("php74-advance")
-  cache-to   = cache_to("php74-advance")
-}
-
-target "php80-advance" {
-  inherits   = ["_advance-common"]
-  contexts   = { base-image = "target:php80-secure" }
-  tags       = ["${REPO}:8.0-advance${TAG_SUFFIX}"]
-  cache-from = cache_from("php80-advance")
-  cache-to   = cache_to("php80-advance")
-}
-
-target "php81-advance" {
-  inherits   = ["_advance-common"]
-  contexts   = { base-image = "target:php81-secure" }
-  tags       = ["${REPO}:8.1-advance${TAG_SUFFIX}"]
-  cache-from = cache_from("php81-advance")
-  cache-to   = cache_to("php81-advance")
-}
-
-target "php82-advance" {
-  inherits   = ["_advance-common"]
-  contexts   = { base-image = "target:php82-secure" }
-  tags       = ["${REPO}:8.2-advance${TAG_SUFFIX}"]
-  cache-from = cache_from("php82-advance")
-  cache-to   = cache_to("php82-advance")
-}
-
-target "php83-advance" {
-  inherits   = ["_advance-common"]
-  contexts   = { base-image = "target:php83-secure" }
-  tags       = ["${REPO}:8.3-advance${TAG_SUFFIX}"]
-  cache-from = cache_from("php83-advance")
-  cache-to   = cache_to("php83-advance")
+target "php-advance" {
+  matrix = {
+    version = split(" ", trimspace(VERSIONS))
+  }
+  name     = "php${ver_key(version)}-advance"
+  inherits = ["_advance-common"]
+  contexts = { base-image = "target:php${ver_key(version)}-secure" }
+  tags     = ["${REPO}:${version}-advance${TAG_SUFFIX}"]
+  cache-from = cache_from("php${ver_key(version)}-advance")
+  cache-to   = cache_to("php${ver_key(version)}-advance")
 }
