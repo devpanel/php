@@ -229,7 +229,7 @@ RUN dpkg -i /tmp/code-server.deb \
 RUN curl -fsSL https://getcomposer.org/installer \
       | php -- --install-dir=/usr/local/bin --filename=composer  --version=2.3.10 \
     && curl -fsSL https://getcomposer.org/installer \
-      | php -- --install-dir=/usr/local/bin --filename=composer-1 --version=1.10.16
+      | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
 
 # Install WP-CLI (default 2.9.0; PHP 7.4 per-version Dockerfile overrides with 2.4.0)
 RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v2.9.0/wp-cli-2.9.0.phar \
@@ -249,7 +249,7 @@ RUN touch /home/${USER}/.config/code-server/config.yaml
 
 # Bash alias for Composer 2.  The binary is installed as root above;
 # the alias is set here (as the app user) to keep it in ~/.bashrc.
-# composer-1 is directly accessible as /usr/local/bin/composer-1.
+# composer1 is directly accessible as /usr/local/bin/composer1.
 RUN composer update --working-dir=/drush/drush8 \
     && echo "alias composer2=/usr/local/bin/composer" >> ~/.bashrc \
     && echo "alias drush8=/drush/drush8/vendor/bin/drush" >> ~/.bashrc
