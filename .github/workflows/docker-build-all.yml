@@ -98,5 +98,5 @@ jobs:
           files:   docker-bake.hcl
           targets: ${{ needs.detect-versions.outputs.bake_targets }}
           push:    true
-        secrets: |
-          github_token=${{ secrets.GITHUB_TOKEN }}
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
