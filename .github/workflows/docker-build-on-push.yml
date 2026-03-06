@@ -20,6 +20,7 @@ jobs:
       tag_suffix:          ${{ steps.detect.outputs.tag_suffix }}
       latest_php_version:  ${{ steps.detect.outputs.latest_php_version }}
       versions:            ${{ steps.detect.outputs.versions }}
+      platforms:           ${{ steps.detect.outputs.platforms }}
 
     steps:
       - name: Checkout repository
@@ -32,8 +33,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/develop" ]]; then
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             TAG_SUFFIX=""
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            TAG_SUFFIX="-rc"
           else
             BRANCH="${{ github.ref_name }}"
             TAG_SUFFIX="-${BRANCH//\//-}"
@@ -103,6 +106,17 @@ jobs:
                             | sed 's|./||' | sort -V | tr '\n' ' ' | xargs)
           echo "versions=${VERSIONS_LIST}" >> "$GITHUB_OUTPUT"
 
+          # Determine build platforms from the official PHP base image manifest,
+          # filtered to linux/amd64 and linux/arm64.
+          PHP_MANIFEST=$(docker manifest inspect "php:${LATEST_PHP_VERSION}-apache" 2>/dev/null || echo "")
+          DETECTED=""
+          if [[ -n "$PHP_MANIFEST" ]]; then
+            DETECTED=$(echo "$PHP_MANIFEST" \
+              | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
+              | grep -E "^linux/(amd64|arm64)$" | sort | tr '\n' ',' | sed 's/,$//')
+          fi
+          echo "platforms=${DETECTED:-linux/amd64,linux/arm64}" >> "$GITHUB_OUTPUT"
+
   build:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.bake_targets != '' }}
@@ -131,6 +145,7 @@ jobs:
           TAG_SUFFIX:         ${{ needs.detect-changes.outputs.tag_suffix }}
           LATEST_PHP_VERSION: ${{ needs.detect-changes.outputs.latest_php_version }}
           VERSIONS:           ${{ needs.detect-changes.outputs.versions }}
+          PLATFORMS:          ${{ needs.detect-changes.outputs.platforms }}
         with:
           files:   docker-bake.hcl
           targets: ${{ needs.detect-changes.outputs.bake_targets }}

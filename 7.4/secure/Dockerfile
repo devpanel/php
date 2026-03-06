@@ -7,6 +7,4 @@ FROM ${BASE_IMAGE} AS final
 
 # PHP 7.4 and 8.0 ship Debian 11 with mod_security 2.9.3, which does not
 # support the REQUEST-922-MULTIPART-ATTACK rule bundled with CRS 3.3.x.
-USER root
-RUN rm /usr/share/modsecurity-crs/rules/REQUEST-922-MULTIPART-ATTACK.conf
-USER ${USER}
+RUN sudo rm /usr/share/modsecurity-crs/rules/REQUEST-922-MULTIPART-ATTACK.conf
