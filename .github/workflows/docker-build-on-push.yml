@@ -147,8 +147,7 @@ jobs:
           VERSIONS:           ${{ needs.detect-changes.outputs.versions }}
           PLATFORMS:          ${{ needs.detect-changes.outputs.platforms }}
         with:
-          files:   docker-bake.hcl
-          targets: ${{ needs.detect-changes.outputs.bake_targets }}
-          push:    true
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
+          files:        docker-bake.hcl
+          targets:      ${{ needs.detect-changes.outputs.bake_targets }}
+          push:         true
+          github-token: ${{ secrets.GITHUB_TOKEN }}

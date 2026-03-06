@@ -95,8 +95,7 @@ jobs:
           PLATFORMS:           ${{ needs.detect-versions.outputs.platforms }}
           CACHE_FROM_ENABLED:  "false"
         with:
-          files:   docker-bake.hcl
-          targets: ${{ needs.detect-versions.outputs.bake_targets }}
-          push:    true
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
+          files:        docker-bake.hcl
+          targets:      ${{ needs.detect-versions.outputs.bake_targets }}
+          push:         true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
