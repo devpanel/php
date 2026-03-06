@@ -225,7 +225,7 @@ RUN dpkg -i /tmp/code-server.deb \
 
 # Install Composer 2.x (default 2.3.10; PHP 8.3 overrides to 2.7.7 via self-update)
 # and legacy Composer 1.x for projects that require it.
-# 'composer2' and 'composer1' are bash aliases set after USER switch below.
+# 'composer2' bash alias is set after USER switch below.
 RUN curl -fsSL https://getcomposer.org/installer \
       | php -- --install-dir=/usr/local/bin --filename=composer  --version=2.3.10 \
     && curl -fsSL https://getcomposer.org/installer \
@@ -247,11 +247,11 @@ WORKDIR ${APP_ROOT}
 
 RUN touch /home/${USER}/.config/code-server/config.yaml
 
-# Bash aliases for Composer versions.  The binaries are installed as root above;
-# aliases are set here (as the app user) to keep them in ~/.bashrc.
+# Bash alias for Composer 2.  The binary is installed as root above;
+# the alias is set here (as the app user) to keep it in ~/.bashrc.
+# composer-1 is directly accessible as /usr/local/bin/composer-1.
 RUN composer update --working-dir=/drush/drush8 \
     && echo "alias composer2=/usr/local/bin/composer" >> ~/.bashrc \
-    && echo "alias composer1=/usr/local/bin/composer-1" >> ~/.bashrc \
     && echo "alias drush8=/drush/drush8/vendor/bin/drush" >> ~/.bashrc
 RUN composer update --working-dir=/drush/drush9 \
     && echo "alias drush9=/drush/drush9/vendor/bin/drush" >> ~/.bashrc
