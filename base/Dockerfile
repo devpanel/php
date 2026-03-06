@@ -77,3 +77,137 @@ exit(1); \
     echo "$DEB_SHA256 /tmp/code-server.deb" | sha256sum -c -; \
   fi
 
+
+# ─── Common PHP extensions stage ──────────────────────────────────────────────
+# Builds the shared intermediate that all per-version Dockerfiles extend.
+# Only packages and extensions that are IDENTICAL across all PHP versions are
+# here.  Version-specific items (avif/pcre packages, gd configure flags,
+# igbinary version pin, imagick build method, oauth, xdebug) live in each
+# {version}/base/Dockerfile.
+#
+# This stage is referenced as the 'common-php-ext' Bake named context.
+# It is cached in GitHub Actions (type=gha) but never pushed to Docker Hub.
+ARG PHP_VERSION=8.3
+FROM php:${PHP_VERSION}-apache AS php-ext-common
+
+#== System Environments
+ENV USER=www
+ENV GROUP=www
+ENV UID=1000
+ENV GID=1000
+ENV HOME=/home/www
+ENV SHELL=/bin/bash
+
+#== Default Environments
+ENV APP_ROOT=/var/www/html
+ENV WEB_ROOT=$APP_ROOT
+ENV PHP_CUSTOM_INI=$APP_ROOT/php.ini
+ENV PHP_EXT_DIR=/usr/local/etc/php/conf.d
+
+ENV PHP_MEMORY_LIMIT=4096M
+ENV PHP_MAX_EXECUTION_TIME=600
+ENV PHP_MAX_INPUT_TIME=600
+ENV PHP_MAX_INPUT_VARS=3000
+ENV PHP_UPLOAD_MAX_FILESIZE=64M
+ENV PHP_POST_MAX_SIZE=64M
+ENV PHP_CLEAR_ENV=false
+
+ENV SERVER_NAME=default
+ENV GIT_BRANCH=master
+
+ENV CODES_PORT=8080
+ENV CODES_WORKING_DIR=$APP_ROOT
+ENV CODES_USER_DATA_DIR=$APP_ROOT/.vscode
+ENV CODES_ENABLE=yes
+
+# Install packages common to all PHP versions.
+# NOTE: libavif-dev (8.1+), libpcre2-dev (8.0+), and libpcre3/libpcre3-dev (7.4)
+# are version-specific and therefore NOT included here.
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+      apt-utils \
+      sendmail-bin \
+      sendmail \
+      sudo \
+      libbz2-dev \
+      libjpeg62-turbo-dev \
+      libpng-dev \
+      libwebp-dev \
+      libfreetype6-dev \
+      libgeoip-dev \
+      wget \
+      libgmp-dev \
+      libmagickwand-dev \
+      libmagickcore-dev \
+      libicu-dev \
+      libldap2-dev \
+      libpspell-dev \
+      libtidy-dev \
+      libxslt1-dev \
+      libyaml-dev \
+      libzip-dev \
+      libmemcached-dev \
+      libssl-dev \
+      zlib1g-dev \
+      zip unzip \
+      git \
+      rsync \
+      ssh \
+      default-mysql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configure opcache (same for all versions)
+RUN docker-php-ext-configure opcache --enable-opcache
+
+# Install PHP extensions common to all versions.
+# NOTE: gd is NOT here — its configure flags differ by version (avif support
+# for 8.1+ vs explicit include paths for 7.4/8.0).  Each version's Dockerfile
+# runs docker-php-ext-configure gd and docker-php-ext-install gd separately.
+RUN docker-php-ext-install -j$(nproc) \
+      bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
+      pdo_mysql pspell shmop soap sockets sysvmsg sysvsem sysvshm \
+      tidy xsl zip pcntl
+
+# Install PECL extensions common to all versions (same version pins for all)
+RUN pecl install -o -f \
+      redis-5.3.7 \
+      yaml-2.2.2 \
+      memcached-3.2.0
+
+# Install libsodium (source pre-downloaded in the 'downloader' stage)
+COPY --from=common-downloader /tmp/libsodium /tmp/libsodium
+RUN rm -f /usr/local/etc/php/conf.d/*sodium.ini \
+    && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
+    && apt-get remove libsodium* -y \
+    && cd /tmp/libsodium/libsodium-1.0.18-RELEASE/ \
+    && ./configure && make && make check && make install \
+    && cd / && rm -rf /tmp/libsodium \
+    && pecl install -o -f libsodium
+
+# Enable all common extensions.
+# NOTE: gd, igbinary, imagick (and optionally xdebug, oauth) are enabled in
+# the per-version Dockerfile after their version-specific build.
+RUN docker-php-ext-enable \
+      bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
+      pdo_mysql pspell redis shmop soap sockets sodium sysvmsg \
+      sysvsem sysvshm tidy xsl yaml zip pcntl memcached
+
+# Create the www user and configure sudo (root ops must happen before USER switch)
+RUN groupadd -g ${GID} ${GROUP} \
+    && useradd --system --shell /bin/bash --uid ${UID} --gid ${GROUP} \
+               --create-home --home-dir /home/${USER} ${USER} \
+    && adduser ${USER} www-data \
+    && usermod -aG sudo ${USER} \
+    && echo "www    ALL=(ALL:ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+RUN mkdir -p ${APP_ROOT} && chown -R ${UID}:${GID} ${APP_ROOT}
+
+RUN a2enmod rewrite remoteip headers
+
+# Copy shared assets from the 'common' build context (./base/ directory).
+# Per-version Dockerfiles may overlay version-specific files on top.
+COPY --from=common bin/devpanel /usr/local/bin/devpanel
+RUN chmod +x /usr/local/bin/devpanel && devpanel version
+COPY --from=common templates /templates
+COPY --from=common scripts   /scripts
+COPY --from=common drush     /drush

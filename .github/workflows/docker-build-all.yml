@@ -9,28 +9,38 @@ jobs:
     permissions:
       contents: read
     outputs:
-      tag_suffix:          ${{ steps.vars.outputs.tag_suffix }}
+      bake_targets:        ${{ steps.detect.outputs.bake_targets }}
+      tag_suffix:          ${{ steps.detect.outputs.tag_suffix }}
       latest_php_version:  ${{ steps.detect.outputs.latest_php_version }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Determine image tag suffix
-        id: vars
-        run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "tag_suffix=" >> $GITHUB_OUTPUT
-          else
-            echo "tag_suffix=-rc" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Detect latest PHP version
+      - name: Determine tag suffix, latest PHP version, and bake targets
         id: detect
         run: |
-          LATEST=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
-                     | sed 's|./||' | sort -V | tail -1)
-          echo "latest_php_version=${LATEST}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAG_SUFFIX=""
+          else
+            TAG_SUFFIX="-rc"
+          fi
+
+          TARGETS=()
+          LATEST_PHP_VERSION=""
+
+          while IFS= read -r VER; do
+            LATEST_PHP_VERSION="$VER"
+            KEY="${VER//./}"
+            TARGETS+=("php${KEY}-base" "php${KEY}-secure" "php${KEY}-advance")
+          done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
+                     | sed 's|./||' | sort -V)
+
+          echo "tag_suffix=${TAG_SUFFIX}"                   >> "$GITHUB_OUTPUT"
+          echo "latest_php_version=${LATEST_PHP_VERSION}"   >> "$GITHUB_OUTPUT"
+          echo "bake_targets=${TARGETS[*]}"                 >> "$GITHUB_OUTPUT"
 
   build:
     needs: detect-versions
@@ -53,15 +63,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push all images (no cache)
+      - name: Build and push all images (with GHA cache refresh)
         uses: docker/bake-action@v6
         env:
           TAG_SUFFIX:         ${{ needs.detect-versions.outputs.tag_suffix }}
           LATEST_PHP_VERSION: ${{ needs.detect-versions.outputs.latest_php_version }}
-          CACHE_TYPE:         ""   # disable GHA cache for full rebuilds
+          # CACHE_TYPE is not overridden here — defaults to "gha" in docker-bake.hcl
+          # so this run both reads from and writes to the GHA cache, refreshing it.
         with:
           files:   docker-bake.hcl
-          targets: all
+          targets: ${{ needs.detect-versions.outputs.bake_targets }}
           push:    true
         secrets: |
           github_token=${{ secrets.GITHUB_TOKEN }}

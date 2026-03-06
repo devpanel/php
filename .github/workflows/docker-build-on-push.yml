@@ -126,7 +126,7 @@ jobs:
         env:
           TAG_SUFFIX:         ${{ needs.detect-changes.outputs.tag_suffix }}
           LATEST_PHP_VERSION: ${{ needs.detect-changes.outputs.latest_php_version }}
-          # CACHE_TYPE defaults to "gha" in docker-bake.hcl
+          # GHA cache is always enabled in docker-bake.hcl
         with:
           files:   docker-bake.hcl
           targets: ${{ needs.detect-changes.outputs.bake_targets }}
