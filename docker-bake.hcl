@@ -40,8 +40,10 @@ variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
 # cache_to:   always write to GHA cache (mode=max caches all intermediate layers)
 
 # ver_key: converts a version string ("8.1") to a key safe for target names ("8_1").
-# Dots are replaced with underscores to avoid ambiguity when major versions
-# reach two digits (e.g. "10.1" → "10_1" vs "1.01" → "1_01").
+# Dots are not valid in HCL identifiers (they are the attribute-access operator),
+# so they must be replaced. Underscores are used rather than simply removing the
+# dot to avoid ambiguity when major versions reach two digits
+# (e.g. "10.1" → "10_1" is distinct from a hypothetical "1.01" → "1_01").
 function "ver_key" {
   params = [v]
   result = replace(v, ".", "_")
