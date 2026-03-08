@@ -89,6 +89,7 @@ exit(1); \
 # This stage is referenced as the 'common-php-ext' Bake named context.
 # It is cached in GitHub Actions (type=gha) but never pushed to Docker Hub.
 FROM php:${PHP_VERSION}-apache AS php-ext-common
+SHELL ["/bin/bash", "-c"]
 
 #== System Environments
 ARG DEBIAN_FRONTEND=noninteractive
@@ -123,50 +124,50 @@ ENV CODES_ENABLE=yes
 # Install packages common to all PHP versions.
 # NOTE: libavif-dev (8.1+), libpcre2-dev (8.0+), and libpcre3/libpcre3-dev (7.4)
 # are version-specific and therefore NOT included here.
-# Dpkg::Use-Pty "0" suppresses the repeated "(Reading database ... N%)" status
-# messages that dpkg writes when it has a pseudo-terminal.  The config file is
-# created at the start and removed at the end of the same RUN instruction so it
-# is only active during the build step and does not persist into the image.
+# Suppress only the repeated "(Reading database ... N%)" progress lines that dpkg
+# writes when it has a pseudo-terminal, while preserving all other apt/dpkg output.
+# Bash (set via the SHELL directive above) is required for ${PIPESTATUS[0]} to
+# capture the apt-get exit code through the pipe.
 # Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
 # resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
-RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
-    && for i in $(seq 1 3); do \
-      apt-get update && apt-get upgrade -y \
-        && apt-get install -y --no-install-recommends \
-          apt-utils \
-          sendmail-bin \
-          sendmail \
-          sudo \
-          libbz2-dev \
-          libjpeg62-turbo-dev \
-          libpng-dev \
-          libwebp-dev \
-          libfreetype6-dev \
-          libgeoip-dev \
-          wget \
-          libgmp-dev \
-          libmagickwand-dev \
-          libmagickcore-dev \
-          libicu-dev \
-          libldap2-dev \
-          libpspell-dev \
-          libtidy-dev \
-          libxslt1-dev \
-          libyaml-dev \
-          libzip-dev \
-          libmemcached-dev \
-          libssl-dev \
-          zlib1g-dev \
-          zip unzip \
-          git \
-          rsync \
-          ssh \
-          default-mysql-client \
-        && break \
-      || { [ "$i" -lt 3 ] && sleep 5; }; \
-    done \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
+RUN { for i in $(seq 1 3); do \
+        apt-get update && apt-get upgrade -y \
+          && apt-get install -y --no-install-recommends \
+            apt-utils \
+            sendmail-bin \
+            sendmail \
+            sudo \
+            libbz2-dev \
+            libjpeg62-turbo-dev \
+            libpng-dev \
+            libwebp-dev \
+            libfreetype6-dev \
+            libgeoip-dev \
+            wget \
+            libgmp-dev \
+            libmagickwand-dev \
+            libmagickcore-dev \
+            libicu-dev \
+            libldap2-dev \
+            libpspell-dev \
+            libtidy-dev \
+            libxslt1-dev \
+            libyaml-dev \
+            libzip-dev \
+            libmemcached-dev \
+            libssl-dev \
+            zlib1g-dev \
+            zip unzip \
+            git \
+            rsync \
+            ssh \
+            default-mysql-client \
+          && break \
+        || { [ "$i" -lt 3 ] && sleep 5; }; \
+      done \
+      && rm -rf /var/lib/apt/lists/*; } 2>&1 \
+    | (grep -Ev "^\(Reading database" || true); \
+    [ "${PIPESTATUS[0]}" -eq 0 ]
 
 # Configure opcache (same for all versions)
 RUN docker-php-ext-configure opcache --enable-opcache
@@ -231,12 +232,12 @@ RUN mkdir /bee && git clone https://github.com/backdrop-contrib/bee.git /bee \
 
 # Install code-server (pre-downloaded in the 'downloader' stage)
 COPY --from=common-downloader /tmp/code-server.deb /tmp/code-server.deb
-RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
-    && { dpkg -i /tmp/code-server.deb \
-         || { apt-get update && apt-get install -y -f --no-install-recommends \
-              && rm -rf /var/lib/apt/lists/* && dpkg -i /tmp/code-server.deb; }; } \
-    && rm /tmp/code-server.deb \
-    && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
+RUN { { dpkg -i /tmp/code-server.deb \
+        || { apt-get update && apt-get install -y -f --no-install-recommends \
+             && rm -rf /var/lib/apt/lists/* && dpkg -i /tmp/code-server.deb; }; } \
+      && rm /tmp/code-server.deb; } 2>&1 \
+    | (grep -Ev "^\(Reading database" || true); \
+    [ "${PIPESTATUS[0]}" -eq 0 ]
 
 # Install Composer 2.x (default 2.3.10; PHP 8.3 overrides to 2.7.7 via self-update)
 # and legacy Composer 1.x for projects that require it.

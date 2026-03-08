@@ -8,6 +8,7 @@
 #   - imagick built from source (pecl not compatible with 8.3)
 #   - Composer 2.7.7 override (common installs 2.3.10)
 FROM common-php-ext AS final
+SHELL ["/bin/bash", "-c"]
 
 # Switch to root for version-specific installation
 ARG DEBIAN_FRONTEND=noninteractive
@@ -16,17 +17,17 @@ USER root
 # PHP 8.3 specific packages: libavif-dev (avif gd support) and libpcre2-dev
 # Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
 # resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
-RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
-    && for i in $(seq 1 3); do \
-      apt-get update \
-        && apt-get install -y --no-install-recommends \
-          libavif-dev \
-          libpcre2-dev \
-        && break \
-      || { [ "$i" -lt 3 ] && sleep 5; }; \
-    done \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
+RUN { for i in $(seq 1 3); do \
+        apt-get update \
+          && apt-get install -y --no-install-recommends \
+            libavif-dev \
+            libpcre2-dev \
+          && break \
+        || { [ "$i" -lt 3 ] && sleep 5; }; \
+      done \
+      && rm -rf /var/lib/apt/lists/*; } 2>&1 \
+    | (grep -Ev "^\(Reading database" || true); \
+    [ "${PIPESTATUS[0]}" -eq 0 ]
 
 # Configure gd with avif support (PHP 8.1+)
 RUN docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp
