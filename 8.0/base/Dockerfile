@@ -9,6 +9,7 @@
 FROM common-php-ext AS final
 
 # Switch to root for version-specific installation
+ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
 # PHP 8.0 (Debian 11) specific package: libpcre2-dev (no libavif-dev)

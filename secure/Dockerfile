@@ -6,10 +6,11 @@ ARG BASE_IMAGE=base-image
 FROM ${BASE_IMAGE} AS secure-intermediate
 
 USER root
+ARG DEBIAN_FRONTEND=noninteractive
 WORKDIR /home/root
 
 ARG CORERULESET_VERSION="3.3.5"
-RUN apt update -y && apt -y install --no-install-recommends libapache2-mod-security2 wget unzip \
+RUN apt-get update -y && apt-get install -y --no-install-recommends libapache2-mod-security2 wget unzip \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /usr/share/modsecurity-crs \
     && wget -O /tmp/modsecurity-crs.zip \
