@@ -152,6 +152,9 @@ jobs:
               if ! $NEED_ADVANCE && [[ $(path_changed "${VER}/advance/") -gt 0 ]]; then
                 NEED_ADVANCE=true
               fi
+              if $NEED_BASE && $NEED_SECURE && $NEED_ADVANCE; then
+                break
+              fi
             done < <(printf '%s\n' "${CHANGED_VERSIONS[@]+${CHANGED_VERSIONS[@]}}")
             TARGETS_OUT=""
             if $NEED_BASE;    then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php-base";    fi
