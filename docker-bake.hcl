@@ -81,7 +81,7 @@ target "downloader" {
     LATEST_PHP_VERSION = LATEST_PHP_VERSION
     CODESERVER_VERSION = CODESERVER_VERSION
   }
-  secret     = GITHUB_TOKEN != "" ? ["id=github_token,env=GITHUB_TOKEN"] : []
+  secret     = ["id=github_token,env=GITHUB_TOKEN"]
   cache-from = cache_from("downloader")
   cache-to   = cache_to("downloader")
   # No tags → not pushed to Docker Hub
