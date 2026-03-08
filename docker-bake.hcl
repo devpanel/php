@@ -23,6 +23,14 @@
 #   downloader, phpX_Y-php-ext, phpX_Y-secure-int
 # All of these are still cached in GitHub Actions (type=gha, mode=max).
 
+# ─── Default group ───────────────────────────────────────────────────────────
+# Running `docker buildx bake` without arguments builds this group.
+# php-advance depends on the full chain, so every tagged image is built and
+# pushed automatically; no explicit target list is needed in CI.
+group "default" {
+  targets = ["php-advance"]
+}
+
 variable "REPO"                          { default = "devpanel/php"          }
 variable "TAG_SUFFIX"                    { default = ""                       }
 variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"   }
