@@ -35,13 +35,6 @@ on:
         required: true
       DOCKERHUB_TOKEN:
         required: true
-      GHCR_TOKEN:
-        required: false
-        description: >
-          Optional personal access token with write:packages scope for pushing to GHCR.
-          Use this when GITHUB_TOKEN lacks permission to write packages (e.g. org-level
-          restrictions or the ghcr.io package is not yet linked to this repository).
-          When not set, GITHUB_TOKEN is used and must have packages:write permission.
 
 jobs:
   detect:
@@ -225,7 +218,48 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check GHCR write access
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+
+          FIX_INSTRUCTIONS="To restore full GHCR caching: (1) go to Settings → Actions → General → Workflow permissions and choose 'Read and write permissions', or (2) push an initial image to ghcr.io/${REPO_LC} and link it to this repository so GITHUB_TOKEN can write to the existing package."
+          WARN_SUFFIX="Intermediate-layer caches will not be written to GHCR; the build will continue using the GHA cache instead. ${FIX_INSTRUCTIONS}"
+
+          # Use a temp netrc file so credentials are not exposed as command-line arguments.
+          # umask 0177 ensures the file is created with 0600 from the start (no race window).
+          NETRC=$(umask 0177 && mktemp)
+          printf 'machine ghcr.io login %s password %s\n' "${{ github.actor }}" "${GH_TOKEN}" > "${NETRC}"
+          AUTH_JSON=$(curl -sf --netrc-file "${NETRC}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:push" \
+            2>/dev/null || true)
+          rm -f "${NETRC}"
+
+          REG_TOKEN=$(printf '%s' "${AUTH_JSON}" | jq -r '.token // empty' 2>/dev/null || true)
+
+          if [[ -z "${REG_TOKEN}" ]]; then
+            echo "::warning title=GHCR cache write unavailable::GITHUB_TOKEN could not obtain a GHCR push token for ghcr.io/${REPO_LC}. ${WARN_SUFFIX}"
+            exit 0
+          fi
+
+          # Probe write permission: initiate (and immediately abandon) a blob upload.
+          # Use a temp curl config file so the bearer token is not a command-line argument.
+          CFG=$(umask 0177 && mktemp)
+          printf 'header = "Authorization: Bearer %s"\n' "${REG_TOKEN}" > "${CFG}"
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -K "${CFG}" \
+            "https://ghcr.io/v2/${REPO_LC}/blobs/uploads/")
+          rm -f "${CFG}"
+
+          if [[ "${HTTP_STATUS}" == "202" || "${HTTP_STATUS}" == "201" ]]; then
+            echo "GHCR write access confirmed for ghcr.io/${REPO_LC}."
+          else
+            echo "::warning title=GHCR cache write unavailable::GITHUB_TOKEN does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS}). ${WARN_SUFFIX}"
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
