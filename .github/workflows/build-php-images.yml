@@ -321,6 +321,5 @@ jobs:
           GHCR_REPO:           ${{ steps.ghcr.outputs.repo }}
         with:
           files:   docker-bake.hcl
-          source:  .
           push:    true
           targets: ${{ needs.detect.outputs.targets }}
