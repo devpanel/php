@@ -4,37 +4,11 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: docker-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  cancel-push-workflows:
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Cancel running push workflows on this branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # The "all" workflow rebuilds everything, making any concurrently
-          # running push workflows on this branch redundant.  Cancel them to
-          # free up runner capacity.
-          for STATUS in in_progress queued; do
-            while IFS= read -r RUN_ID; do
-              [[ -z "$RUN_ID" ]] && continue
-              echo "Cancelling push workflow run $RUN_ID (status: $STATUS)"
-              gh api --method POST \
-                "repos/${{ github.repository }}/actions/runs/$RUN_ID/cancel" \
-              || echo "::warning::Failed to cancel push workflow run $RUN_ID (it may have already completed)"
-            done < <(gh api \
-              "repos/${{ github.repository }}/actions/workflows/docker-build-on-push.yml/runs?branch=${{ github.ref_name }}&status=$STATUS" \
-              --jq '.workflow_runs[].id')
-          done
-
   build:
-    needs: cancel-push-workflows
     uses: ./.github/workflows/build-php-images.yml
     permissions:
       contents: read
