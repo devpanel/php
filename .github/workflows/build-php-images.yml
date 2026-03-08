@@ -155,24 +155,36 @@ jobs:
 
           PLATFORMS_OUT="$PLATFORMS_INTERSECT"
 
-          # Apply optional platforms_filter: keep detected platforms where the
-          # detected entry equals or starts with a filter entry (e.g. the filter
-          # value "linux/arm64" matches the manifest entry "linux/arm64/v8").
-          PLATFORMS_FILTER="${{ inputs.platforms_filter }}"
-          if [[ -n "$PLATFORMS_FILTER" ]]; then
-            FILTERED_LIST=()
-            while IFS= read -r FILTER_PLAT; do
-              while IFS= read -r DETECTED_PLAT; do
-                if [[ "$DETECTED_PLAT" == "$FILTER_PLAT" || "$DETECTED_PLAT" == "$FILTER_PLAT/"* ]]; then
-                  FILTERED_LIST+=("$DETECTED_PLAT")
-                fi
-              done < <(echo "$PLATFORMS_OUT" | tr ',' '\n')
-            done < <(echo "$PLATFORMS_FILTER" | tr ',' '\n')
-            PLATFORMS_OUT=$(printf '%s\n' "${FILTERED_LIST[@]+"${FILTERED_LIST[@]}"}" \
-              | sort -u | tr '\n' ',' | sed 's/,$//')
-            if [[ -z "$PLATFORMS_OUT" ]]; then
-              echo "::error::No detected platforms matched platforms_filter '${PLATFORMS_FILTER}'. Detected: ${PLATFORMS_INTERSECT}"
+          # If no versions were selected for build, skip platform detection/filtering.
+          # The build job is already guarded on versions being non-empty.
+          if [[ -z "$VERSIONS_OUT" ]]; then
+            echo "No PHP versions selected for build; skipping platform detection and filtering."
+          else
+            # If versions were selected but no platforms were detected at all, fail with a clear error.
+            if [[ -z "$PLATFORMS_INTERSECT" ]]; then
+              echo "::error::Failed to detect any platforms for the selected PHP versions. 'docker manifest inspect' did not return a usable manifest for any candidate image."
               exit 1
+            fi
+
+            # Apply optional platforms_filter: keep detected platforms where the
+            # detected entry equals or starts with a filter entry (e.g. the filter
+            # value "linux/arm64" matches the manifest entry "linux/arm64/v8").
+            PLATFORMS_FILTER="${{ inputs.platforms_filter }}"
+            if [[ -n "$PLATFORMS_FILTER" ]]; then
+              FILTERED_LIST=()
+              while IFS= read -r FILTER_PLAT; do
+                while IFS= read -r DETECTED_PLAT; do
+                  if [[ "$DETECTED_PLAT" == "$FILTER_PLAT" || "$DETECTED_PLAT" == "$FILTER_PLAT/"* ]]; then
+                    FILTERED_LIST+=("$DETECTED_PLAT")
+                  fi
+                done < <(echo "$PLATFORMS_OUT" | tr ',' '\n')
+              done < <(echo "$PLATFORMS_FILTER" | tr ',' '\n')
+              PLATFORMS_OUT=$(printf '%s\n' "${FILTERED_LIST[@]+"${FILTERED_LIST[@]}"}" \
+                | sort -u | tr '\n' ',' | sed 's/,$//')
+              if [[ -z "$PLATFORMS_OUT" ]]; then
+                echo "::error::No detected platforms matched platforms_filter '${PLATFORMS_FILTER}'. Detected: ${PLATFORMS_INTERSECT}"
+                exit 1
+              fi
             fi
           fi
 
