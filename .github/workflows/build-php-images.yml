@@ -158,7 +158,10 @@ jobs:
           else
             VERSIONS_OUT=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
                             | sed 's|./||' | sort -V | tr '\n' ' ' | xargs)
-            TARGETS_OUT="php-base php-secure php-advance"
+            # No SHA range — full rebuild (all workflow / workflow_dispatch).
+            # Leave TARGETS_OUT empty so bake-action falls back to the "default"
+            # group in docker-bake.hcl, which lists all three Docker Hub targets.
+            TARGETS_OUT=""
           fi
 
           echo "tag_suffix=${TAG_SUFFIX}"                   >> "$GITHUB_OUTPUT"

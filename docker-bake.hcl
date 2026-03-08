@@ -27,10 +27,8 @@
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
-# In CI, targets are passed explicitly from the detect job, so this group is
-# only used as a fallback for local development.
-# All three Docker Hub target groups are listed so that a local `bake` run
-# always produces the full set of images.
+# Used by the `all` workflow (full rebuild / workflow_dispatch) when no
+# before/after SHA range is available, and as a fallback for local development.
 # Note: Docker Buildx bake only pushes explicitly listed targets; context
 # dependencies (downloader, php-php-ext, php-secure-int) are built and pushed
 # to GHCR as part of the dependency chain but are NOT pushed to Docker Hub.
