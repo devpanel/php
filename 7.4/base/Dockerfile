@@ -19,6 +19,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       libpcre3 \
       libpcre3-dev \
+    || (sleep 5 && apt-get update && apt-get install -y --no-install-recommends --fix-missing \
+      libpcre3 \
+      libpcre3-dev) \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure gd (PHP 7.4: no avif support)

@@ -123,37 +123,42 @@ ENV CODES_ENABLE=yes
 # Install packages common to all PHP versions.
 # NOTE: libavif-dev (8.1+), libpcre2-dev (8.0+), and libpcre3/libpcre3-dev (7.4)
 # are version-specific and therefore NOT included here.
-RUN apt-get update && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
-      apt-utils \
-      sendmail-bin \
-      sendmail \
-      sudo \
-      libbz2-dev \
-      libjpeg62-turbo-dev \
-      libpng-dev \
-      libwebp-dev \
-      libfreetype6-dev \
-      libgeoip-dev \
-      wget \
-      libgmp-dev \
-      libmagickwand-dev \
-      libmagickcore-dev \
-      libicu-dev \
-      libldap2-dev \
-      libpspell-dev \
-      libtidy-dev \
-      libxslt1-dev \
-      libyaml-dev \
-      libzip-dev \
-      libmemcached-dev \
-      libssl-dev \
-      zlib1g-dev \
-      zip unzip \
-      git \
-      rsync \
-      ssh \
-      default-mysql-client \
+# Retry up to 3 times on failure to handle transient network/mirror errors.
+RUN for i in 1 2 3; do \
+      apt-get update && apt-get upgrade -y \
+        && apt-get install -y --no-install-recommends \
+          apt-utils \
+          sendmail-bin \
+          sendmail \
+          sudo \
+          libbz2-dev \
+          libjpeg62-turbo-dev \
+          libpng-dev \
+          libwebp-dev \
+          libfreetype6-dev \
+          libgeoip-dev \
+          wget \
+          libgmp-dev \
+          libmagickwand-dev \
+          libmagickcore-dev \
+          libicu-dev \
+          libldap2-dev \
+          libpspell-dev \
+          libtidy-dev \
+          libxslt1-dev \
+          libyaml-dev \
+          libzip-dev \
+          libmemcached-dev \
+          libssl-dev \
+          zlib1g-dev \
+          zip unzip \
+          git \
+          rsync \
+          ssh \
+          default-mysql-client \
+        && break \
+      || { [ "$i" -lt 3 ] && sleep 5; }; \
+    done \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure opcache (same for all versions)

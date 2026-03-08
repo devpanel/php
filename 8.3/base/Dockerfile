@@ -18,6 +18,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       libavif-dev \
       libpcre2-dev \
+    || (sleep 5 && apt-get update && apt-get install -y --no-install-recommends --fix-missing \
+      libavif-dev \
+      libpcre2-dev) \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure gd with avif support (PHP 8.1+)

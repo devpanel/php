@@ -16,6 +16,8 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       libpcre2-dev \
+    || (sleep 5 && apt-get update && apt-get install -y --no-install-recommends --fix-missing \
+      libpcre2-dev) \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure gd (PHP 8.0: no avif support)
