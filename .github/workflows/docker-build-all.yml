@@ -63,8 +63,7 @@ jobs:
   build:
     needs: detect-versions
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    permissions: {}
 
     steps:
       - name: Checkout repository
