@@ -4,10 +4,13 @@ ARG BASE_IMAGE=base-image
 FROM ${BASE_IMAGE}
 
 ENV VARNISH_SIZE 100M
+ARG DEBIAN_FRONTEND=noninteractive
 
 USER root
 
-RUN apt install lsb-release curl gpg -y
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends lsb-release curl gpg \
+    && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
 RUN echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list
 RUN apt-get update \
