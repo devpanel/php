@@ -83,7 +83,7 @@ function "cache_from_registry" {
 
 function "cache_to_registry" {
   params = [ref]
-  result = ["type=registry,ref=${ref},mode=max,ignore-error=true"]
+  result = ["type=registry,ref=${ref},mode=max"]
 }
 
 # ─── Shared downloader (pushed to GHCR, NOT pushed to Docker Hub) ────────────
