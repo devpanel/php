@@ -139,5 +139,3 @@ jobs:
           source:       .
           push:         true
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
