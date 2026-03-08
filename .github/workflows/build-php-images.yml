@@ -1,18 +1,18 @@
-name: Detect PHP versions
+name: Detect versions and build PHP images
 
-# Reusable workflow: determines the tag suffix, latest PHP version, version
-# list, and target platforms.
+# Reusable workflow: detects which PHP versions to build (and which platforms
+# to target), then builds and pushes the images to Docker Hub and GHCR.
 #
 # When filter_changed is true (used by the on-push workflow), only the PHP
 # versions whose source files changed between before_sha and after_sha are
-# included in the output.  When filter_changed is false (used by the
-# workflow_dispatch workflow), every versioned directory is included.
+# built.  When filter_changed is false (used by the workflow_dispatch
+# workflow), every versioned directory is built.
 
 on:
   workflow_call:
     inputs:
       filter_changed:
-        description: 'Only output versions whose files changed since before_sha'
+        description: 'Only build versions whose files changed since before_sha'
         type: boolean
         default: false
       before_sha:
@@ -23,15 +23,22 @@ on:
         description: 'Commit SHA after the push (required when filter_changed is true)'
         type: string
         default: ''
-    outputs:
-      tag_suffix:
-        value: ${{ jobs.detect.outputs.tag_suffix }}
-      latest_php_version:
-        value: ${{ jobs.detect.outputs.latest_php_version }}
-      versions:
-        value: ${{ jobs.detect.outputs.versions }}
-      platforms:
-        value: ${{ jobs.detect.outputs.platforms }}
+      cache_from_enabled:
+        description: 'Whether to read from cache (set to false for a forced full rebuild)'
+        type: boolean
+        default: true
+      platforms_filter:
+        description: >
+          Optional comma-separated list of platforms (e.g. "linux/amd64").
+          When provided, the build is restricted to platforms that appear in
+          both the auto-detected list and this filter.
+        type: string
+        default: ''
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
 
 jobs:
   detect:
@@ -52,7 +59,7 @@ jobs:
           # git diff can compare before_sha..after_sha.
           fetch-depth: ${{ inputs.filter_changed && '0' || '1' }}
 
-      - name: Detect versions
+      - name: Detect versions and platforms
         id: detect
         run: |
           set -euo pipefail
@@ -135,4 +142,66 @@ jobs:
               | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
               | grep -E "^linux/(amd64|arm64)(/|$)" | sort | tr '\n' ',' | sed 's/,$//')
           fi
-          echo "platforms=${DETECTED:-linux/amd64,linux/arm64}" >> "$GITHUB_OUTPUT"
+          PLATFORMS_OUT="${DETECTED:-linux/amd64,linux/arm64}"
+
+          # Apply optional platforms_filter: restrict to the intersection of
+          # detected platforms and the filter; fall back to the filter itself
+          # when nothing intersects (e.g. forcing a platform not yet in the manifest).
+          PLATFORMS_FILTER="${{ inputs.platforms_filter }}"
+          if [[ -n "$PLATFORMS_FILTER" ]]; then
+            FILTERED=$(echo "$PLATFORMS_OUT" | tr ',' '\n' \
+              | grep -xF -f <(echo "$PLATFORMS_FILTER" | tr ',' '\n') \
+              | tr '\n' ',' | sed 's/,$//')
+            PLATFORMS_OUT="${FILTERED:-$PLATFORMS_FILTER}"
+          fi
+
+          echo "platforms=${PLATFORMS_OUT}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect
+    if: ${{ needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute GHCR repository (lowercase)
+        id: ghcr
+        run: echo "repo=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push images
+        uses: docker/bake-action@v6
+        env:
+          TAG_SUFFIX:          ${{ needs.detect.outputs.tag_suffix }}
+          LATEST_PHP_VERSION:  ${{ needs.detect.outputs.latest_php_version }}
+          VERSIONS:            ${{ needs.detect.outputs.versions }}
+          PLATFORMS:           ${{ needs.detect.outputs.platforms }}
+          CACHE_FROM_ENABLED:  ${{ inputs.cache_from_enabled }}
+          GHCR_REPO:           ${{ steps.ghcr.outputs.repo }}
+        with:
+          files:  docker-bake.hcl
+          source: .
+          push:   true

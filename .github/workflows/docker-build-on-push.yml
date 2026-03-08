@@ -11,25 +11,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  detect-changes:
-    uses: ./.github/workflows/reusable/detect-php-versions.yml
-    permissions:
-      contents: read
-    with:
-      filter_changed: true
-      before_sha: ${{ github.event.before }}
-      after_sha: ${{ github.sha }}
-
   build:
-    needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.versions != '' && needs.detect-changes.outputs.latest_php_version != '' }}
-    uses: ./.github/workflows/reusable/build-images.yml
+    uses: ./.github/workflows/build-php-images.yml
     permissions:
       contents: read
       packages: write
     with:
-      tag_suffix:         ${{ needs.detect-changes.outputs.tag_suffix }}
-      latest_php_version: ${{ needs.detect-changes.outputs.latest_php_version }}
-      versions:           ${{ needs.detect-changes.outputs.versions }}
-      platforms:          ${{ needs.detect-changes.outputs.platforms }}
+      filter_changed: true
+      before_sha: ${{ github.event.before }}
+      after_sha: ${{ github.sha }}
     secrets: inherit

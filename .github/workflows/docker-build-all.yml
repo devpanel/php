@@ -8,21 +8,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  detect-versions:
-    uses: ./.github/workflows/reusable/detect-php-versions.yml
-    permissions:
-      contents: read
-
   build:
-    needs: detect-versions
-    uses: ./.github/workflows/reusable/build-images.yml
+    uses: ./.github/workflows/build-php-images.yml
     permissions:
       contents: read
       packages: write
     with:
-      tag_suffix:         ${{ needs.detect-versions.outputs.tag_suffix }}
-      latest_php_version: ${{ needs.detect-versions.outputs.latest_php_version }}
-      versions:           ${{ needs.detect-versions.outputs.versions }}
-      platforms:          ${{ needs.detect-versions.outputs.platforms }}
       cache_from_enabled: false
     secrets: inherit
