@@ -11,12 +11,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      before_sha: ${{ steps.effective_sha.outputs.before_sha }}
+    steps:
+      - name: Compute effective before_sha
+        id: effective_sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # If this run cancelled a previous push workflow, that workflow may
+          # have been mid-build and its changes would be lost.  To guarantee
+          # no commits are skipped, use the head_sha of the last *successful*
+          # run on this branch as the effective before_sha.  This covers every
+          # commit since the last known-good build, regardless of how many
+          # prior runs were cancelled in the interim.
+          LAST_SUCCESS_SHA=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/docker-build-on-push.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=1" \
+            --jq '.workflow_runs[0].head_sha // ""')
+          if [[ -n "$LAST_SUCCESS_SHA" && "$LAST_SUCCESS_SHA" != "${{ github.sha }}" ]]; then
+            echo "before_sha=$LAST_SUCCESS_SHA" >> "$GITHUB_OUTPUT"
+          else
+            # No prior successful run (e.g. first push on this branch), or the
+            # last successful run is already this commit; fall back to the push
+            # event's own before SHA.
+            echo "before_sha=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: prepare
     uses: ./.github/workflows/build-php-images.yml
     permissions:
       contents: read
       packages: write
     with:
-      before_sha: ${{ github.event.before }}
+      before_sha: ${{ needs.prepare.outputs.before_sha }}
       after_sha: ${{ github.sha }}
     secrets: inherit
