@@ -103,7 +103,6 @@ target "_php-ext-common" {
     common            = "./base"
   }
   platforms  = split(",", PLATFORMS)
-  secret     = ["id=github_token,env=GITHUB_TOKEN"]
   # No tags → not pushed to Docker Hub
 }
 
@@ -127,7 +126,6 @@ target "php-php-ext" {
 
 target "_base-common" {
   platforms  = split(",", PLATFORMS)
-  secret     = ["id=github_token,env=GITHUB_TOKEN"]
 }
 
 target "php-base" {
