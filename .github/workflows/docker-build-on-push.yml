@@ -108,8 +108,7 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.versions != '' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    permissions: {}
 
     steps:
       - name: Checkout repository
