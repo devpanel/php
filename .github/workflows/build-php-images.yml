@@ -152,7 +152,7 @@ jobs:
               # Keep only platforms present in both sets.
               PLATFORMS_INTERSECT=$(comm -12 \
                 <(echo "$PLATFORMS_INTERSECT" | tr ',' '\n' | sort) \
-                <(echo "$VER_PLATFORMS"        | tr ',' '\n' | sort) \
+                <(echo "$VER_PLATFORMS"       | tr ',' '\n' | sort) \
                 | tr '\n' ',' | sed 's/,$//')
             fi
           done < <(echo "$VERSIONS_OUT" | tr ' ' '\n' | grep -v '^$')
