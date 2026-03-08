@@ -33,16 +33,16 @@ group "default" {
   targets = ["php-advance"]
 }
 
-variable "REPO"                          { default = "devpanel/php"          }
+variable "REPO"                          { default = "devpanel/php"            }
 # GHCR_REPO is overridden in CI via the GHCR_REPO env variable (see workflow files).
 # The default below is a convenience fallback for local development only.
-variable "GHCR_REPO"                      { default = "ghcr.io/devpanel/php"  }
-variable "TAG_SUFFIX"                    { default = ""                       }
-variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"   }
-variable "LATEST_PHP_VERSION"            { default = "8.3"                    }
-variable "CODESERVER_VERSION"            { default = ""                       }
-variable "CORERULESET_VERSION"           { default = "3.3.5"                  }
-variable "CACHE_FROM_ENABLED"            { default = "true"                   }
+variable "GHCR_REPO"                     { default = "ghcr.io/devpanel/php"    }
+variable "TAG_SUFFIX"                    { default = ""                        }
+variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"     }
+variable "LATEST_PHP_VERSION"            { default = "8.3"                     }
+variable "CODESERVER_VERSION"            { default = ""                        }
+variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
+variable "CACHE_FROM_ENABLED"            { default = "true"                    }
 variable "PLATFORMS"                     { default = "linux/amd64,linux/arm64" }
 # Versions using Debian 11 / mod_security 2.9.3 that require the
 # REQUEST-922-MULTIPART-ATTACK rule to be removed.
