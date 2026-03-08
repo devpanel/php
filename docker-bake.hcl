@@ -1,27 +1,29 @@
 # docker-bake.hcl — Docker Buildx Bake file for devpanel/php
 #
 # Build graph (→ = "depends on"):
-#   downloader             (GHA cached, not pushed)
-#     └─▶ phpX_Y-php-ext   (GHA cached, not pushed)
-#           └─▶ phpX_Y-base        (GHA cached, pushed)
-#                 └─▶ phpX_Y-secure-int  (GHA cached, not pushed)
-#                       └─▶ phpX_Y-secure    (GHA cached, pushed)
-#                             └─▶ phpX_Y-advance  (GHA cached, pushed)
+#   downloader             (GHCR stored + cached, not pushed to Docker Hub)
+#     └─▶ phpX_Y-php-ext   (GHCR stored + cached, not pushed to Docker Hub)
+#           └─▶ phpX_Y-base        (GHA cached, pushed to Docker Hub)
+#                 └─▶ phpX_Y-secure-int  (GHCR stored + cached, not pushed to Docker Hub)
+#                       └─▶ phpX_Y-secure    (GHA cached, pushed to Docker Hub)
+#                             └─▶ phpX_Y-advance  (GHA cached, pushed to Docker Hub)
 #
 # Key variables (all overridable via environment variables):
-#   REPO                          Docker Hub repository                   (devpanel/php)
-#   TAG_SUFFIX                    Image tag suffix                        ("" on main, "-rc" on develop)
-#   VERSIONS                      Space-separated PHP version dirs        ("7.4 8.0 8.1 8.2 8.3")
-#   LATEST_PHP_VERSION            Highest PHP version dir in the repo     (8.3)
-#   CODESERVER_VERSION            code-server version to pin ("" = auto)  ("")
-#   CORERULESET_VERSION           ModSecurity CRS version                 (3.3.5)
-#   CACHE_FROM_ENABLED            Read from GHA cache ("true"/"false")    ("true")
-#   PLATFORMS                     Comma-separated target platforms        ("linux/amd64,linux/arm64")
+#   REPO                          Docker Hub repository                        (devpanel/php)
+#   GHCR_REPO                     GitHub Container Registry repository         (ghcr.io/devpanel/php)
+#   TAG_SUFFIX                    Image tag suffix                             ("" on main, "-rc" on develop)
+#   VERSIONS                      Space-separated PHP version dirs             ("7.4 8.0 8.1 8.2 8.3")
+#   LATEST_PHP_VERSION            Highest PHP version dir in the repo          (8.3)
+#   CODESERVER_VERSION            code-server version to pin ("" = auto)       ("")
+#   CORERULESET_VERSION           ModSecurity CRS version                      (3.3.5)
+#   CACHE_FROM_ENABLED            Read from GHA/GHCR cache ("true"/"false")    ("true")
+#   PLATFORMS                     Comma-separated target platforms             ("linux/amd64,linux/arm64")
 #   VERSIONS_NEEDING_MULTIPART_FIX  Versions running Debian 11 / modsec 2.9.3  ("7.4 8.0")
 #
-# Targets that are never pushed to Docker Hub:
+# Intermediate targets pushed to GHCR (never pushed to Docker Hub):
 #   downloader, phpX_Y-php-ext, phpX_Y-secure-int
-# All of these are still cached in GitHub Actions (type=gha, mode=max).
+# These are permanently stored in the GitHub Container Registry and use
+# type=registry cache (mode=max) for efficient incremental rebuilds.
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
@@ -31,13 +33,16 @@ group "default" {
   targets = ["php-advance"]
 }
 
-variable "REPO"                          { default = "devpanel/php"          }
-variable "TAG_SUFFIX"                    { default = ""                       }
-variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"   }
-variable "LATEST_PHP_VERSION"            { default = "8.3"                    }
-variable "CODESERVER_VERSION"            { default = ""                       }
-variable "CORERULESET_VERSION"           { default = "3.3.5"                  }
-variable "CACHE_FROM_ENABLED"            { default = "true"                   }
+variable "REPO"                          { default = "devpanel/php"            }
+# GHCR_REPO is overridden in CI via the GHCR_REPO env variable (see workflow files).
+# The default below is a convenience fallback for local development only.
+variable "GHCR_REPO"                     { default = "ghcr.io/devpanel/php"    }
+variable "TAG_SUFFIX"                    { default = ""                        }
+variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"     }
+variable "LATEST_PHP_VERSION"            { default = "8.3"                     }
+variable "CODESERVER_VERSION"            { default = ""                        }
+variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
+variable "CACHE_FROM_ENABLED"            { default = "true"                    }
 variable "PLATFORMS"                     { default = "linux/amd64,linux/arm64" }
 # Versions using Debian 11 / mod_security 2.9.3 that require the
 # REQUEST-922-MULTIPART-ATTACK rule to be removed.
@@ -67,7 +72,21 @@ function "cache_to" {
   result = ["type=gha,scope=${scope},mode=max"]
 }
 
-# ─── Shared downloader (NOT pushed, cached in GHA) ───────────────────────────
+# cache_from_registry / cache_to_registry: permanent registry-based cache in GHCR.
+# Used for intermediate targets (downloader, php-ext, secure-int) so that their
+# build layers survive beyond the GHA cache eviction window.
+
+function "cache_from_registry" {
+  params = [ref]
+  result = CACHE_FROM_ENABLED == "true" ? ["type=registry,ref=${ref}"] : []
+}
+
+function "cache_to_registry" {
+  params = [ref]
+  result = ["type=registry,ref=${ref},mode=max"]
+}
+
+# ─── Shared downloader (pushed to GHCR, NOT pushed to Docker Hub) ────────────
 # Downloads code-server .deb and libsodium source; both are version-independent.
 # Referenced by every phpX_Y-php-ext target via the 'common-downloader'
 # named context.
@@ -81,12 +100,12 @@ target "downloader" {
     CODESERVER_VERSION = CODESERVER_VERSION
   }
   secret     = ["id=github_token,env=GITHUB_TOKEN"]
-  cache-from = cache_from("downloader")
-  cache-to   = cache_to("downloader")
-  # No tags → not pushed to Docker Hub
+  tags       = ["${GHCR_REPO}:downloader${TAG_SUFFIX}"]
+  cache-from = cache_from_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}")
+  cache-to   = cache_to_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}")
 }
 
-# ─── Common php-ext intermediates (NOT pushed, cached in GHA) ────────────────
+# ─── Common php-ext intermediates (pushed to GHCR, NOT pushed to Docker Hub) ─
 # Builds the php-ext-common stage from base/Dockerfile for each PHP version.
 # Contains all extensions, packages, and tools common to every version.
 # Version-specific differences (avif, pcre, gd flags, imagick method, etc.)
@@ -113,8 +132,9 @@ target "php-php-ext" {
   name     = "php${ver_key(version)}-php-ext"
   inherits = ["_php-ext-common"]
   args     = { PHP_VERSION = version }
-  cache-from = cache_from("php${ver_key(version)}-php-ext")
-  cache-to   = cache_to("php${ver_key(version)}-php-ext")
+  tags       = ["${GHCR_REPO}:${version}-php-ext${TAG_SUFFIX}"]
+  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-php-ext${TAG_SUFFIX}")
+  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-php-ext${TAG_SUFFIX}")
 }
 
 # ─── Base final images ────────────────────────────────────────────────────────
@@ -146,7 +166,7 @@ target "php-base" {
   cache-to   = cache_to("php${ver_key(version)}-base")
 }
 
-# ─── Secure intermediate targets (NOT pushed, cached in GHA) ─────────────────
+# ─── Secure intermediate targets (pushed to GHCR, NOT pushed to Docker Hub) ──
 # Built from the secure-intermediate stage of secure/Dockerfile on top of each
 # version's base image.
 
@@ -166,8 +186,9 @@ target "php-secure-int" {
   name     = "php${ver_key(version)}-secure-int"
   inherits = ["_secure-int-common"]
   contexts = { base-image = "target:php${ver_key(version)}-base" }
-  cache-from = cache_from("php${ver_key(version)}-secure-int")
-  cache-to   = cache_to("php${ver_key(version)}-secure-int")
+  tags       = ["${GHCR_REPO}:${version}-secure-int${TAG_SUFFIX}"]
+  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-secure-int${TAG_SUFFIX}")
+  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-secure-int${TAG_SUFFIX}")
 }
 
 # ─── Secure final images ──────────────────────────────────────────────────────
