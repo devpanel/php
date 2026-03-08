@@ -63,7 +63,9 @@ jobs:
   build:
     needs: detect-versions
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout repository
@@ -74,6 +76,17 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute GHCR repository (lowercase)
+        id: ghcr
+        run: echo "repo=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -89,6 +102,7 @@ jobs:
           VERSIONS:            ${{ needs.detect-versions.outputs.versions }}
           PLATFORMS:           ${{ needs.detect-versions.outputs.platforms }}
           CACHE_FROM_ENABLED:  "false"
+          GHCR_REPO:           ${{ steps.ghcr.outputs.repo }}
         with:
           files:        docker-bake.hcl
           source:       .
