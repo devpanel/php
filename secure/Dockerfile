@@ -12,13 +12,15 @@ WORKDIR /home/root
 ARG CORERULESET_VERSION="3.3.5"
 # Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
 # resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
-RUN for i in $(seq 1 3); do \
+RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
+    && for i in $(seq 1 3); do \
       apt-get update -y \
         && apt-get install -y --no-install-recommends libapache2-mod-security2 wget unzip \
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
     && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -rf /usr/share/modsecurity-crs \
     && wget -O /tmp/modsecurity-crs.zip \
          https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CORERULESET_VERSION}.zip \

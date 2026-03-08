@@ -14,7 +14,8 @@ USER root
 # PHP 8.1+ specific packages: libavif-dev (avif gd support) and libpcre2-dev
 # Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
 # resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
-RUN for i in $(seq 1 3); do \
+RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
+    && for i in $(seq 1 3); do \
       apt-get update \
         && apt-get install -y --no-install-recommends \
           libavif-dev \
@@ -22,7 +23,8 @@ RUN for i in $(seq 1 3); do \
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
 # Configure gd with avif support (PHP 8.1+)
 RUN docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp
