@@ -114,6 +114,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate required outputs from detect-changes
+        run: |
+          if [ -z "${{ needs.detect-changes.outputs.latest_php_version }}" ]; then
+            echo "No PHP version detected (latest_php_version is empty). Aborting build."
+            exit 1
+          fi
+          echo "Building versions: ${{ needs.detect-changes.outputs.versions }}"
+          echo "Latest PHP version: ${{ needs.detect-changes.outputs.latest_php_version }}"
+
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
