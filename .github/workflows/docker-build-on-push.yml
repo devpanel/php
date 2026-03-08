@@ -138,4 +138,3 @@ jobs:
           files:        docker-bake.hcl
           source:       .
           push:         true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
