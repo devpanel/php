@@ -6,7 +6,7 @@
 #   - gd configure flags (no avif)
 #   - PECL: igbinary 3.2.12, imagick via pecl, oauth extension
 #   - WP-CLI 2.4.0 override (common installs 2.9.0)
-#   - drush7 + drush11 symfony-5.4.18 override
+#   - drush7 (PHP 7.4 only)
 #   - apache-start.sh override (extra WEB_ROOT substitution)
 FROM common-php-ext AS final
 
@@ -48,8 +48,8 @@ RUN rm -f /usr/local/bin/wp \
     && chmod +x wp-cli-2.4.0.phar \
     && mv wp-cli-2.4.0.phar /usr/local/bin/wp
 
-# Overlay 7.4-specific drush files: drush7 (new) and drush11 symfony-5.4.18
-# Docker COPY merges so common drush8/9/10 are preserved.
+# Overlay 7.4-specific drush files: drush7 (PHP 7.4 only).
+# Docker COPY merges so common drush8/9/10/11 are preserved.
 COPY drush /drush
 RUN chown -R ${USER}:${GROUP} /drush
 
@@ -58,7 +58,3 @@ USER ${USER}
 # drush7 setup (7.4 only)
 RUN composer update --working-dir=/drush/drush7 \
     && echo "alias drush7=/drush/drush7/vendor/bin/drush" >> ~/.bashrc
-
-# Re-run drush11 composer update after symfony-5.4.18 override
-# (alias already set by common stage; only the vendor dependencies change)
-RUN composer update --working-dir=/drush/drush11

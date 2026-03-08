@@ -56,3 +56,4 @@ RUN docker-php-ext-enable gd igbinary xdebug
 RUN composer self-update --2.7.7
 
 USER ${USER}
+

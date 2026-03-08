@@ -5,7 +5,6 @@
 #   - libpcre2-dev (no libavif-dev)
 #   - gd configure flags (no avif)
 #   - PECL: igbinary 3.2.12, imagick via pecl
-#   - drush11 symfony-5.4.18 override
 FROM common-php-ext AS final
 
 # Switch to root for version-specific installation
@@ -38,13 +37,4 @@ RUN pecl install -o -f \
 
 RUN docker-php-ext-enable gd igbinary imagick
 
-# Overlay 8.0-specific drush11 (symfony 5.4.18 override for Debian 11).
-# Docker COPY merges so common drush8/9/10 are preserved.
-COPY drush /drush
-RUN chown -R ${USER}:${GROUP} /drush
-
 USER ${USER}
-
-# Re-run drush11 composer update after symfony-5.4.18 override
-# (alias already set by common stage; only the vendor dependencies change)
-RUN composer update --working-dir=/drush/drush11
