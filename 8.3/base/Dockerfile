@@ -14,13 +14,14 @@ ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
 # PHP 8.3 specific packages: libavif-dev (avif gd support) and libpcre2-dev
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-      libavif-dev \
-      libpcre2-dev \
-    || (sleep 5 && apt-get update && apt-get install -y --no-install-recommends --fix-missing \
-      libavif-dev \
-      libpcre2-dev) \
+RUN for i in 1 2 3; do \
+      apt-get update \
+        && apt-get install -y --no-install-recommends \
+          libavif-dev \
+          libpcre2-dev \
+        && break \
+      || { [ "$i" -lt 3 ] && sleep 5; }; \
+    done \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure gd with avif support (PHP 8.1+)

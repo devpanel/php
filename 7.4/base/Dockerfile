@@ -15,13 +15,14 @@ ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
 # PHP 7.4 (Debian 10) specific packages: libpcre3/libpcre3-dev (no libavif-dev)
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-      libpcre3 \
-      libpcre3-dev \
-    || (sleep 5 && apt-get update && apt-get install -y --no-install-recommends --fix-missing \
-      libpcre3 \
-      libpcre3-dev) \
+RUN for i in 1 2 3; do \
+      apt-get update \
+        && apt-get install -y --no-install-recommends \
+          libpcre3 \
+          libpcre3-dev \
+        && break \
+      || { [ "$i" -lt 3 ] && sleep 5; }; \
+    done \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure gd (PHP 7.4: no avif support)
