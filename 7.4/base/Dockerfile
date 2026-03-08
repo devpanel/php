@@ -11,6 +11,7 @@
 FROM common-php-ext AS final
 
 # Switch to root for version-specific installation
+ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
 # PHP 7.4 (Debian 10) specific packages: libpcre3/libpcre3-dev (no libavif-dev)

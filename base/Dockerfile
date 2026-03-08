@@ -91,7 +91,7 @@ exit(1); \
 FROM php:${PHP_VERSION}-apache AS php-ext-common
 
 #== System Environments
-ENV DEBIAN_FRONTEND=noninteractive
+ARG DEBIAN_FRONTEND=noninteractive
 ENV USER=www
 ENV GROUP=www
 ENV UID=1000

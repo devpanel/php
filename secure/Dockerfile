@@ -6,7 +6,7 @@ ARG BASE_IMAGE=base-image
 FROM ${BASE_IMAGE} AS secure-intermediate
 
 USER root
-ENV DEBIAN_FRONTEND=noninteractive
+ARG DEBIAN_FRONTEND=noninteractive
 WORKDIR /home/root
 
 ARG CORERULESET_VERSION="3.3.5"

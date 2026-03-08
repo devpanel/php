@@ -4,7 +4,7 @@ ARG BASE_IMAGE=base-image
 FROM ${BASE_IMAGE}
 
 ENV VARNISH_SIZE 100M
-ENV DEBIAN_FRONTEND=noninteractive
+ARG DEBIAN_FRONTEND=noninteractive
 
 USER root
 

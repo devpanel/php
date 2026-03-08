@@ -10,6 +10,7 @@
 FROM common-php-ext AS final
 
 # Switch to root for version-specific installation
+ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
 # PHP 8.3 specific packages: libavif-dev (avif gd support) and libpcre2-dev
