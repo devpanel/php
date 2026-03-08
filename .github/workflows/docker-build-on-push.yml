@@ -106,7 +106,7 @@ jobs:
 
   build:
     needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.versions != '' }}
+    if: ${{ needs.detect-changes.outputs.versions != '' && needs.detect-changes.outputs.latest_php_version != '' }}
     runs-on: ubuntu-latest
     permissions: {}
 

@@ -9,6 +9,7 @@
 # 'common-downloader' named context in docker-bake.hcl.  It is cached in
 # GitHub Actions (type=gha) but never pushed to Docker Hub.
 ARG LATEST_PHP_VERSION=8.3
+ARG PHP_VERSION=8.3
 FROM php:${LATEST_PHP_VERSION}-apache AS downloader
 
 ARG CODESERVER_MAJOR_VERSION=4
@@ -87,7 +88,6 @@ exit(1); \
 #
 # This stage is referenced as the 'common-php-ext' Bake named context.
 # It is cached in GitHub Actions (type=gha) but never pushed to Docker Hub.
-ARG PHP_VERSION=8.3
 FROM php:${PHP_VERSION}-apache AS php-ext-common
 
 #== System Environments
