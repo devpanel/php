@@ -27,10 +27,13 @@
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
-# All three Docker Hub target groups are listed explicitly: Docker Buildx bake
-# only pushes targets that appear directly in this list.  Context dependencies
-# (downloader, php-php-ext, php-secure-int) are built and pushed to GHCR as
-# part of the dependency chain, but they are NOT pushed to Docker Hub.
+# In CI, targets are passed explicitly from the detect job, so this group is
+# only used as a fallback for local development.
+# All three Docker Hub target groups are listed so that a local `bake` run
+# always produces the full set of images.
+# Note: Docker Buildx bake only pushes explicitly listed targets; context
+# dependencies (downloader, php-php-ext, php-secure-int) are built and pushed
+# to GHCR as part of the dependency chain but are NOT pushed to Docker Hub.
 group "default" {
   targets = ["php-base", "php-secure", "php-advance"]
 }

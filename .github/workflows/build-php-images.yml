@@ -45,6 +45,7 @@ jobs:
       tag_suffix:          ${{ steps.detect.outputs.tag_suffix }}
       latest_php_version:  ${{ steps.detect.outputs.latest_php_version }}
       versions:            ${{ steps.detect.outputs.versions }}
+      targets:             ${{ steps.detect.outputs.targets }}
       platforms:           ${{ steps.detect.outputs.platforms }}
 
     steps:
@@ -120,14 +121,50 @@ jobs:
 
             VERSIONS_OUT=$(printf '%s\n' "${CHANGED_VERSIONS[@]+"${CHANGED_VERSIONS[@]}"}" \
                           | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
+
+            # Determine which Docker Hub target groups to push.
+            # Dependency chain: base → (via secure-int) → secure → advance.
+            # When a target changes, every downstream target must also be pushed.
+            NEED_BASE=false
+            NEED_SECURE=false
+            NEED_ADVANCE=false
+
+            if [[ $BAKE_CHANGED -gt 0 || $BASE_COMMON -gt 0 ]]; then
+              NEED_BASE=true; NEED_SECURE=true; NEED_ADVANCE=true
+            elif [[ $SECURE_COMMON -gt 0 ]]; then
+              NEED_SECURE=true; NEED_ADVANCE=true
+            elif [[ $ADVANCE_COMMON -gt 0 ]]; then
+              NEED_ADVANCE=true
+            fi
+
+            # For per-version changes, accumulate the widest set of targets
+            # needed across all changed versions.
+            if ! $NEED_BASE; then
+              while IFS= read -r VER; do
+                [[ -z "$VER" ]] && continue
+                if [[ $(path_changed "${VER}/base/") -gt 0 ]]; then
+                  NEED_BASE=true; NEED_SECURE=true; NEED_ADVANCE=true
+                  break
+                elif [[ $(path_changed "${VER}/secure/") -gt 0 ]]; then
+                  NEED_SECURE=true; NEED_ADVANCE=true
+                fi
+              done < <(printf '%s\n' "${CHANGED_VERSIONS[@]+${CHANGED_VERSIONS[@]}}")
+            fi
+
+            TARGETS_OUT=""
+            if $NEED_BASE;    then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php-base";    fi
+            if $NEED_SECURE;  then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php-secure";  fi
+            if $NEED_ADVANCE; then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php-advance"; fi
           else
             VERSIONS_OUT=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
                             | sed 's|./||' | sort -V | tr '\n' ' ' | xargs)
+            TARGETS_OUT="php-base php-secure php-advance"
           fi
 
           echo "tag_suffix=${TAG_SUFFIX}"                   >> "$GITHUB_OUTPUT"
           echo "latest_php_version=${LATEST_PHP_VERSION}"   >> "$GITHUB_OUTPUT"
           echo "versions=${VERSIONS_OUT}"                   >> "$GITHUB_OUTPUT"
+          echo "targets=${TARGETS_OUT}"                     >> "$GITHUB_OUTPUT"
 
           # If no versions were selected for build, skip platform detection/filtering.
           # The build job is already guarded on versions being non-empty.
@@ -277,6 +314,7 @@ jobs:
           CACHE_FROM_ENABLED:  ${{ inputs.cache_from_enabled }}
           GHCR_REPO:           ${{ steps.ghcr.outputs.repo }}
         with:
-          files:  docker-bake.hcl
-          source: .
-          push:   true
+          files:   docker-bake.hcl
+          source:  .
+          push:    true
+          targets: ${{ needs.detect.outputs.targets }}
