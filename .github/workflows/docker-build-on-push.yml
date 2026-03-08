@@ -63,71 +63,48 @@ jobs:
           ADVANCE_COMMON=$(path_changed "advance/")
           BAKE_CHANGED=$(path_changed "docker-bake.hcl")
 
-          # Flags for which target types need rebuilding (aggregate across all versions)
-          NEED_BASE=false
-          NEED_SECURE=false
-          NEED_ADVANCE=false
-          # When a common directory changes every version must be rebuilt
-          ALL_VERSIONS_CHANGED=false
-
-          if [[ $BASE_COMMON -gt 0 || $BAKE_CHANGED -gt 0 ]]; then
-            NEED_BASE=true; NEED_SECURE=true; NEED_ADVANCE=true
-            ALL_VERSIONS_CHANGED=true
-          fi
-          if [[ $SECURE_COMMON -gt 0 ]]; then
-            NEED_SECURE=true; NEED_ADVANCE=true
-            ALL_VERSIONS_CHANGED=true
-          fi
-          if [[ $ADVANCE_COMMON -gt 0 ]]; then
-            NEED_ADVANCE=true
-            ALL_VERSIONS_CHANGED=true
-          fi
-
           CHANGED_VERSIONS=()
           LATEST_PHP_VERSION=""
+          ALL_VERSIONS_CHANGED=false
+
+          if [[ $BASE_COMMON -gt 0 || $SECURE_COMMON -gt 0 || $ADVANCE_COMMON -gt 0 || $BAKE_CHANGED -gt 0 ]]; then
+            ALL_VERSIONS_CHANGED=true
+          fi
 
           while IFS= read -r VER; do
             LATEST_PHP_VERSION="$VER"
 
-            BASE_VER=$(path_changed "${VER}/base/")
-            SECURE_VER=$(path_changed "${VER}/secure/")
-
             if $ALL_VERSIONS_CHANGED; then
               # A common directory changed — every version is affected
               CHANGED_VERSIONS+=("$VER")
-            fi
-
-            # Always check per-version directories even when ALL_VERSIONS_CHANGED
-            # so that version-specific changes can upgrade the required target flags
-            # (e.g. advance/ changed globally but 7.4/base/ also changed — we need
-            # php-base/php-secure for 7.4 in addition to php-advance for all).
-            if [[ $BASE_VER -gt 0 ]]; then
-              NEED_BASE=true; NEED_SECURE=true; NEED_ADVANCE=true
-              if ! $ALL_VERSIONS_CHANGED; then CHANGED_VERSIONS+=("$VER"); fi
-            elif [[ $SECURE_VER -gt 0 ]]; then
-              NEED_SECURE=true; NEED_ADVANCE=true
-              if ! $ALL_VERSIONS_CHANGED; then CHANGED_VERSIONS+=("$VER"); fi
+            else
+              BASE_VER=$(path_changed "${VER}/base/")
+              SECURE_VER=$(path_changed "${VER}/secure/")
+              if [[ $BASE_VER -gt 0 || $SECURE_VER -gt 0 ]]; then
+                CHANGED_VERSIONS+=("$VER")
+              fi
             fi
           done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
                      | sed 's|./||' | sort -V)
 
-          # Build the list of high-level matrix target names.
+          # Use php-advance as the single target.
           # Individual expanded names (php7_4-base etc.) are not resolvable as
-          # CLI arguments in docker buildx bake v0.31+; the matrix parent names
-          # (php-base, php-secure, php-advance) work correctly and expand
-          # automatically for the versions in the VERSIONS variable.
-          TARGETS=()
-          if $NEED_BASE;    then TARGETS+=("php-base");    fi
-          if $NEED_SECURE;  then TARGETS+=("php-secure");  fi
-          if $NEED_ADVANCE; then TARGETS+=("php-advance"); fi
-
-          # Deduplicate versions (preserve order)
+          # CLI arguments in docker buildx bake v0.31+; the matrix parent name
+          # php-advance works correctly and, via bake's dependency chain
+          # (php-advance → php-secure → php-secure-int → php-base → php-php-ext),
+          # automatically builds and pushes every tagged image in the chain.
+          # Docker's build cache handles the efficiency: only layers that actually
+          # changed are rebuilt; unchanged versions get cache hits.
           UNIQUE_VERSIONS=$(printf '%s\n' "${CHANGED_VERSIONS[@]+"${CHANGED_VERSIONS[@]}"}" \
                             | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
 
           echo "tag_suffix=${TAG_SUFFIX}"                   >> "$GITHUB_OUTPUT"
           echo "latest_php_version=${LATEST_PHP_VERSION}"   >> "$GITHUB_OUTPUT"
-          echo "bake_targets=${TARGETS[*]+"${TARGETS[*]}"}" >> "$GITHUB_OUTPUT"
+          if [[ ${#CHANGED_VERSIONS[@]} -gt 0 ]]; then
+            echo "bake_targets=php-advance"                 >> "$GITHUB_OUTPUT"
+          else
+            echo "bake_targets="                            >> "$GITHUB_OUTPUT"
+          fi
           echo "versions=${UNIQUE_VERSIONS}"                >> "$GITHUB_OUTPUT"
 
           # Determine build platforms from the official PHP base image manifest,
