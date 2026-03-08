@@ -1,0 +1,241 @@
+name: Detect versions and build PHP images
+
+# Reusable workflow: detects which PHP versions to build (and which platforms
+# to target), then builds and pushes the images to Docker Hub and GHCR.
+#
+# When before_sha and after_sha are provided (used by the on-push workflow),
+# only the PHP versions whose source files changed between those two commits
+# are built.  Otherwise (used by the workflow_dispatch workflow), every
+# versioned directory is built.
+
+on:
+  workflow_call:
+    inputs:
+      before_sha:
+        description: 'Commit SHA before the push; when provided with after_sha, only changed versions are built'
+        type: string
+        default: ''
+      after_sha:
+        description: 'Commit SHA after the push; when provided with before_sha, only changed versions are built'
+        type: string
+        default: ''
+      cache_from_enabled:
+        description: 'Whether to read from cache (set to false for a forced full rebuild)'
+        type: boolean
+        default: true
+      platforms_filter:
+        description: >
+          Optional comma-separated list of platforms (e.g. "linux/amd64").
+          When provided, the build is restricted to platforms that appear in
+          both the auto-detected list and this filter.
+        type: string
+        default: 'linux/amd64,linux/arm64'
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag_suffix:          ${{ steps.detect.outputs.tag_suffix }}
+      latest_php_version:  ${{ steps.detect.outputs.latest_php_version }}
+      versions:            ${{ steps.detect.outputs.versions }}
+      platforms:           ${{ steps.detect.outputs.platforms }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history is needed when before_sha/after_sha are provided so
+          # that git diff can compare before_sha..after_sha.
+          fetch-depth: ${{ (inputs.before_sha != '' && inputs.after_sha != '') && '0' || '1' }}
+
+      - name: Detect versions and platforms
+        id: detect
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAG_SUFFIX=""
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            TAG_SUFFIX="-rc"
+          else
+            BRANCH="${{ github.ref_name }}"
+            TAG_SUFFIX="-${BRANCH//\//-}"
+          fi
+
+          # Collect all versioned directories (numeric names), sorted by version.
+          LATEST_PHP_VERSION=""
+          while IFS= read -r VER; do
+            LATEST_PHP_VERSION="$VER"
+          done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
+                     | sed 's|./||' | sort -V)
+
+          if [[ -n "${{ inputs.before_sha }}" && -n "${{ inputs.after_sha }}" ]]; then
+            BEFORE="${{ inputs.before_sha }}"
+            AFTER="${{ inputs.after_sha }}"
+
+            # On a brand-new branch push the before SHA is all zeros.
+            IS_NEW_BRANCH=false
+            if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+              IS_NEW_BRANCH=true
+            fi
+
+            # Returns 1 if any file under the given path changed, else 0.
+            path_changed() {
+              if $IS_NEW_BRANCH; then echo 1; return; fi
+              git diff --name-only "$BEFORE" "$AFTER" -- "$1" 2>/dev/null | wc -l
+            }
+
+            # Common-directory changes affect ALL versions.
+            BASE_COMMON=$(path_changed "base/")
+            SECURE_COMMON=$(path_changed "secure/")
+            ADVANCE_COMMON=$(path_changed "advance/")
+            BAKE_CHANGED=$(path_changed "docker-bake.hcl")
+
+            CHANGED_VERSIONS=()
+            ALL_VERSIONS_CHANGED=false
+
+            if [[ $BASE_COMMON -gt 0 || $SECURE_COMMON -gt 0 || $ADVANCE_COMMON -gt 0 || $BAKE_CHANGED -gt 0 ]]; then
+              ALL_VERSIONS_CHANGED=true
+            fi
+
+            while IFS= read -r VER; do
+              if $ALL_VERSIONS_CHANGED; then
+                CHANGED_VERSIONS+=("$VER")
+              else
+                BASE_VER=$(path_changed "${VER}/base/")
+                SECURE_VER=$(path_changed "${VER}/secure/")
+                if [[ $BASE_VER -gt 0 || $SECURE_VER -gt 0 ]]; then
+                  CHANGED_VERSIONS+=("$VER")
+                fi
+              fi
+            done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
+                       | sed 's|./||' | sort -V)
+
+            VERSIONS_OUT=$(printf '%s\n' "${CHANGED_VERSIONS[@]+"${CHANGED_VERSIONS[@]}"}" \
+                          | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
+          else
+            VERSIONS_OUT=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
+                            | sed 's|./||' | sort -V | tr '\n' ' ' | xargs)
+          fi
+
+          echo "tag_suffix=${TAG_SUFFIX}"                   >> "$GITHUB_OUTPUT"
+          echo "latest_php_version=${LATEST_PHP_VERSION}"   >> "$GITHUB_OUTPUT"
+          echo "versions=${VERSIONS_OUT}"                   >> "$GITHUB_OUTPUT"
+
+          # If no versions were selected for build, skip platform detection/filtering.
+          # The build job is already guarded on versions being non-empty.
+          PLATFORMS_OUT=""
+          if [[ -z "$VERSIONS_OUT" ]]; then
+            echo "No PHP versions selected for build; skipping platform detection and filtering."
+          else
+            # Determine build platforms by inspecting every PHP base image
+            # manifest and keeping only the platforms supported by all versions.
+            PLATFORMS_INTERSECT=""
+            while IFS= read -r VER; do
+              PHP_MANIFEST=$(docker manifest inspect "php:${VER}-apache" 2>/dev/null || echo "")
+              VER_PLATFORMS=""
+              if [[ -n "$PHP_MANIFEST" ]]; then
+                VER_PLATFORMS=$(echo "$PHP_MANIFEST" \
+                  | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
+                  | sort | tr '\n' ',' | sed 's/,$//')
+              fi
+              # Skip versions whose manifest is unavailable.
+              [[ -z "$VER_PLATFORMS" ]] && continue
+              if [[ -z "$PLATFORMS_INTERSECT" ]]; then
+                PLATFORMS_INTERSECT="$VER_PLATFORMS"
+              else
+                # Keep only platforms present in both sets.
+                PLATFORMS_INTERSECT=$(comm -12 \
+                  <(echo "$PLATFORMS_INTERSECT" | tr ',' '\n' | sort) \
+                  <(echo "$VER_PLATFORMS"       | tr ',' '\n' | sort) \
+                  | tr '\n' ',' | sed 's/,$//')
+              fi
+            done < <(echo "$VERSIONS_OUT" | tr ' ' '\n' | grep -v '^$')
+
+            # If versions were selected but no platforms were detected at all, fail with a clear error.
+            if [[ -z "$PLATFORMS_INTERSECT" ]]; then
+              echo "::error::Failed to detect any platforms for the selected PHP versions. 'docker manifest inspect' did not return a usable manifest for any candidate image."
+              exit 1
+            fi
+
+            PLATFORMS_OUT="$PLATFORMS_INTERSECT"
+
+            # Apply optional platforms_filter: keep detected platforms where the
+            # detected entry equals or starts with a filter entry (e.g. the filter
+            # value "linux/arm64" matches the manifest entry "linux/arm64/v8").
+            PLATFORMS_FILTER="${{ inputs.platforms_filter }}"
+            if [[ -n "$PLATFORMS_FILTER" ]]; then
+              FILTERED_LIST=()
+              while IFS= read -r FILTER_PLAT; do
+                while IFS= read -r DETECTED_PLAT; do
+                  if [[ "$DETECTED_PLAT" == "$FILTER_PLAT" || "$DETECTED_PLAT" == "$FILTER_PLAT/"* ]]; then
+                    FILTERED_LIST+=("$DETECTED_PLAT")
+                  fi
+                done < <(echo "$PLATFORMS_OUT" | tr ',' '\n')
+              done < <(echo "$PLATFORMS_FILTER" | tr ',' '\n')
+              PLATFORMS_OUT=$(printf '%s\n' "${FILTERED_LIST[@]+"${FILTERED_LIST[@]}"}" \
+                | sort -u | tr '\n' ',' | sed 's/,$//')
+              if [[ -z "$PLATFORMS_OUT" ]]; then
+                echo "::error::No detected platforms matched platforms_filter '${PLATFORMS_FILTER}'. Detected: ${PLATFORMS_INTERSECT}"
+                exit 1
+              fi
+            fi
+          fi
+
+          echo "platforms=${PLATFORMS_OUT}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect
+    if: ${{ needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute GHCR repository (lowercase)
+        id: ghcr
+        run: echo "repo=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push images
+        uses: docker/bake-action@v6
+        env:
+          TAG_SUFFIX:          ${{ needs.detect.outputs.tag_suffix }}
+          LATEST_PHP_VERSION:  ${{ needs.detect.outputs.latest_php_version }}
+          VERSIONS:            ${{ needs.detect.outputs.versions }}
+          PLATFORMS:           ${{ needs.detect.outputs.platforms }}
+          CACHE_FROM_ENABLED:  ${{ inputs.cache_from_enabled }}
+          GHCR_REPO:           ${{ steps.ghcr.outputs.repo }}
+        with:
+          files:  docker-bake.hcl
+          source: .
+          push:   true
