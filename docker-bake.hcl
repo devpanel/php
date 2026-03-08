@@ -9,15 +9,15 @@
 #                             └─▶ phpX_Y-advance  (GHA cached, pushed to Docker Hub)
 #
 # Key variables (all overridable via environment variables):
-#   REPO                          Docker Hub repository                   (devpanel/php)
-#   GHCR_REPO                     GitHub Container Registry repository    (ghcr.io/devpanel/php)
-#   TAG_SUFFIX                    Image tag suffix                        ("" on main, "-rc" on develop)
-#   VERSIONS                      Space-separated PHP version dirs        ("7.4 8.0 8.1 8.2 8.3")
-#   LATEST_PHP_VERSION            Highest PHP version dir in the repo     (8.3)
-#   CODESERVER_VERSION            code-server version to pin ("" = auto)  ("")
-#   CORERULESET_VERSION           ModSecurity CRS version                 (3.3.5)
-#   CACHE_FROM_ENABLED            Read from GHA/GHCR cache ("true"/"false")  ("true")
-#   PLATFORMS                     Comma-separated target platforms        ("linux/amd64,linux/arm64")
+#   REPO                          Docker Hub repository                        (devpanel/php)
+#   GHCR_REPO                     GitHub Container Registry repository         (ghcr.io/devpanel/php)
+#   TAG_SUFFIX                    Image tag suffix                             ("" on main, "-rc" on develop)
+#   VERSIONS                      Space-separated PHP version dirs             ("7.4 8.0 8.1 8.2 8.3")
+#   LATEST_PHP_VERSION            Highest PHP version dir in the repo          (8.3)
+#   CODESERVER_VERSION            code-server version to pin ("" = auto)       ("")
+#   CORERULESET_VERSION           ModSecurity CRS version                      (3.3.5)
+#   CACHE_FROM_ENABLED            Read from GHA/GHCR cache ("true"/"false")    ("true")
+#   PLATFORMS                     Comma-separated target platforms             ("linux/amd64,linux/arm64")
 #   VERSIONS_NEEDING_MULTIPART_FIX  Versions running Debian 11 / modsec 2.9.3  ("7.4 8.0")
 #
 # Intermediate targets pushed to GHCR (never pushed to Docker Hub):
