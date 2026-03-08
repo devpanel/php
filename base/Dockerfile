@@ -25,7 +25,7 @@ RUN mkdir -p /tmp/libsodium \
 
 # Download code-server deb (identical binary for every PHP version).
 # php -r is used for the optional dynamic-version resolution.
-RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN \
+RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN,required=false \
   set -e; \
   if [ -z "$CODESERVER_VERSION" ]; then \
     if [ -n "${GITHUB_TOKEN:-}" ]; then \
