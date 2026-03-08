@@ -112,7 +112,8 @@ jobs:
               else
                 BASE_VER=$(path_changed "${VER}/base/")
                 SECURE_VER=$(path_changed "${VER}/secure/")
-                if [[ $BASE_VER -gt 0 || $SECURE_VER -gt 0 ]]; then
+                ADVANCE_VER=$(path_changed "${VER}/advance/")
+                if [[ $BASE_VER -gt 0 || $SECURE_VER -gt 0 || $ADVANCE_VER -gt 0 ]]; then
                   CHANGED_VERSIONS+=("$VER")
                 fi
               fi
@@ -122,42 +123,40 @@ jobs:
             VERSIONS_OUT=$(printf '%s\n' "${CHANGED_VERSIONS[@]+"${CHANGED_VERSIONS[@]}"}" \
                           | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
 
-            # Determine which Docker Hub target groups to push.
+            # Determine which Docker Hub targets to push per version.
             # Dependency chain: base → (via secure-int) → secure → advance.
             # When a target changes, every downstream target must also be pushed.
-            NEED_BASE=false
-            NEED_SECURE=false
-            NEED_ADVANCE=false
-
-            if [[ $BAKE_CHANGED -gt 0 || $BASE_COMMON -gt 0 ]]; then
-              NEED_BASE=true; NEED_SECURE=true; NEED_ADVANCE=true
-            elif [[ $SECURE_COMMON -gt 0 ]]; then
-              NEED_SECURE=true; NEED_ADVANCE=true
-            elif [[ $ADVANCE_COMMON -gt 0 ]]; then
-              NEED_ADVANCE=true
-            fi
-
-            # For per-version changes, accumulate the widest set of targets
-            # needed across all changed versions.
-            if ! $NEED_BASE; then
-              while IFS= read -r VER; do
-                [[ -z "$VER" ]] && continue
-                if [[ $(path_changed "${VER}/base/") -gt 0 ]]; then
-                  NEED_BASE=true; NEED_SECURE=true; NEED_ADVANCE=true
-                  break
-                elif [[ $(path_changed "${VER}/secure/") -gt 0 ]]; then
-                  NEED_SECURE=true; NEED_ADVANCE=true
-                fi
-              done < <(printf '%s\n' "${CHANGED_VERSIONS[@]+${CHANGED_VERSIONS[@]}}")
-            fi
-
+            # Common-directory changes affect all versions; per-version changes
+            # are evaluated individually so only the affected version's targets
+            # are rebuilt (e.g. a secure change in 8.1 does not rebuild base for 8.1).
             TARGETS_OUT=""
             while IFS= read -r VER; do
               [[ -z "$VER" ]] && continue
               VER_KEY="${VER//\./_}"
-              if $NEED_BASE;    then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php${VER_KEY}-base";    fi
-              if $NEED_SECURE;  then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php${VER_KEY}-secure";  fi
-              if $NEED_ADVANCE; then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php${VER_KEY}-advance"; fi
+              VER_NEED_BASE=false
+              VER_NEED_SECURE=false
+              VER_NEED_ADVANCE=false
+              # Common changes that force a rebuild for every version.
+              if [[ $BAKE_CHANGED -gt 0 || $BASE_COMMON -gt 0 ]]; then
+                VER_NEED_BASE=true; VER_NEED_SECURE=true; VER_NEED_ADVANCE=true
+              elif [[ $SECURE_COMMON -gt 0 ]]; then
+                VER_NEED_SECURE=true; VER_NEED_ADVANCE=true
+              elif [[ $ADVANCE_COMMON -gt 0 ]]; then
+                VER_NEED_ADVANCE=true
+              fi
+              # Per-version changes on top of what the common check already requires.
+              if ! $VER_NEED_BASE && [[ $(path_changed "${VER}/base/") -gt 0 ]]; then
+                VER_NEED_BASE=true; VER_NEED_SECURE=true; VER_NEED_ADVANCE=true
+              fi
+              if ! $VER_NEED_SECURE && [[ $(path_changed "${VER}/secure/") -gt 0 ]]; then
+                VER_NEED_SECURE=true; VER_NEED_ADVANCE=true
+              fi
+              if ! $VER_NEED_ADVANCE && [[ $(path_changed "${VER}/advance/") -gt 0 ]]; then
+                VER_NEED_ADVANCE=true
+              fi
+              if $VER_NEED_BASE;    then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php${VER_KEY}-base";    fi
+              if $VER_NEED_SECURE;  then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php${VER_KEY}-secure";  fi
+              if $VER_NEED_ADVANCE; then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php${VER_KEY}-advance"; fi
             done < <(printf '%s\n' "${CHANGED_VERSIONS[@]+${CHANGED_VERSIONS[@]}}")
           else
             VERSIONS_OUT=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
