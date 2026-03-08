@@ -13,9 +13,15 @@ ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
 # PHP 8.0 (Debian 11) specific package: libpcre2-dev (no libavif-dev)
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-      libpcre2-dev \
+# Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
+# resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
+RUN for i in $(seq 1 3); do \
+      apt-get update \
+        && apt-get install -y --no-install-recommends \
+          libpcre2-dev \
+        && break \
+      || { [ "$i" -lt 3 ] && sleep 5; }; \
+    done \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure gd (PHP 8.0: no avif support)
