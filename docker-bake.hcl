@@ -39,6 +39,7 @@ variable "CODESERVER_VERSION"            { default = ""                       }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                  }
 variable "CACHE_FROM_ENABLED"            { default = "true"                   }
 variable "PLATFORMS"                     { default = "linux/amd64,linux/arm64" }
+variable "GITHUB_TOKEN"                  { default = ""                        }
 # Versions using Debian 11 / mod_security 2.9.3 that require the
 # REQUEST-922-MULTIPART-ATTACK rule to be removed.
 variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
@@ -80,7 +81,7 @@ target "downloader" {
     LATEST_PHP_VERSION = LATEST_PHP_VERSION
     CODESERVER_VERSION = CODESERVER_VERSION
   }
-  secret     = ["id=github_token,env=GITHUB_TOKEN"]
+  secret     = GITHUB_TOKEN != "" ? ["id=github_token,env=GITHUB_TOKEN"] : []
   cache-from = cache_from("downloader")
   cache-to   = cache_to("downloader")
   # No tags → not pushed to Docker Hub
