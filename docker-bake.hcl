@@ -27,10 +27,13 @@
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
-# php-advance depends on the full chain, so every tagged image is built and
-# pushed automatically; no explicit target list is needed in CI.
+# Used by the `all` workflow (full rebuild / workflow_dispatch) when no
+# before/after SHA range is available, and as a fallback for local development.
+# Note: Docker Buildx bake only pushes explicitly listed targets; context
+# dependencies (downloader, php-php-ext, php-secure-int) are built and pushed
+# to GHCR as part of the dependency chain but are NOT pushed to Docker Hub.
 group "default" {
-  targets = ["php-advance"]
+  targets = ["php-base", "php-secure", "php-advance"]
 }
 
 variable "REPO"                          { default = "devpanel/php"            }
