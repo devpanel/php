@@ -120,6 +120,11 @@ ENV CODES_WORKING_DIR=$APP_ROOT
 ENV CODES_USER_DATA_DIR=$APP_ROOT/.vscode
 ENV CODES_ENABLE=yes
 
+# Suppress dpkg progress messages (e.g. "(Reading database ... 10%)")
+# by disabling dpkg's use of the pseudo-terminal.  This must be set before any
+# apt-get/dpkg call; the file persists into all downstream image layers.
+RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty
+
 # Install packages common to all PHP versions.
 # NOTE: libavif-dev (8.1+), libpcre2-dev (8.0+), and libpcre3/libpcre3-dev (7.4)
 # are version-specific and therefore NOT included here.
