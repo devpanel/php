@@ -20,4 +20,5 @@ jobs:
       filter_changed: true
       before_sha: ${{ github.event.before }}
       after_sha: ${{ github.sha }}
+      platforms_filter: linux/amd64,linux/arm64
     secrets: inherit

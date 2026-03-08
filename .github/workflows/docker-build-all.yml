@@ -15,4 +15,5 @@ jobs:
       packages: write
     with:
       cache_from_enabled: false
+      platforms_filter: linux/amd64,linux/arm64
     secrets: inherit

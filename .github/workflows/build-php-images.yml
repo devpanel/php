@@ -133,26 +133,51 @@ jobs:
           echo "latest_php_version=${LATEST_PHP_VERSION}"   >> "$GITHUB_OUTPUT"
           echo "versions=${VERSIONS_OUT}"                   >> "$GITHUB_OUTPUT"
 
-          # Determine build platforms from the official PHP base image manifest,
-          # filtered to linux/amd64 and linux/arm64.
-          PHP_MANIFEST=$(docker manifest inspect "php:${LATEST_PHP_VERSION}-apache" 2>/dev/null || echo "")
-          DETECTED=""
-          if [[ -n "$PHP_MANIFEST" ]]; then
-            DETECTED=$(echo "$PHP_MANIFEST" \
-              | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
-              | grep -E "^linux/(amd64|arm64)(/|$)" | sort | tr '\n' ',' | sed 's/,$//')
-          fi
-          PLATFORMS_OUT="${DETECTED:-linux/amd64,linux/arm64}"
+          # Determine build platforms by inspecting every PHP base image
+          # manifest and keeping only the platforms supported by all versions.
+          PLATFORMS_INTERSECT=""
+          while IFS= read -r VER; do
+            PHP_MANIFEST=$(docker manifest inspect "php:${VER}-apache" 2>/dev/null || echo "")
+            VER_PLATFORMS=""
+            if [[ -n "$PHP_MANIFEST" ]]; then
+              VER_PLATFORMS=$(echo "$PHP_MANIFEST" \
+                | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
+                | sort | tr '\n' ',' | sed 's/,$//')
+            fi
+            # Skip versions whose manifest is unavailable.
+            [[ -z "$VER_PLATFORMS" ]] && continue
+            if [[ -z "$PLATFORMS_INTERSECT" ]]; then
+              PLATFORMS_INTERSECT="$VER_PLATFORMS"
+            else
+              # Keep only platforms present in both sets.
+              PLATFORMS_INTERSECT=$(comm -12 \
+                <(echo "$PLATFORMS_INTERSECT" | tr ',' '\n' | sort) \
+                <(echo "$VER_PLATFORMS"        | tr ',' '\n' | sort) \
+                | tr '\n' ',' | sed 's/,$//')
+            fi
+          done < <(echo "$VERSIONS_OUT" | tr ' ' '\n' | grep -v '^$')
 
-          # Apply optional platforms_filter: restrict to the intersection of
-          # detected platforms and the filter; fall back to the filter itself
-          # when nothing intersects (e.g. forcing a platform not yet in the manifest).
+          PLATFORMS_OUT="${PLATFORMS_INTERSECT:-linux/amd64,linux/arm64}"
+
+          # Apply optional platforms_filter: keep detected platforms where the
+          # detected entry equals or starts with a filter entry (e.g. the filter
+          # value "linux/arm64" matches the manifest entry "linux/arm64/v8").
           PLATFORMS_FILTER="${{ inputs.platforms_filter }}"
           if [[ -n "$PLATFORMS_FILTER" ]]; then
-            FILTERED=$(echo "$PLATFORMS_OUT" | tr ',' '\n' \
-              | grep -xF -f <(echo "$PLATFORMS_FILTER" | tr ',' '\n') \
-              | tr '\n' ',' | sed 's/,$//')
-            PLATFORMS_OUT="${FILTERED:-$PLATFORMS_FILTER}"
+            FILTERED_LIST=()
+            while IFS= read -r FILTER_PLAT; do
+              while IFS= read -r DETECTED_PLAT; do
+                if [[ "$DETECTED_PLAT" == "$FILTER_PLAT" || "$DETECTED_PLAT" == "$FILTER_PLAT/"* ]]; then
+                  FILTERED_LIST+=("$DETECTED_PLAT")
+                fi
+              done < <(echo "$PLATFORMS_OUT" | tr ',' '\n')
+            done < <(echo "$PLATFORMS_FILTER" | tr ',' '\n')
+            PLATFORMS_OUT=$(printf '%s\n' "${FILTERED_LIST[@]+"${FILTERED_LIST[@]}"}" \
+              | sort -u | tr '\n' ',' | sed 's/,$//')
+            if [[ -z "$PLATFORMS_OUT" ]]; then
+              echo "::error::No detected platforms matched platforms_filter '${PLATFORMS_FILTER}'. Detected: ${PLATFORMS_INTERSECT:-linux/amd64,linux/arm64}"
+              exit 1
+            fi
           fi
 
           echo "platforms=${PLATFORMS_OUT}" >> "$GITHUB_OUTPUT"
