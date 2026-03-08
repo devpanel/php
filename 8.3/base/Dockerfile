@@ -54,3 +54,8 @@ RUN docker-php-ext-enable gd igbinary xdebug
 RUN composer self-update --2.7.7
 
 USER ${USER}
+
+# Run drush11 composer update (deferred from common stage; symfony/http-kernel
+# 6.2.4 in base/drush/drush11/composer.json requires PHP >=8.1, so it must
+# run in the per-version stage, not the shared php-ext-common stage).
+RUN composer update --working-dir=/drush/drush11

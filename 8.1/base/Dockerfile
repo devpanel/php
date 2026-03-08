@@ -37,3 +37,8 @@ RUN pecl install -o -f \
 RUN docker-php-ext-enable gd igbinary imagick
 
 USER ${USER}
+
+# Run drush11 composer update (deferred from common stage; symfony/http-kernel
+# 6.2.4 in base/drush/drush11/composer.json requires PHP >=8.1, so it must
+# run in the per-version stage, not the shared php-ext-common stage).
+RUN composer update --working-dir=/drush/drush11

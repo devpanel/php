@@ -264,8 +264,7 @@ RUN composer update --working-dir=/drush/drush9 \
     && echo "alias drush9=/drush/drush9/vendor/bin/drush" >> ~/.bashrc
 RUN composer update --working-dir=/drush/drush10 \
     && echo "alias drush10=/drush/drush10/vendor/bin/drush" >> ~/.bashrc
-RUN composer update --working-dir=/drush/drush11 \
-    && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
+RUN echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
 
 RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
     && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
