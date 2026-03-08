@@ -53,7 +53,7 @@ RUN curl -L -o /tmp/imagick.tar.gz \
 RUN docker-php-ext-enable gd igbinary xdebug
 
 # Override Composer with PHP 8.3 version (2.7.7) using self-update
-RUN composer self-update --2.7.7
+RUN composer self-update 2.7.7
 
 USER ${USER}
 
