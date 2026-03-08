@@ -72,7 +72,7 @@ function "cache_to" {
 # Referenced by every phpX_Y-php-ext target via the 'common-downloader'
 # named context.
 target "downloader" {
-  dockerfile = "base/Dockerfile"
+  dockerfile = "Dockerfile"
   context    = "base"
   target     = "downloader"
   platforms  = split(",", PLATFORMS)
@@ -95,7 +95,7 @@ target "downloader" {
 # Matrix generates one target per version: php7_4-php-ext, php8_0-php-ext, ...
 
 target "_php-ext-common" {
-  dockerfile = "base/Dockerfile"
+  dockerfile = "Dockerfile"
   target     = "php-ext-common"
   context    = "base"
   contexts = {
@@ -134,7 +134,7 @@ target "php-base" {
   }
   name       = "php${ver_key(version)}-base"
   inherits   = ["_base-common"]
-  dockerfile = "${version}/base/Dockerfile"
+  dockerfile = "Dockerfile"
   context    = "${version}/base"
   contexts = {
     common-php-ext    = "target:php${ver_key(version)}-php-ext"
@@ -151,7 +151,7 @@ target "php-base" {
 # version's base image.
 
 target "_secure-int-common" {
-  dockerfile = "secure/Dockerfile"
+  dockerfile = "Dockerfile"
   target     = "secure-intermediate"
   context    = "secure"
   platforms  = split(",", PLATFORMS)
@@ -189,7 +189,7 @@ target "php-secure" {
   }
   name       = "php${ver_key(version)}-secure"
   inherits   = ["_secure-common"]
-  dockerfile = contains(split(" ", VERSIONS_NEEDING_MULTIPART_FIX), version) ? "${version}/secure/Dockerfile" : "secure/Dockerfile"
+  dockerfile = "Dockerfile"
   context    = contains(split(" ", VERSIONS_NEEDING_MULTIPART_FIX), version) ? "${version}/secure" : "secure"
   contexts   = { secure-intermediate = "target:php${ver_key(version)}-secure-int" }
   tags       = ["${REPO}:${version}-secure${TAG_SUFFIX}"]
@@ -201,7 +201,7 @@ target "php-secure" {
 # All versions use the same advance/Dockerfile; only the base image differs.
 
 target "_advance-common" {
-  dockerfile = "advance/Dockerfile"
+  dockerfile = "Dockerfile"
   context    = "advance"
   platforms  = split(",", PLATFORMS)
   args       = { BASE_IMAGE = "base-image" }
