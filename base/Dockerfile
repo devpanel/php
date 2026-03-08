@@ -123,8 +123,9 @@ ENV CODES_ENABLE=yes
 # Install packages common to all PHP versions.
 # NOTE: libavif-dev (8.1+), libpcre2-dev (8.0+), and libpcre3/libpcre3-dev (7.4)
 # are version-specific and therefore NOT included here.
-# Retry up to 3 times on failure to handle transient network/mirror errors.
-RUN for i in 1 2 3; do \
+# Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
+# resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
+RUN for i in $(seq 1 3); do \
       apt-get update && apt-get upgrade -y \
         && apt-get install -y --no-install-recommends \
           apt-utils \

@@ -10,7 +10,9 @@ ARG DEBIAN_FRONTEND=noninteractive
 WORKDIR /home/root
 
 ARG CORERULESET_VERSION="3.3.5"
-RUN for i in 1 2 3; do \
+# Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
+# resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
+RUN for i in $(seq 1 3); do \
       apt-get update -y \
         && apt-get install -y --no-install-recommends libapache2-mod-security2 wget unzip \
         && break \

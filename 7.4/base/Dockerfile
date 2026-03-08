@@ -15,7 +15,9 @@ ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
 # PHP 7.4 (Debian 10) specific packages: libpcre3/libpcre3-dev (no libavif-dev)
-RUN for i in 1 2 3; do \
+# Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
+# resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
+RUN for i in $(seq 1 3); do \
       apt-get update \
         && apt-get install -y --no-install-recommends \
           libpcre3 \
