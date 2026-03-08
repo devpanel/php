@@ -72,18 +72,21 @@ function "cache_to" {
   result = ["type=gha,scope=${scope},mode=max"]
 }
 
-# cache_from_registry / cache_to_registry: permanent registry-based cache in GHCR.
-# Used for intermediate targets (downloader, php-ext, secure-int) so that their
-# build layers survive beyond the GHA cache eviction window.
+# cache_from_registry / cache_to_registry: registry-based cache in GHCR with
+# GHA cache as a fallback.  Used for intermediate targets (downloader, php-ext,
+# secure-int) so their build layers survive beyond the GHA cache eviction window.
+# The registry write uses ignore-error=true so that a GITHUB_TOKEN permission
+# error does not abort the build; the GHA cache entry is always written and
+# ensures the build can continue and future runs can still hit a warm cache.
 
 function "cache_from_registry" {
-  params = [ref]
-  result = CACHE_FROM_ENABLED == "true" ? ["type=registry,ref=${ref}"] : []
+  params = [ref, scope]
+  result = CACHE_FROM_ENABLED == "true" ? ["type=registry,ref=${ref}", "type=gha,scope=${scope}"] : []
 }
 
 function "cache_to_registry" {
-  params = [ref]
-  result = ["type=registry,ref=${ref},mode=max"]
+  params = [ref, scope]
+  result = ["type=registry,ref=${ref},mode=max,ignore-error=true", "type=gha,scope=${scope},mode=max"]
 }
 
 # ─── Shared downloader (pushed to GHCR, NOT pushed to Docker Hub) ────────────
@@ -101,8 +104,8 @@ target "downloader" {
   }
   secret     = ["id=github_token,env=GITHUB_TOKEN"]
   tags       = ["${GHCR_REPO}:downloader${TAG_SUFFIX}"]
-  cache-from = cache_from_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}")
-  cache-to   = cache_to_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}")
+  cache-from = cache_from_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}", "downloader")
+  cache-to   = cache_to_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}", "downloader")
 }
 
 # ─── Common php-ext intermediates (pushed to GHCR, NOT pushed to Docker Hub) ─
@@ -133,8 +136,8 @@ target "php-php-ext" {
   inherits = ["_php-ext-common"]
   args     = { PHP_VERSION = version }
   tags       = ["${GHCR_REPO}:${version}-php-ext${TAG_SUFFIX}"]
-  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-php-ext${TAG_SUFFIX}")
-  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-php-ext${TAG_SUFFIX}")
+  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-php-ext${TAG_SUFFIX}", "php${ver_key(version)}-php-ext")
+  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-php-ext${TAG_SUFFIX}", "php${ver_key(version)}-php-ext")
 }
 
 # ─── Base final images ────────────────────────────────────────────────────────
@@ -187,8 +190,8 @@ target "php-secure-int" {
   inherits = ["_secure-int-common"]
   contexts = { base-image = "target:php${ver_key(version)}-base" }
   tags       = ["${GHCR_REPO}:${version}-secure-int${TAG_SUFFIX}"]
-  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-secure-int${TAG_SUFFIX}")
-  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-secure-int${TAG_SUFFIX}")
+  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-secure-int${TAG_SUFFIX}", "php${ver_key(version)}-secure-int")
+  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-secure-int${TAG_SUFFIX}", "php${ver_key(version)}-secure-int")
 }
 
 # ─── Secure final images ──────────────────────────────────────────────────────
