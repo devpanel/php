@@ -39,3 +39,4 @@ RUN pecl install -o -f \
 RUN docker-php-ext-enable gd igbinary imagick
 
 USER ${USER}
+
