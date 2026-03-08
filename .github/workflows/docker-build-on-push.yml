@@ -108,7 +108,8 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.versions != '' }}
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -138,3 +139,5 @@ jobs:
           source:       .
           push:         true
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
