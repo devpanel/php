@@ -13,7 +13,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      bake_targets:        ${{ steps.detect.outputs.bake_targets }}
       tag_suffix:          ${{ steps.detect.outputs.tag_suffix }}
       latest_php_version:  ${{ steps.detect.outputs.latest_php_version }}
       versions:            ${{ steps.detect.outputs.versions }}
@@ -23,7 +22,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Determine tag suffix, latest PHP version, and bake targets
+      - name: Determine tag suffix, latest PHP version, and versions
         id: detect
         run: |
           set -euo pipefail
@@ -46,10 +45,6 @@ jobs:
 
           echo "tag_suffix=${TAG_SUFFIX}"                   >> "$GITHUB_OUTPUT"
           echo "latest_php_version=${LATEST_PHP_VERSION}"   >> "$GITHUB_OUTPUT"
-          # Use the matrix parent target names so bake expands them automatically
-          # for all versions in VERSIONS.  Individual expanded names (php7_4-base
-          # etc.) are not resolvable as CLI arguments in docker buildx bake v0.31+.
-          echo "bake_targets=php-base php-secure php-advance" >> "$GITHUB_OUTPUT"
           VERSIONS_LIST=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
                             | sed 's|./||' | sort -V | tr '\n' ' ' | xargs)
           echo "versions=${VERSIONS_LIST}" >> "$GITHUB_OUTPUT"
@@ -96,7 +91,6 @@ jobs:
           CACHE_FROM_ENABLED:  "false"
         with:
           files:        docker-bake.hcl
-          targets:      ${{ needs.detect-versions.outputs.bake_targets }}
           source:       .
           push:         true
           github-token: ${{ secrets.GITHUB_TOKEN }}

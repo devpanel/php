@@ -16,7 +16,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      bake_targets:        ${{ steps.detect.outputs.bake_targets }}
       tag_suffix:          ${{ steps.detect.outputs.tag_suffix }}
       latest_php_version:  ${{ steps.detect.outputs.latest_php_version }}
       versions:            ${{ steps.detect.outputs.versions }}
@@ -28,7 +27,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect changes and build Bake target list
+      - name: Detect changes
         id: detect
         run: |
           set -euo pipefail
@@ -87,24 +86,11 @@ jobs:
           done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
                      | sed 's|./||' | sort -V)
 
-          # Use php-advance as the single target.
-          # Individual expanded names (php7_4-base etc.) are not resolvable as
-          # CLI arguments in docker buildx bake v0.31+; the matrix parent name
-          # php-advance works correctly and, via bake's dependency chain
-          # (php-advance → php-secure → php-secure-int → php-base → php-php-ext),
-          # automatically builds and pushes every tagged image in the chain.
-          # Docker's build cache handles the efficiency: only layers that actually
-          # changed are rebuilt; unchanged versions get cache hits.
           UNIQUE_VERSIONS=$(printf '%s\n' "${CHANGED_VERSIONS[@]+"${CHANGED_VERSIONS[@]}"}" \
                             | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
 
           echo "tag_suffix=${TAG_SUFFIX}"                   >> "$GITHUB_OUTPUT"
           echo "latest_php_version=${LATEST_PHP_VERSION}"   >> "$GITHUB_OUTPUT"
-          if [[ ${#CHANGED_VERSIONS[@]} -gt 0 ]]; then
-            echo "bake_targets=php-advance"                 >> "$GITHUB_OUTPUT"
-          else
-            echo "bake_targets="                            >> "$GITHUB_OUTPUT"
-          fi
           echo "versions=${UNIQUE_VERSIONS}"                >> "$GITHUB_OUTPUT"
 
           # Determine build platforms from the official PHP base image manifest,
@@ -120,7 +106,7 @@ jobs:
 
   build:
     needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.bake_targets != '' }}
+    if: ${{ needs.detect-changes.outputs.versions != '' }}
     runs-on: ubuntu-latest
     permissions: {}
 
@@ -149,7 +135,6 @@ jobs:
           PLATFORMS:          ${{ needs.detect-changes.outputs.platforms }}
         with:
           files:        docker-bake.hcl
-          targets:      ${{ needs.detect-changes.outputs.bake_targets }}
           source:       .
           push:         true
           github-token: ${{ secrets.GITHUB_TOKEN }}
