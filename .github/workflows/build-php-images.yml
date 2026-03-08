@@ -129,42 +129,43 @@ jobs:
           echo "latest_php_version=${LATEST_PHP_VERSION}"   >> "$GITHUB_OUTPUT"
           echo "versions=${VERSIONS_OUT}"                   >> "$GITHUB_OUTPUT"
 
-          # Determine build platforms by inspecting every PHP base image
-          # manifest and keeping only the platforms supported by all versions.
-          PLATFORMS_INTERSECT=""
-          while IFS= read -r VER; do
-            PHP_MANIFEST=$(docker manifest inspect "php:${VER}-apache" 2>/dev/null || echo "")
-            VER_PLATFORMS=""
-            if [[ -n "$PHP_MANIFEST" ]]; then
-              VER_PLATFORMS=$(echo "$PHP_MANIFEST" \
-                | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
-                | sort | tr '\n' ',' | sed 's/,$//')
-            fi
-            # Skip versions whose manifest is unavailable.
-            [[ -z "$VER_PLATFORMS" ]] && continue
-            if [[ -z "$PLATFORMS_INTERSECT" ]]; then
-              PLATFORMS_INTERSECT="$VER_PLATFORMS"
-            else
-              # Keep only platforms present in both sets.
-              PLATFORMS_INTERSECT=$(comm -12 \
-                <(echo "$PLATFORMS_INTERSECT" | tr ',' '\n' | sort) \
-                <(echo "$VER_PLATFORMS"       | tr ',' '\n' | sort) \
-                | tr '\n' ',' | sed 's/,$//')
-            fi
-          done < <(echo "$VERSIONS_OUT" | tr ' ' '\n' | grep -v '^$')
-
-          PLATFORMS_OUT="$PLATFORMS_INTERSECT"
-
           # If no versions were selected for build, skip platform detection/filtering.
           # The build job is already guarded on versions being non-empty.
+          PLATFORMS_OUT=""
           if [[ -z "$VERSIONS_OUT" ]]; then
             echo "No PHP versions selected for build; skipping platform detection and filtering."
           else
+            # Determine build platforms by inspecting every PHP base image
+            # manifest and keeping only the platforms supported by all versions.
+            PLATFORMS_INTERSECT=""
+            while IFS= read -r VER; do
+              PHP_MANIFEST=$(docker manifest inspect "php:${VER}-apache" 2>/dev/null || echo "")
+              VER_PLATFORMS=""
+              if [[ -n "$PHP_MANIFEST" ]]; then
+                VER_PLATFORMS=$(echo "$PHP_MANIFEST" \
+                  | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
+                  | sort | tr '\n' ',' | sed 's/,$//')
+              fi
+              # Skip versions whose manifest is unavailable.
+              [[ -z "$VER_PLATFORMS" ]] && continue
+              if [[ -z "$PLATFORMS_INTERSECT" ]]; then
+                PLATFORMS_INTERSECT="$VER_PLATFORMS"
+              else
+                # Keep only platforms present in both sets.
+                PLATFORMS_INTERSECT=$(comm -12 \
+                  <(echo "$PLATFORMS_INTERSECT" | tr ',' '\n' | sort) \
+                  <(echo "$VER_PLATFORMS"       | tr ',' '\n' | sort) \
+                  | tr '\n' ',' | sed 's/,$//')
+              fi
+            done < <(echo "$VERSIONS_OUT" | tr ' ' '\n' | grep -v '^$')
+
             # If versions were selected but no platforms were detected at all, fail with a clear error.
             if [[ -z "$PLATFORMS_INTERSECT" ]]; then
               echo "::error::Failed to detect any platforms for the selected PHP versions. 'docker manifest inspect' did not return a usable manifest for any candidate image."
               exit 1
             fi
+
+            PLATFORMS_OUT="$PLATFORMS_INTERSECT"
 
             # Apply optional platforms_filter: keep detected platforms where the
             # detected entry equals or starts with a filter entry (e.g. the filter
