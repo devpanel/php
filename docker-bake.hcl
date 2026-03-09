@@ -27,15 +27,19 @@
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
-# php-advance depends on php-secure depends on php-base, so requesting
-# php-advance causes the full chain to be built for every version in VERSIONS.
-# VERSIONS_BASE / VERSIONS_SECURE control which of those versions are tagged
-# and pushed to Docker Hub for the base / secure stages respectively; advance
-# is always pushed for every version in VERSIONS (since advance cascades from
-# all upstream changes).  No target names are passed as CLI arguments, which
-# avoids the bake v0.31+ restriction on resolving matrix-generated names.
+# All three stage groups are listed explicitly: Docker Buildx Bake only pushes
+# images that belong to a target listed in the group being built.  Targets that
+# are used only as named build contexts (context dependencies) are built but
+# never pushed, even when they carry tags.  Listing php-base and php-secure
+# here ensures they are treated as first-class push targets.
+# VERSIONS_BASE / VERSIONS_SECURE control which versions are tagged and pushed
+# to Docker Hub for the base / secure stages respectively (via should_push()).
+# Versions absent from those lists are still built (they are required by the
+# advance dependency chain) but produce no Docker Hub tags and are not pushed.
+# No per-version target names are passed as CLI arguments, which avoids the
+# bake v0.31+ restriction on resolving matrix-generated names.
 group "default" {
-  targets = ["php-advance"]
+  targets = ["php-base", "php-secure", "php-advance"]
 }
 
 variable "REPO"                          { default = "devpanel/php"            }
