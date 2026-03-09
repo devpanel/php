@@ -101,8 +101,8 @@ function "cache_to" {
 # GHA cache as a fallback.  Used for intermediate targets (downloader, php-ext,
 # secure-int) so their build layers survive beyond the GHA cache eviction window.
 # When GHCR_WRITABLE is "true" (set by the "Check GHCR write access" workflow
-# step), the registry write uses ignore-error=true as a safety net so that
-# unexpected errors do not abort the build; the GHA cache entry is always written.
+# step), both the registry and GHA cache are written; registry push errors are
+# NOT suppressed so that real failures surface after a confirmed-writable check.
 # When GHCR_WRITABLE is not "true", only the GHA cache is written (no registry
 # attempt is made), matching the workflow step's pre-flight check result.
 
