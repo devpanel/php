@@ -58,6 +58,14 @@ variable "LATEST_PHP_VERSION"            { default = "8.3"                     }
 variable "CODESERVER_VERSION"            { default = ""                        }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 variable "CACHE_FROM_ENABLED"            { default = "true"                    }
+# GHCR_WRITABLE is set by the "Check GHCR write access" workflow step.
+# "true"  → GHCR cache writes proceed without ignore-error: any failure is a
+#            real error that will fail the build (write was expected to succeed).
+# "false" → GHCR cache writes use ignore-error=true: failures surface in the
+#            log but do not abort the build (write was not expected to succeed).
+# Default is "false" so that local dev builds (where no pre-flight check runs)
+# never abort due to a GHCR write failure.
+variable "GHCR_WRITABLE"                { default = "false"                   }
 variable "PLATFORMS"                     { default = "linux/amd64,linux/arm64" }
 # Versions using Debian 11 / mod_security 2.9.3 that require the
 # REQUEST-922-MULTIPART-ATTACK rule to be removed.
@@ -99,18 +107,24 @@ function "cache_to" {
 # cache_from_registry / cache_to_registry: registry-based cache in GHCR with
 # GHA cache as a fallback.  Used for intermediate targets (downloader, php-ext,
 # secure-int) so their build layers survive beyond the GHA cache eviction window.
-# The registry write uses ignore-error=true so that a GITHUB_TOKEN permission
-# error does not abort the build; the GHA cache entry is always written and
-# ensures the build can continue and future runs can still hit a warm cache.
+# cache_to_registry behaviour depends on GHCR_WRITABLE (set by the workflow's
+# "Check GHCR write access" pre-flight step):
+#   "true"  → write without ignore-error: a failure is unexpected and should
+#              fail the build so the operator is forced to investigate.
+#   "false" → write with ignore-error=true: the pre-flight check already warned
+#              that GHCR is unwritable; errors are still visible in the bake log
+#              but must not abort a build that would otherwise succeed.
 
 function "cache_from_registry" {
   params = [ref, scope]
-  result = CACHE_FROM_ENABLED == "true" ? ["type=registry,ref=${ref}", "type=gha,scope=${scope}"] : []
+  result = CACHE_FROM_ENABLED == "true" ? concat(["type=registry,ref=${ref}"], cache_from(scope)) : []
 }
 
 function "cache_to_registry" {
   params = [ref, scope]
-  result = ["type=registry,ref=${ref},mode=max,ignore-error=true", "type=gha,scope=${scope},mode=max"]
+  result = GHCR_WRITABLE == "true" \
+    ? concat(["type=registry,ref=${ref},mode=max"], cache_to(scope)) \
+    : concat(["type=registry,ref=${ref},mode=max,ignore-error=true"], cache_to(scope))
 }
 
 # ─── Shared downloader (pushed to GHCR, NOT pushed to Docker Hub) ────────────
