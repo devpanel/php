@@ -45,7 +45,7 @@ jobs:
       tag_suffix:          ${{ steps.detect.outputs.tag_suffix }}
       latest_php_version:  ${{ steps.detect.outputs.latest_php_version }}
       versions:            ${{ steps.detect.outputs.versions }}
-      targets:             ${{ steps.detect.outputs.targets }}
+      stages:              ${{ steps.detect.outputs.stages }}
       platforms:           ${{ steps.detect.outputs.platforms }}
 
     steps:
@@ -123,12 +123,10 @@ jobs:
             VERSIONS_OUT=$(printf '%s\n' "${CHANGED_VERSIONS[@]+"${CHANGED_VERSIONS[@]}"}" \
                           | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
 
-            # Determine which Docker Hub parent targets to build.
-            # docker buildx bake cannot resolve matrix-generated per-version target
-            # names (e.g. php7_4-base) as CLI arguments.  Use the matrix parent
-            # names (php-base, php-secure, php-advance) instead; the VERSIONS env
-            # var passed to bake already limits which matrix instances are built.
-            # Dependency chain: base → (via secure-int) → secure → advance.
+            # Determine which stages to rebuild.  We pass bare stage names
+            # ("base", "secure", "advance") as the STAGES env var so that
+            # docker-bake.hcl can compute the default group target list via
+            # a variable — no target names are needed as CLI arguments.
             NEED_BASE=false
             NEED_SECURE=false
             NEED_ADVANCE=false
@@ -156,23 +154,22 @@ jobs:
                 break
               fi
             done < <(printf '%s\n' "${CHANGED_VERSIONS[@]+${CHANGED_VERSIONS[@]}}")
-            TARGETS_OUT=""
-            if $NEED_BASE;    then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php-base";    fi
-            if $NEED_SECURE;  then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php-secure";  fi
-            if $NEED_ADVANCE; then TARGETS_OUT="${TARGETS_OUT:+$TARGETS_OUT }php-advance"; fi
+            STAGES_OUT=""
+            if $NEED_BASE;    then STAGES_OUT="${STAGES_OUT:+$STAGES_OUT }base";    fi
+            if $NEED_SECURE;  then STAGES_OUT="${STAGES_OUT:+$STAGES_OUT }secure";  fi
+            if $NEED_ADVANCE; then STAGES_OUT="${STAGES_OUT:+$STAGES_OUT }advance"; fi
           else
             VERSIONS_OUT=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
                             | sed 's|./||' | sort -V | tr '\n' ' ' | xargs)
             # No SHA range — full rebuild (all workflow / workflow_dispatch).
-            # Leave TARGETS_OUT empty so bake-action falls back to the "default"
-            # group in docker-bake.hcl, which lists all three Docker Hub targets.
-            TARGETS_OUT=""
+            # Build all three Docker Hub stages.
+            STAGES_OUT="base secure advance"
           fi
 
           echo "tag_suffix=${TAG_SUFFIX}"                   >> "$GITHUB_OUTPUT"
           echo "latest_php_version=${LATEST_PHP_VERSION}"   >> "$GITHUB_OUTPUT"
           echo "versions=${VERSIONS_OUT}"                   >> "$GITHUB_OUTPUT"
-          echo "targets=${TARGETS_OUT}"                     >> "$GITHUB_OUTPUT"
+          echo "stages=${STAGES_OUT}"                       >> "$GITHUB_OUTPUT"
 
           # If no versions were selected for build, skip platform detection/filtering.
           # The build job is already guarded on versions being non-empty.
@@ -318,10 +315,10 @@ jobs:
           TAG_SUFFIX:          ${{ needs.detect.outputs.tag_suffix }}
           LATEST_PHP_VERSION:  ${{ needs.detect.outputs.latest_php_version }}
           VERSIONS:            ${{ needs.detect.outputs.versions }}
+          STAGES:              ${{ needs.detect.outputs.stages }}
           PLATFORMS:           ${{ needs.detect.outputs.platforms }}
           CACHE_FROM_ENABLED:  ${{ inputs.cache_from_enabled }}
           GHCR_REPO:           ${{ steps.ghcr.outputs.repo }}
         with:
-          files:   docker-bake.hcl
-          push:    true
-          targets: ${{ needs.detect.outputs.targets }}
+          files: docker-bake.hcl
+          push:  true

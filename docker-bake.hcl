@@ -27,13 +27,13 @@
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
-# Used by the `all` workflow (full rebuild / workflow_dispatch) when no
-# before/after SHA range is available, and as a fallback for local development.
-# Note: Docker Buildx bake only pushes explicitly listed targets; context
-# dependencies (downloader, php-php-ext, php-secure-int) are built and pushed
-# to GHCR as part of the dependency chain but are NOT pushed to Docker Hub.
+# The STAGES variable (space-separated subset of "base secure advance") controls
+# which Docker Hub targets to build.  CI sets STAGES via environment variable
+# instead of passing explicit target names on the CLI, which avoids the bake
+# v0.31+ restriction on resolving matrix-generated target names as CLI args.
+# VERSIONS limits which matrix instances are included in each target.
 group "default" {
-  targets = ["php-base", "php-secure", "php-advance"]
+  targets = [for s in split(" ", trimspace(STAGES)) : "php-${s}" if trimspace(s) != ""]
 }
 
 variable "REPO"                          { default = "devpanel/php"            }
@@ -41,7 +41,8 @@ variable "REPO"                          { default = "devpanel/php"            }
 # The default below is a convenience fallback for local development only.
 variable "GHCR_REPO"                     { default = "ghcr.io/devpanel/php"    }
 variable "TAG_SUFFIX"                    { default = ""                        }
-variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"     }
+variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"    }
+variable "STAGES"                        { default = "base secure advance"     }
 variable "LATEST_PHP_VERSION"            { default = "8.3"                     }
 variable "CODESERVER_VERSION"            { default = ""                        }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
