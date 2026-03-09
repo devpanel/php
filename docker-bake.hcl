@@ -113,7 +113,7 @@ function "cache_from_registry" {
 
 function "cache_to_registry" {
   params = [ref, scope]
-  result = GHCR_WRITABLE == "true" ? ["type=registry,ref=${ref},mode=max,ignore-error=true", "type=gha,scope=${scope},mode=max"] : cache_to(scope)
+  result = GHCR_WRITABLE == "true" ? ["type=registry,ref=${ref},mode=max", "type=gha,scope=${scope},mode=max"] : cache_to(scope)
 }
 
 # ─── Shared downloader (pushed to GHCR, NOT pushed to Docker Hub) ────────────
