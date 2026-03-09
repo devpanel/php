@@ -27,13 +27,15 @@
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
-# The STAGES variable (space-separated subset of "base secure advance") controls
-# which Docker Hub targets to build.  CI sets STAGES via environment variable
-# instead of passing explicit target names on the CLI, which avoids the bake
-# v0.31+ restriction on resolving matrix-generated target names as CLI args.
-# VERSIONS limits which matrix instances are included in each target.
+# php-advance depends on php-secure depends on php-base, so requesting
+# php-advance causes the full chain to be built for every version in VERSIONS.
+# VERSIONS_BASE / VERSIONS_SECURE control which of those versions are tagged
+# and pushed to Docker Hub for the base / secure stages respectively; advance
+# is always pushed for every version in VERSIONS (since advance cascades from
+# all upstream changes).  No target names are passed as CLI arguments, which
+# avoids the bake v0.31+ restriction on resolving matrix-generated names.
 group "default" {
-  targets = [for s in split(" ", trimspace(STAGES)) : "php-${s}" if trimspace(s) != ""]
+  targets = ["php-advance"]
 }
 
 variable "REPO"                          { default = "devpanel/php"            }
@@ -42,7 +44,12 @@ variable "REPO"                          { default = "devpanel/php"            }
 variable "GHCR_REPO"                     { default = "ghcr.io/devpanel/php"    }
 variable "TAG_SUFFIX"                    { default = ""                        }
 variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"    }
-variable "STAGES"                        { default = "base secure advance"     }
+# VERSIONS_BASE / VERSIONS_SECURE: subsets of VERSIONS for which the base /
+# secure final images should be tagged and pushed to Docker Hub.  Both default
+# to the full VERSIONS set so a plain `docker buildx bake` pushes everything.
+# CI narrows these to only the versions whose files actually changed.
+variable "VERSIONS_BASE"                 { default = "7.4 8.0 8.1 8.2 8.3"    }
+variable "VERSIONS_SECURE"               { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "LATEST_PHP_VERSION"            { default = "8.3"                     }
 variable "CODESERVER_VERSION"            { default = ""                        }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
@@ -64,6 +71,15 @@ variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
 function "ver_key" {
   params = [v]
   result = replace(v, ".", "_")
+}
+
+# should_push: true if version v is listed in the space-separated stage_versions
+# string.  Used to make Docker Hub tags conditional: targets whose version is not
+# in the per-stage list are still built (for the dependency chain / GHCR cache)
+# but are not tagged and therefore not pushed to Docker Hub.
+function "should_push" {
+  params = [stage_versions, v]
+  result = contains(split(" ", trimspace(stage_versions)), v)
 }
 
 function "cache_from" {
@@ -168,7 +184,7 @@ target "php-base" {
     common-downloader = "target:downloader"
     common            = "./base"
   }
-  tags       = ["${REPO}:${version}-base${TAG_SUFFIX}"]
+  tags       = should_push(VERSIONS_BASE, version) ? ["${REPO}:${version}-base${TAG_SUFFIX}"] : []
   cache-from = cache_from("php${ver_key(version)}-base")
   cache-to   = cache_to("php${ver_key(version)}-base")
 }
@@ -220,7 +236,7 @@ target "php-secure" {
   dockerfile = "Dockerfile"
   context    = contains(split(" ", VERSIONS_NEEDING_MULTIPART_FIX), version) ? "${version}/secure" : "secure"
   contexts   = { secure-intermediate = "target:php${ver_key(version)}-secure-int" }
-  tags       = ["${REPO}:${version}-secure${TAG_SUFFIX}"]
+  tags       = should_push(VERSIONS_SECURE, version) ? ["${REPO}:${version}-secure${TAG_SUFFIX}"] : []
   cache-from = cache_from("php${ver_key(version)}-secure")
   cache-to   = cache_to("php${ver_key(version)}-secure")
 }

@@ -45,7 +45,8 @@ jobs:
       tag_suffix:          ${{ steps.detect.outputs.tag_suffix }}
       latest_php_version:  ${{ steps.detect.outputs.latest_php_version }}
       versions:            ${{ steps.detect.outputs.versions }}
-      stages:              ${{ steps.detect.outputs.stages }}
+      versions_base:       ${{ steps.detect.outputs.versions_base }}
+      versions_secure:     ${{ steps.detect.outputs.versions_secure }}
       platforms:           ${{ steps.detect.outputs.platforms }}
 
     steps:
@@ -99,77 +100,70 @@ jobs:
             ADVANCE_COMMON=$(path_changed "advance/")
             BAKE_CHANGED=$(path_changed "docker-bake.hcl")
 
-            CHANGED_VERSIONS=()
-            ALL_VERSIONS_CHANGED=false
-
-            if [[ $BASE_COMMON -gt 0 || $SECURE_COMMON -gt 0 || $ADVANCE_COMMON -gt 0 || $BAKE_CHANGED -gt 0 ]]; then
-              ALL_VERSIONS_CHANGED=true
-            fi
+            # Per-version, per-stage tracking arrays.
+            # VERSIONS_BASE_ARR / VERSIONS_SECURE_ARR: versions that need that
+            # stage pushed to Docker Hub (cascade: base → secure → advance).
+            # VERSIONS_ADV_ARR: union — every version that needs any rebuild.
+            VERSIONS_BASE_ARR=()
+            VERSIONS_SECURE_ARR=()
+            VERSIONS_ADV_ARR=()
 
             while IFS= read -r VER; do
-              if $ALL_VERSIONS_CHANGED; then
-                CHANGED_VERSIONS+=("$VER")
-              else
-                BASE_VER=$(path_changed "${VER}/base/")
-                SECURE_VER=$(path_changed "${VER}/secure/")
-                ADVANCE_VER=$(path_changed "${VER}/advance/")
-                if [[ $BASE_VER -gt 0 || $SECURE_VER -gt 0 || $ADVANCE_VER -gt 0 ]]; then
-                  CHANGED_VERSIONS+=("$VER")
-                fi
+              NEEDS_BASE=false
+              NEEDS_SECURE=false
+              NEEDS_ADVANCE=false
+
+              # Common-dir / bake-file changes affect this version first.
+              if [[ $BAKE_CHANGED -gt 0 || $BASE_COMMON -gt 0 ]]; then
+                NEEDS_BASE=true; NEEDS_SECURE=true; NEEDS_ADVANCE=true
+              elif [[ $SECURE_COMMON -gt 0 ]]; then
+                NEEDS_SECURE=true; NEEDS_ADVANCE=true
+              elif [[ $ADVANCE_COMMON -gt 0 ]]; then
+                NEEDS_ADVANCE=true
               fi
+
+              # Per-version changes (only checked when the common-dir check has
+              # not already set the highest cascade level for this stage).
+              if ! $NEEDS_BASE && [[ $(path_changed "${VER}/base/") -gt 0 ]]; then
+                NEEDS_BASE=true; NEEDS_SECURE=true; NEEDS_ADVANCE=true
+              fi
+              if ! $NEEDS_SECURE && [[ $(path_changed "${VER}/secure/") -gt 0 ]]; then
+                NEEDS_SECURE=true; NEEDS_ADVANCE=true
+              fi
+              if ! $NEEDS_ADVANCE && [[ $(path_changed "${VER}/advance/") -gt 0 ]]; then
+                NEEDS_ADVANCE=true
+              fi
+
+              if $NEEDS_BASE;    then VERSIONS_BASE_ARR+=("$VER");    fi
+              if $NEEDS_SECURE;  then VERSIONS_SECURE_ARR+=("$VER");  fi
+              if $NEEDS_ADVANCE; then VERSIONS_ADV_ARR+=("$VER");     fi
             done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
                        | sed 's|./||' | sort -V)
 
-            VERSIONS_OUT=$(printf '%s\n' "${CHANGED_VERSIONS[@]+"${CHANGED_VERSIONS[@]}"}" \
-                          | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
-
-            # Determine which stages to rebuild.  We pass bare stage names
-            # ("base", "secure", "advance") as the STAGES env var so that
-            # docker-bake.hcl can compute the default group target list via
-            # a variable — no target names are needed as CLI arguments.
-            NEED_BASE=false
-            NEED_SECURE=false
-            NEED_ADVANCE=false
-            # Common changes that force a rebuild of the affected stage for all versions.
-            if [[ $BAKE_CHANGED -gt 0 || $BASE_COMMON -gt 0 ]]; then
-              NEED_BASE=true; NEED_SECURE=true; NEED_ADVANCE=true
-            elif [[ $SECURE_COMMON -gt 0 ]]; then
-              NEED_SECURE=true; NEED_ADVANCE=true
-            elif [[ $ADVANCE_COMMON -gt 0 ]]; then
-              NEED_ADVANCE=true
-            fi
-            # Per-version changes: set the flag if any changed version requires that stage.
-            while IFS= read -r VER; do
-              [[ -z "$VER" ]] && continue
-              if ! $NEED_BASE && [[ $(path_changed "${VER}/base/") -gt 0 ]]; then
-                NEED_BASE=true; NEED_SECURE=true; NEED_ADVANCE=true
-              fi
-              if ! $NEED_SECURE && [[ $(path_changed "${VER}/secure/") -gt 0 ]]; then
-                NEED_SECURE=true; NEED_ADVANCE=true
-              fi
-              if ! $NEED_ADVANCE && [[ $(path_changed "${VER}/advance/") -gt 0 ]]; then
-                NEED_ADVANCE=true
-              fi
-              if $NEED_BASE && $NEED_SECURE && $NEED_ADVANCE; then
-                break
-              fi
-            done < <(printf '%s\n' "${CHANGED_VERSIONS[@]+${CHANGED_VERSIONS[@]}}")
-            STAGES_OUT=""
-            if $NEED_BASE;    then STAGES_OUT="${STAGES_OUT:+$STAGES_OUT }base";    fi
-            if $NEED_SECURE;  then STAGES_OUT="${STAGES_OUT:+$STAGES_OUT }secure";  fi
-            if $NEED_ADVANCE; then STAGES_OUT="${STAGES_OUT:+$STAGES_OUT }advance"; fi
+            # VERSIONS = union of all changed versions (= versions needing advance,
+            # since advance cascades from every upstream change).
+            VERSIONS_OUT=$(printf '%s\n' \
+                "${VERSIONS_ADV_ARR[@]+"${VERSIONS_ADV_ARR[@]}"}" \
+              | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
+            VERSIONS_BASE_OUT=$(printf '%s\n' \
+                "${VERSIONS_BASE_ARR[@]+"${VERSIONS_BASE_ARR[@]}"}" \
+              | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
+            VERSIONS_SECURE_OUT=$(printf '%s\n' \
+                "${VERSIONS_SECURE_ARR[@]+"${VERSIONS_SECURE_ARR[@]}"}" \
+              | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
           else
             VERSIONS_OUT=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
                             | sed 's|./||' | sort -V | tr '\n' ' ' | xargs)
-            # No SHA range — full rebuild (all workflow / workflow_dispatch).
-            # Build all three Docker Hub stages.
-            STAGES_OUT="base secure advance"
+            # No SHA range — full rebuild: push all stages for all versions.
+            VERSIONS_BASE_OUT="$VERSIONS_OUT"
+            VERSIONS_SECURE_OUT="$VERSIONS_OUT"
           fi
 
-          echo "tag_suffix=${TAG_SUFFIX}"                   >> "$GITHUB_OUTPUT"
-          echo "latest_php_version=${LATEST_PHP_VERSION}"   >> "$GITHUB_OUTPUT"
-          echo "versions=${VERSIONS_OUT}"                   >> "$GITHUB_OUTPUT"
-          echo "stages=${STAGES_OUT}"                       >> "$GITHUB_OUTPUT"
+          echo "tag_suffix=${TAG_SUFFIX}"                     >> "$GITHUB_OUTPUT"
+          echo "latest_php_version=${LATEST_PHP_VERSION}"     >> "$GITHUB_OUTPUT"
+          echo "versions=${VERSIONS_OUT}"                     >> "$GITHUB_OUTPUT"
+          echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
+          echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
 
           # If no versions were selected for build, skip platform detection/filtering.
           # The build job is already guarded on versions being non-empty.
@@ -315,7 +309,8 @@ jobs:
           TAG_SUFFIX:          ${{ needs.detect.outputs.tag_suffix }}
           LATEST_PHP_VERSION:  ${{ needs.detect.outputs.latest_php_version }}
           VERSIONS:            ${{ needs.detect.outputs.versions }}
-          STAGES:              ${{ needs.detect.outputs.stages }}
+          VERSIONS_BASE:       ${{ needs.detect.outputs.versions_base }}
+          VERSIONS_SECURE:     ${{ needs.detect.outputs.versions_secure }}
           PLATFORMS:           ${{ needs.detect.outputs.platforms }}
           CACHE_FROM_ENABLED:  ${{ inputs.cache_from_enabled }}
           GHCR_REPO:           ${{ steps.ghcr.outputs.repo }}
