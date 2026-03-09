@@ -30,9 +30,20 @@ jobs:
           # run on this branch as the effective before_sha.  This covers every
           # commit since the last known-good build, regardless of how many
           # prior runs were cancelled in the interim.
-          LAST_SUCCESS_SHA=$(gh api \
+          #
+          # We query every workflow that calls the shared reusable build
+          # workflow (on-push and workflow_dispatch/all) so that a successful
+          # full-rebuild dispatch is not ignored when computing the diff range.
+          PUSH_RUN=$(gh api \
             "repos/${{ github.repository }}/actions/workflows/docker-build-on-push.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=1" \
-            --jq '.workflow_runs[0].head_sha // ""')
+            --jq '.workflow_runs[0] | {sha: .head_sha, ts: .created_at} // empty')
+          ALL_RUN=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/docker-build-all.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=1" \
+            --jq '.workflow_runs[0] | {sha: .head_sha, ts: .created_at} // empty')
+
+          # Pick the candidate with the most recent created_at timestamp.
+          LAST_SUCCESS_SHA=$(printf '%s\n' "$PUSH_RUN" "$ALL_RUN" \
+            | jq -rs '[.[] | select(. != null and . != "")] | sort_by(.ts) | last | .sha // ""')
 
           BEFORE_SHA=""
           if [[ -n "$LAST_SUCCESS_SHA" && "$LAST_SUCCESS_SHA" != "${{ github.sha }}" ]]; then
