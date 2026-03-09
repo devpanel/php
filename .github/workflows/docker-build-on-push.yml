@@ -6,10 +6,6 @@ on:
       - main
       - develop
 
-concurrency:
-  group: docker-build-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   prepare:
     runs-on: ubuntu-latest
