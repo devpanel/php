@@ -264,7 +264,7 @@ jobs:
           set -uo pipefail
           REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
 
-          CACHE_FALLBACK="Intermediate-layer caches will not be written to GHCR; the build will continue using the GHA cache instead."
+          NOTE="The build will still attempt GHCR cache writes with ignore-error=true; errors will be visible in the bake step log but will not abort the build."
           PAT_WORKAROUND="To work around organisation-level restrictions, set a GHCR_TOKEN repository secret containing a Personal Access Token with 'write:packages' scope."
 
           # Use a temp netrc file so credentials are not exposed as command-line arguments.
@@ -307,9 +307,9 @@ jobs:
                 REASON="Could not obtain a GHCR push token for ghcr.io/${REPO_LC} (token endpoint returned HTTP ${TOKEN_HTTP})."
                 ;;
             esac
-            echo "::warning title=GHCR cache write unavailable::${REASON} ${CACHE_FALLBACK}"
+            echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
             echo "writable=false" >> "$GITHUB_OUTPUT"
-            echo "❌ **GHCR cache write:** unavailable — ${REASON} ${CACHE_FALLBACK}" >> "$GITHUB_STEP_SUMMARY"
+            echo "❌ **GHCR cache write pre-check:** failed — ${REASON} ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -325,7 +325,7 @@ jobs:
           if [[ "${HTTP_STATUS}" == "202" || "${HTTP_STATUS}" == "201" ]]; then
             echo "GHCR write access confirmed for ghcr.io/${REPO_LC}."
             echo "writable=true" >> "$GITHUB_OUTPUT"
-            echo "✅ **GHCR cache write:** available — intermediate-layer caches will be written to ghcr.io/${REPO_LC}." >> "$GITHUB_STEP_SUMMARY"
+            echo "✅ **GHCR cache write pre-check:** passed — intermediate-layer caches will be written to ghcr.io/${REPO_LC}." >> "$GITHUB_STEP_SUMMARY"
           else
             case "${HTTP_STATUS}" in
               401)
@@ -338,9 +338,9 @@ jobs:
                 REASON="GITHUB_TOKEN does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS})."
                 ;;
             esac
-            echo "::warning title=GHCR cache write unavailable::${REASON} ${CACHE_FALLBACK}"
+            echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
             echo "writable=false" >> "$GITHUB_OUTPUT"
-            echo "❌ **GHCR cache write:** unavailable — ${REASON} ${CACHE_FALLBACK}" >> "$GITHUB_STEP_SUMMARY"
+            echo "❌ **GHCR cache write pre-check:** failed — ${REASON} ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Set up QEMU
