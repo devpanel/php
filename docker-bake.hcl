@@ -58,6 +58,7 @@ variable "LATEST_PHP_VERSION"            { default = "8.3"                     }
 variable "CODESERVER_VERSION"            { default = ""                        }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 variable "CACHE_FROM_ENABLED"            { default = "true"                    }
+variable "GHCR_WRITABLE"               { default = "true"                    }
 variable "PLATFORMS"                     { default = "linux/amd64,linux/arm64" }
 # Versions using Debian 11 / mod_security 2.9.3 that require the
 # REQUEST-922-MULTIPART-ATTACK rule to be removed.
@@ -99,9 +100,11 @@ function "cache_to" {
 # cache_from_registry / cache_to_registry: registry-based cache in GHCR with
 # GHA cache as a fallback.  Used for intermediate targets (downloader, php-ext,
 # secure-int) so their build layers survive beyond the GHA cache eviction window.
-# The registry write uses ignore-error=true so that a GITHUB_TOKEN permission
-# error does not abort the build; the GHA cache entry is always written and
-# ensures the build can continue and future runs can still hit a warm cache.
+# When GHCR_WRITABLE is "true" (set by the "Check GHCR write access" workflow
+# step), the registry write uses ignore-error=true as a safety net so that
+# unexpected errors do not abort the build; the GHA cache entry is always written.
+# When GHCR_WRITABLE is not "true", only the GHA cache is written (no registry
+# attempt is made), matching the workflow step's pre-flight check result.
 
 function "cache_from_registry" {
   params = [ref, scope]
@@ -110,7 +113,7 @@ function "cache_from_registry" {
 
 function "cache_to_registry" {
   params = [ref, scope]
-  result = ["type=registry,ref=${ref},mode=max,ignore-error=true", "type=gha,scope=${scope},mode=max"]
+  result = GHCR_WRITABLE == "true" ? ["type=registry,ref=${ref},mode=max,ignore-error=true", "type=gha,scope=${scope},mode=max"] : cache_to(scope)
 }
 
 # ─── Shared downloader (pushed to GHCR, NOT pushed to Docker Hub) ────────────

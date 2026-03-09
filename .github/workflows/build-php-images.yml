@@ -257,6 +257,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check GHCR write access
+        id: check-ghcr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -279,6 +280,8 @@ jobs:
 
           if [[ -z "${REG_TOKEN}" ]]; then
             echo "::warning title=GHCR cache write unavailable::GITHUB_TOKEN could not obtain a GHCR push token for ghcr.io/${REPO_LC}. ${WARN_SUFFIX}"
+            echo "writable=false" >> "$GITHUB_OUTPUT"
+            echo "❌ **GHCR cache write:** unavailable — GITHUB_TOKEN could not obtain a push token. ${FIX_INSTRUCTIONS}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -293,8 +296,12 @@ jobs:
 
           if [[ "${HTTP_STATUS}" == "202" || "${HTTP_STATUS}" == "201" ]]; then
             echo "GHCR write access confirmed for ghcr.io/${REPO_LC}."
+            echo "writable=true" >> "$GITHUB_OUTPUT"
+            echo "✅ **GHCR cache write:** available — intermediate-layer caches will be written to ghcr.io/${REPO_LC}." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning title=GHCR cache write unavailable::GITHUB_TOKEN does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS}). ${WARN_SUFFIX}"
+            echo "writable=false" >> "$GITHUB_OUTPUT"
+            echo "❌ **GHCR cache write:** unavailable (HTTP ${HTTP_STATUS}) — intermediate-layer caches will not be written to GHCR. ${FIX_INSTRUCTIONS}" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Set up QEMU
@@ -314,6 +321,7 @@ jobs:
           PLATFORMS:           ${{ needs.detect.outputs.platforms }}
           CACHE_FROM_ENABLED:  ${{ inputs.cache_from_enabled }}
           GHCR_REPO:           ${{ steps.ghcr.outputs.repo }}
+          GHCR_WRITABLE:       ${{ steps.check-ghcr.outputs.writable }}
         with:
           source: .
           files: docker-bake.hcl
