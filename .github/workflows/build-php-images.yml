@@ -264,32 +264,52 @@ jobs:
           set -uo pipefail
           REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
 
-          FIX_INSTRUCTIONS="Ensure 'permissions: packages: write' is set on the workflow job that calls this reusable workflow."
-          WARN_SUFFIX="Intermediate-layer caches will not be written to GHCR; the build will continue using the GHA cache instead. ${FIX_INSTRUCTIONS}"
+          CACHE_FALLBACK="Intermediate-layer caches will not be written to GHCR; the build will continue using the GHA cache instead."
+          PAT_WORKAROUND="To work around organisation-level restrictions, set a GHCR_TOKEN repository secret containing a Personal Access Token with 'write:packages' scope."
 
           # Use a temp netrc file so credentials are not exposed as command-line arguments.
           # umask 0177 ensures the file is created with 0600 from the start (no race window).
           NETRC=$(umask 0177 && mktemp)
+          # Ensure the netrc temp file is removed when this step's shell exits,
+          # regardless of which code path is taken.
+          trap 'rm -f "${NETRC}"' EXIT
           printf 'machine ghcr.io login %s password %s\n' "${{ github.actor }}" "${GH_TOKEN}" > "${NETRC}"
+
           # Capture both body and HTTP status from the token endpoint so failures are specific.
           TOKEN_RESP=$(umask 0177 && mktemp)
           TOKEN_HTTP=$(curl -s -o "${TOKEN_RESP}" -w "%{http_code}" --netrc-file "${NETRC}" \
             "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:push" \
             2>/dev/null || echo "000")
           AUTH_JSON=$(cat "${TOKEN_RESP}" 2>/dev/null || true)
-          rm -f "${NETRC}" "${TOKEN_RESP}"
+          rm -f "${TOKEN_RESP}"
 
           REG_TOKEN=$(printf '%s' "${AUTH_JSON}" | jq -r '.token // empty' 2>/dev/null || true)
 
           if [[ -z "${REG_TOKEN}" ]]; then
             case "${TOKEN_HTTP}" in
-              401) REASON="GITHUB_TOKEN was rejected by the GHCR token endpoint (HTTP 401): the token lacks 'packages: write' scope. ${FIX_INSTRUCTIONS}" ;;
-              403) REASON="GITHUB_TOKEN was forbidden by the GHCR token endpoint (HTTP 403): the organisation may restrict package writes for Actions tokens. ${FIX_INSTRUCTIONS}" ;;
-              *)   REASON="Could not obtain a GHCR push token for ghcr.io/${REPO_LC} (token endpoint returned HTTP ${TOKEN_HTTP}). ${FIX_INSTRUCTIONS}" ;;
+              401)
+                REASON="GITHUB_TOKEN was rejected by the GHCR token endpoint (HTTP 401): the token lacks 'packages: write' permission. Verify that the calling workflow job includes 'permissions: packages: write'."
+                ;;
+              403)
+                # Probe read-only access: if a pull token succeeds, the credential is valid
+                # but write access is blocked by organisation policy; otherwise the token
+                # itself cannot reach the package at all.
+                PULL_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --netrc-file "${NETRC}" \
+                  "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:pull" \
+                  2>/dev/null || echo "000")
+                if [[ "${PULL_HTTP}" == "200" ]]; then
+                  REASON="GITHUB_TOKEN can read from GHCR (pull token succeeded) but the push token was denied (HTTP 403). This likely indicates the organisation restricts Actions tokens from writing to packages via an organisation-level policy. ${PAT_WORKAROUND}"
+                else
+                  REASON="GITHUB_TOKEN was denied by the GHCR token endpoint for both push (HTTP 403) and pull (HTTP ${PULL_HTTP}) scopes. The package at ghcr.io/${REPO_LC} may not be accessible to this token. ${PAT_WORKAROUND}"
+                fi
+                ;;
+              *)
+                REASON="Could not obtain a GHCR push token for ghcr.io/${REPO_LC} (token endpoint returned HTTP ${TOKEN_HTTP})."
+                ;;
             esac
-            echo "::warning title=GHCR cache write unavailable::${REASON}"
+            echo "::warning title=GHCR cache write unavailable::${REASON} ${CACHE_FALLBACK}"
             echo "writable=false" >> "$GITHUB_OUTPUT"
-            echo "❌ **GHCR cache write:** unavailable — ${REASON}" >> "$GITHUB_STEP_SUMMARY"
+            echo "❌ **GHCR cache write:** unavailable — ${REASON} ${CACHE_FALLBACK}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -308,13 +328,19 @@ jobs:
             echo "✅ **GHCR cache write:** available — intermediate-layer caches will be written to ghcr.io/${REPO_LC}." >> "$GITHUB_STEP_SUMMARY"
           else
             case "${HTTP_STATUS}" in
-              401) REASON="GITHUB_TOKEN was rejected by the GHCR blob upload endpoint (HTTP 401): the token lacks 'packages: write' scope. ${FIX_INSTRUCTIONS}" ;;
-              403) REASON="GITHUB_TOKEN was forbidden from writing to ghcr.io/${REPO_LC} (HTTP 403): the organisation may restrict package writes for Actions tokens or the package visibility settings may block this. ${FIX_INSTRUCTIONS}" ;;
-              *)   REASON="GITHUB_TOKEN does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS}). ${WARN_SUFFIX}" ;;
+              401)
+                REASON="GITHUB_TOKEN was rejected when initiating a GHCR blob upload (HTTP 401): the token lacks 'packages: write' permission. Verify that the calling workflow job includes 'permissions: packages: write'."
+                ;;
+              403)
+                REASON="GITHUB_TOKEN was forbidden from writing to ghcr.io/${REPO_LC} (HTTP 403). The organisation may restrict Actions token write access to packages via an organisation-level policy, or the package's own access settings may block this token. ${PAT_WORKAROUND}"
+                ;;
+              *)
+                REASON="GITHUB_TOKEN does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS})."
+                ;;
             esac
-            echo "::warning title=GHCR cache write unavailable::${REASON}"
+            echo "::warning title=GHCR cache write unavailable::${REASON} ${CACHE_FALLBACK}"
             echo "writable=false" >> "$GITHUB_OUTPUT"
-            echo "❌ **GHCR cache write:** unavailable — ${REASON}" >> "$GITHUB_STEP_SUMMARY"
+            echo "❌ **GHCR cache write:** unavailable — ${REASON} ${CACHE_FALLBACK}" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Set up QEMU
