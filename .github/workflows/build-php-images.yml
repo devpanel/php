@@ -315,5 +315,6 @@ jobs:
           CACHE_FROM_ENABLED:  ${{ inputs.cache_from_enabled }}
           GHCR_REPO:           ${{ steps.ghcr.outputs.repo }}
         with:
+          source: .
           files: docker-bake.hcl
           push:  true
