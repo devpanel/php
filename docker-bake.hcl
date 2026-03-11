@@ -15,6 +15,7 @@
 #   VERSIONS                      Space-separated PHP version dirs             ("7.4 8.0 8.1 8.2 8.3")
 #   LATEST_PHP_VERSION            Highest PHP version dir in the repo          (8.3)
 #   CODESERVER_VERSION            code-server version to pin ("" = auto)       ("")
+#   COPILOT_CHAT_VERSION          Copilot Chat VSIX version to pin ("" = auto) ("")
 #   CORERULESET_VERSION           ModSecurity CRS version                      (3.3.5)
 #   CACHE_FROM_ENABLED            Read from GHA/GHCR cache ("true"/"false")    ("true")
 #   PLATFORMS                     Comma-separated target platforms             ("linux/amd64,linux/arm64")
@@ -56,6 +57,7 @@ variable "VERSIONS_BASE"                 { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "VERSIONS_SECURE"               { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "LATEST_PHP_VERSION"            { default = "8.3"                     }
 variable "CODESERVER_VERSION"            { default = ""                        }
+variable "COPILOT_CHAT_VERSION"          { default = ""                        }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 variable "CACHE_FROM_ENABLED"            { default = "true"                    }
 # GHCR_WRITABLE is set by the "Check GHCR write access" workflow step.
@@ -135,8 +137,9 @@ target "downloader" {
   target     = "downloader"
   platforms  = split(",", PLATFORMS)
   args = {
-    LATEST_PHP_VERSION = LATEST_PHP_VERSION
-    CODESERVER_VERSION = CODESERVER_VERSION
+    LATEST_PHP_VERSION   = LATEST_PHP_VERSION
+    CODESERVER_VERSION   = CODESERVER_VERSION
+    COPILOT_CHAT_VERSION = COPILOT_CHAT_VERSION
   }
   secret     = ["id=github_token,env=GITHUB_TOKEN"]
   tags       = ["${GHCR_REPO}:downloader${TAG_SUFFIX}"]
