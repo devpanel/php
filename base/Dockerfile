@@ -139,6 +139,21 @@ exit(1); \
     echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; \
   fi
 
+# Repack the Copilot Chat VSIX to use only standard deflate (method 8) or stored
+# (method 0) compression.  Newer VS Marketplace packages may use Deflate64
+# (method 9) or other methods unsupported by the yauzl library bundled with
+# code-server, causing a fatal "Extract" error at install time.  Repacking with
+# the system zip utility (which only emits methods 0 and 8) ensures the VSIX can
+# be installed by any code-server version.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends unzip zip \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir /tmp/_vsix_repack \
+    && unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
+    && rm /tmp/copilot-chat.vsix \
+    && ( cd /tmp/_vsix_repack && zip -r -9 /tmp/copilot-chat.vsix . ) \
+    && rm -rf /tmp/_vsix_repack
+
 
 # ─── Common PHP extensions stage ──────────────────────────────────────────────
 # Builds the shared intermediate that all per-version Dockerfiles extend.
