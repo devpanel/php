@@ -2,14 +2,31 @@
 # tests/build-dockerfile.sh — Build Docker images to verify they build
 # successfully.  Does NOT push any images.
 #
-# Each PHP version has three variants that must be built in order:
-#   base  ← FROM php:<version>-apache  (no external devpanel dependency)
-#   secure ← FROM devpanel/php:<version>-base
-#   advance ← FROM devpanel/php:<version>-secure
+# Supports two Dockerfile structures:
+#
+#   Legacy (per-version standalone Dockerfiles):
+#     {version}/base/Dockerfile     ← FROM php:<version>-apache
+#     {version}/secure/Dockerfile   ← FROM devpanel/php:<version>-base
+#     {version}/advance/Dockerfile  ← FROM devpanel/php:<version>-secure
+#
+#   New (shared base with GHCR-cached intermediates):
+#     {version}/base/Dockerfile     ← FROM common-php-ext AS final
+#     secure/Dockerfile             ← shared; stages: secure-intermediate + final
+#     {version}/secure/Dockerfile   ← per-version (7.4/8.0 only, multipart fix)
+#     advance/Dockerfile            ← shared; FROM ${BASE_IMAGE}
+#
+# The new structure requires GHCR auth to pull the common-php-ext and
+# common-downloader intermediate images.
 #
 # This script builds base first, tags it locally, then builds secure using
 # the locally-built base, and finally builds advance using locally-built
 # secure.  All test tags are cleaned up on exit.
+#
+# Environment variables (override as needed):
+#   GHCR_REPO         GHCR repository for intermediate images
+#                     (default: ghcr.io/devpanel/php)
+#   GHCR_TAG_SUFFIX   Tag suffix for GHCR intermediates; -rc on develop, empty
+#                     on main (default: -rc)
 #
 # Options:
 #   --version <v>           Build all variants for a single PHP version (e.g. 8.2).
@@ -23,6 +40,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Local image tag prefix used only during this test run.
 TAG_PREFIX="devpanel-php-test"
+
+# GHCR coordinates for pulling intermediate images in the new structure.
+GHCR_REPO="${GHCR_REPO:-ghcr.io/devpanel/php}"
+GHCR_TAG_SUFFIX="${GHCR_TAG_SUFFIX:--rc}"
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -93,38 +114,111 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 FAILED=0
 
-build_variant() {
-  local version="$1"
-  local variant="$2"   # base | secure | advance
-  local context="${REPO_ROOT}/${version}/${variant}"
-  local dockerfile="${context}/Dockerfile"
-
-  if [[ ! -f "$dockerfile" ]]; then
-    echo "  skip: ${version}/${variant}/Dockerfile not found"
-    return
-  fi
-
-  local tag="${TAG_PREFIX}:${version}-${variant}"
-
-  # For dependent variants, override BASE_IMAGE to use our locally-built tag.
-  local build_args=()
-  case "$variant" in
-    secure)  build_args=(--build-arg "BASE_IMAGE=${TAG_PREFIX}:${version}-base") ;;
-    advance) build_args=(--build-arg "BASE_IMAGE=${TAG_PREFIX}:${version}-secure") ;;
-  esac
-
-  echo "  Building ${version}/${variant}…"
-  if docker build \
+# run_build <tag> <context-dir> [extra docker buildx build args...]
+run_build() {
+  local tag="$1"
+  local context="$2"
+  local prefix="${TAG_PREFIX}:"
+  local name="${tag#"$prefix"}"
+  shift 2
+  echo "  Building ${name}…"
+  if docker buildx build \
+      --load \
       --quiet \
-      "${build_args[@]+"${build_args[@]}"}" \
+      "$@" \
       --tag "$tag" \
       "$context" > /dev/null; then
     CREATED_TAGS+=("$tag")
-    echo "  ✔ ${version}/${variant} built successfully"
+    echo "  ✔ ${name} built successfully"
+    return 0
   else
-    echo "  ✘ ${version}/${variant} build FAILED" >&2
+    echo "  ✘ ${name} build FAILED" >&2
     FAILED=1
     return 1
+  fi
+}
+
+build_version() {
+  local version="$1"
+  local base_context="${REPO_ROOT}/${version}/base"
+  local base_dockerfile="${base_context}/Dockerfile"
+
+  # ── base ──────────────────────────────────────────────────────────────────
+  if [[ ! -f "$base_dockerfile" ]]; then
+    echo "  skip: ${version}/base/Dockerfile not found"
+    return
+  fi
+
+  local base_tag="${TAG_PREFIX}:${version}-base"
+  local base_extra_args=()
+
+  # New structure: per-version base Dockerfile starts with "FROM common-php-ext"
+  # and requires the intermediate to be pulled from GHCR.
+  # Read the Dockerfile once and check all named-context patterns together.
+  local base_df_content
+  base_df_content="$(cat "$base_dockerfile")"
+  if echo "$base_df_content" | grep -qE '^FROM common-php-ext'; then
+    local php_ext_ref="${GHCR_REPO}:${version}-php-ext${GHCR_TAG_SUFFIX}"
+    base_extra_args+=(--build-context "common-php-ext=docker-image://${php_ext_ref}")
+    # Also provide common-downloader context if referenced in a COPY --from= or RUN --mount=
+    if echo "$base_df_content" | grep -qE '^(COPY|RUN)[[:space:]].*--from=common-downloader'; then
+      local downloader_ref="${GHCR_REPO}:downloader${GHCR_TAG_SUFFIX}"
+      base_extra_args+=(--build-context "common-downloader=docker-image://${downloader_ref}")
+    fi
+    # Provide the shared 'common' build context (./base/) if referenced.
+    # Match '--from=common' only when not followed by a hyphen (to avoid matching
+    # '--from=common-downloader' or similar composed names).
+    if echo "$base_df_content" | grep -qE '^(COPY|RUN)[[:space:]].*--from=common($|[^-])'; then
+      base_extra_args+=(--build-context "common=${REPO_ROOT}/base")
+    fi
+  fi
+
+  run_build "$base_tag" "$base_context" "${base_extra_args[@]+"${base_extra_args[@]}"}" || return 1
+
+  # ── secure ────────────────────────────────────────────────────────────────
+  local secure_tag="${TAG_PREFIX}:${version}-secure"
+  local secure_int_tag="${TAG_PREFIX}:${version}-secure-int"
+
+  if [[ -f "${REPO_ROOT}/secure/Dockerfile" ]]; then
+    # New shared secure/Dockerfile structure: has secure-intermediate + final stages.
+    # Step 1: build the secure-intermediate stage (installs mod_security).
+    run_build "$secure_int_tag" "${REPO_ROOT}/secure" \
+        --target secure-intermediate \
+        --build-arg "BASE_IMAGE=${base_tag}" || return 1
+
+    # Step 2a: per-version final (7.4/8.0 multipart fix uses own Dockerfile).
+    if [[ -f "${REPO_ROOT}/${version}/secure/Dockerfile" ]]; then
+      run_build "$secure_tag" "${REPO_ROOT}/${version}/secure" \
+          --build-arg "BASE_IMAGE=${secure_int_tag}" || return 1
+    else
+      # Step 2b: shared final stage — just retags secure-intermediate.
+      run_build "$secure_tag" "${REPO_ROOT}/secure" \
+          --target final \
+          --build-arg "BASE_IMAGE=${base_tag}" || return 1
+    fi
+  elif [[ -f "${REPO_ROOT}/${version}/secure/Dockerfile" ]]; then
+    # Legacy per-version standalone secure Dockerfile.
+    run_build "$secure_tag" "${REPO_ROOT}/${version}/secure" \
+        --build-arg "BASE_IMAGE=${base_tag}" || return 1
+  else
+    echo "  skip: secure Dockerfile not found for ${version}"
+  fi
+
+  # ── advance ───────────────────────────────────────────────────────────────
+  local advance_tag="${TAG_PREFIX}:${version}-advance"
+  local advance_context=""
+
+  if [[ -f "${REPO_ROOT}/advance/Dockerfile" ]]; then
+    advance_context="${REPO_ROOT}/advance"
+  elif [[ -f "${REPO_ROOT}/${version}/advance/Dockerfile" ]]; then
+    advance_context="${REPO_ROOT}/${version}/advance"
+  fi
+
+  if [[ -n "$advance_context" ]]; then
+    run_build "$advance_tag" "$advance_context" \
+        --build-arg "BASE_IMAGE=${secure_tag}" || return 1
+  else
+    echo "  skip: advance Dockerfile not found for ${version}"
   fi
 }
 
@@ -139,9 +233,7 @@ echo
 
 for version in "${SORTED_VERSIONS[@]}"; do
   echo "=== PHP ${version} ==="
-  build_variant "$version" base    || true
-  build_variant "$version" secure  || true
-  build_variant "$version" advance || true
+  build_version "$version" || true
   echo
 done
 
@@ -153,3 +245,4 @@ if [[ $FAILED -ne 0 ]]; then
   exit 1
 fi
 echo "All Docker builds passed."
+
