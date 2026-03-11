@@ -26,9 +26,9 @@ ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e
 # COPILOT_CHAT_VSIX_SHA256 (see README for instructions).
 ARG COPILOT_CHAT_PINNED_VERSION=0.26.2025040204
 ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION
-# SHA256 of the VSIX (architecture-independent). Empty string disables the
-# integrity check; set it to the real hash when pinning a specific version.
-ARG COPILOT_CHAT_VSIX_SHA256=
+# SHA256 of the VSIX for COPILOT_CHAT_PINNED_VERSION (architecture-independent).
+# The integrity check only runs when the downloaded version equals the pinned version.
+ARG COPILOT_CHAT_VSIX_SHA256=82b1bfa67f91e29682aa44b1e831b32a3ca3415676148351c5da57ca7185df98
 
 # Download libsodium source (pinned release, identical for every PHP version)
 RUN mkdir -p /tmp/libsodium \
@@ -135,7 +135,7 @@ exit(1); \
   [ -n "$COPILOT_CHAT_VERSION" ] || { echo "COPILOT_CHAT_VERSION is empty" >&2; exit 1; }; \
   VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"; \
   curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o /tmp/copilot-chat.vsix; \
-  if [ -n "$COPILOT_CHAT_VSIX_SHA256" ]; then \
+  if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ]; then \
     echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; \
   fi
 
