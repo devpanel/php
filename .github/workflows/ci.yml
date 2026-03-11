@@ -53,29 +53,3 @@ jobs:
 
       - name: Run Dockerfile lint
         run: bash tests/lint-dockerfile.sh
-
-  build-dockerfiles:
-    name: Build PHP ${{ matrix.php_version }} images
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        php_version:
-          - "7.4"
-          - "8.0"
-          - "8.1"
-          - "8.2"
-          - "8.3"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build PHP ${{ matrix.php_version }} images
-        run: bash tests/build-dockerfile.sh --version ${{ matrix.php_version }}
-
-      - name: Run PHP ${{ matrix.php_version }} functional tests
-        run: bash tests/run-dockerfile.sh --version ${{ matrix.php_version }}

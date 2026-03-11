@@ -64,7 +64,10 @@ def rel(path):
         r = os.path.relpath(path, repo_root)
     except ValueError:
         r = path
-    return "./" + r.lstrip("./")
+    # os.path.relpath never returns a leading "./" for subdirectory paths,
+    # so we only need to strip a leading "/" (shouldn't happen on POSIX but
+    # be safe), and must NOT strip leading dots (e.g. ".github/workflows/…").
+    return "./" + r.lstrip("/")
 
 counts = {}
 parse_error = False

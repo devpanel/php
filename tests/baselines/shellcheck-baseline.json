@@ -8,5 +8,7 @@
   "./8.2/base/scripts/apache-start.sh:SC2086": 19,
   "./8.2/base/scripts/apache-start.sh:SC2236": 10,
   "./8.3/base/scripts/apache-start.sh:SC2086": 19,
-  "./8.3/base/scripts/apache-start.sh:SC2236": 10
+  "./8.3/base/scripts/apache-start.sh:SC2236": 10,
+  "./base/scripts/apache-start.sh:SC2086": 19,
+  "./base/scripts/apache-start.sh:SC2236": 10
 }

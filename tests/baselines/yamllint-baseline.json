@@ -1,1 +1,3 @@
-{}
+{
+  "./.github/workflows/build-php-images.yml:colons": 16
+}
