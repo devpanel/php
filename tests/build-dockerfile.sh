@@ -175,7 +175,7 @@ ensure_downloader_image() {
   )
   if ! run_build "${downloader_tag}" "${REPO_ROOT}/base" \
       --target downloader \
-      "${cache_args[@]+"${cache_args[@]}"}"; then
+      "${cache_args[@]}"; then
     return 1
   fi
   DOWNLOADER_BUILT=1
@@ -213,7 +213,7 @@ ensure_php_ext_image() {
       --build-arg "PHP_VERSION=${version}" \
       --build-context "common-downloader=docker-image://${downloader_tag}" \
       --build-context "common=${REPO_ROOT}/base" \
-      "${cache_args[@]+"${cache_args[@]}"}"; then
+      "${cache_args[@]}"; then
     return 1
   fi
   PHP_EXT_LOCAL_TAG="${php_ext_tag}"
@@ -260,7 +260,7 @@ build_version() {
     fi
   fi
 
-  run_build "$base_tag" "$base_context" "${base_extra_args[@]+"${base_extra_args[@]}"}" || return 1
+  run_build "$base_tag" "$base_context" "${base_extra_args[@]}" || return 1
 
   # ── secure ────────────────────────────────────────────────────────────────
   local secure_tag="${TAG_PREFIX}:${version}-secure"
