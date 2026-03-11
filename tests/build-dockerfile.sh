@@ -10,17 +10,16 @@
 #     {version}/advance/Dockerfile  ← FROM devpanel/php:<version>-secure
 #
 #   New (shared base with GHCR-cached intermediates):
+#     base/Dockerfile               ← shared; stages: downloader + php-ext-common
 #     {version}/base/Dockerfile     ← FROM common-php-ext AS final
 #     secure/Dockerfile             ← shared; stages: secure-intermediate + final
 #     {version}/secure/Dockerfile   ← per-version (7.4/8.0 only, multipart fix)
 #     advance/Dockerfile            ← shared; FROM ${BASE_IMAGE}
 #
-# The new structure requires GHCR auth to pull the common-php-ext and
-# common-downloader intermediate images.
-#
-# This script builds base first, tags it locally, then builds secure using
-# the locally-built base, and finally builds advance using locally-built
-# secure.  All test tags are cleaned up on exit.
+# For the new structure, intermediate images are resolved in this order:
+#   1. Pull from GHCR (fast path — requires auth and images to exist).
+#   2. Build locally from base/Dockerfile (fallback — self-contained, slow
+#      on first run but benefits from GitHub Actions cache on subsequent runs).
 #
 # Environment variables (override as needed):
 #   GHCR_REPO         GHCR repository for intermediate images
@@ -96,6 +95,12 @@ if ! command -v docker &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
+# GitHub Actions cache flag variable (no-op when not in CI)
+# ---------------------------------------------------------------------------
+# Usage: build with per-scope arrays at the call site.
+IN_GHA="${ACTIONS_CACHE_URL:+1}"
+
+# ---------------------------------------------------------------------------
 # Cleanup: remove locally-created test tags on exit
 # ---------------------------------------------------------------------------
 CREATED_TAGS=()
@@ -138,6 +143,85 @@ run_build() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Intermediate image helpers (new shared Dockerfile structure)
+# ---------------------------------------------------------------------------
+
+# Tracks whether the downloader image has been built locally this run.
+DOWNLOADER_BUILT=0
+
+# Ensure the version-independent 'downloader' intermediate exists locally.
+# Tries GHCR first; falls back to building from base/Dockerfile.
+ensure_downloader_image() {
+  local downloader_tag="${TAG_PREFIX}:downloader"
+
+  [[ "$DOWNLOADER_BUILT" -eq 1 ]] && return 0
+
+  local ghcr_ref="${GHCR_REPO}:downloader${GHCR_TAG_SUFFIX}"
+
+  if docker pull --quiet "${ghcr_ref}" 2>/dev/null \
+      && docker tag "${ghcr_ref}" "${downloader_tag}" 2>/dev/null; then
+    CREATED_TAGS+=("${downloader_tag}")
+    echo "  ✔ downloader pulled from GHCR"
+    DOWNLOADER_BUILT=1
+    return 0
+  fi
+
+  echo "  downloader not in GHCR; building locally from base/Dockerfile…"
+  local cache_args=()
+  [[ -n "${IN_GHA}" ]] && cache_args=(
+    --cache-from "type=gha,scope=php-ci-downloader"
+    --cache-to   "type=gha,scope=php-ci-downloader,mode=max"
+  )
+  if ! run_build "${downloader_tag}" "${REPO_ROOT}/base" \
+      --target downloader \
+      "${cache_args[@]+"${cache_args[@]}"}"; then
+    return 1
+  fi
+  DOWNLOADER_BUILT=1
+}
+
+# Ensure the per-version 'common-php-ext' intermediate exists locally.
+# Sets PHP_EXT_LOCAL_TAG to the tag of the ready-to-use image.
+# Tries GHCR first; falls back to building from base/Dockerfile.
+PHP_EXT_LOCAL_TAG=""
+ensure_php_ext_image() {
+  local version="$1"
+  local php_ext_tag="${TAG_PREFIX}:${version}-php-ext"
+
+  local ghcr_ref="${GHCR_REPO}:${version}-php-ext${GHCR_TAG_SUFFIX}"
+
+  if docker pull --quiet "${ghcr_ref}" 2>/dev/null \
+      && docker tag "${ghcr_ref}" "${php_ext_tag}" 2>/dev/null; then
+    CREATED_TAGS+=("${php_ext_tag}")
+    echo "  ✔ ${version}-php-ext pulled from GHCR"
+    PHP_EXT_LOCAL_TAG="${php_ext_tag}"
+    return 0
+  fi
+
+  echo "  ${version}-php-ext not in GHCR; building locally from base/Dockerfile…"
+  ensure_downloader_image || return 1
+  local downloader_tag="${TAG_PREFIX}:downloader"
+
+  local cache_args=()
+  [[ -n "${IN_GHA}" ]] && cache_args=(
+    --cache-from "type=gha,scope=php-ci-ext-${version}"
+    --cache-to   "type=gha,scope=php-ci-ext-${version},mode=max"
+  )
+  if ! run_build "${php_ext_tag}" "${REPO_ROOT}/base" \
+      --target php-ext-common \
+      --build-arg "PHP_VERSION=${version}" \
+      --build-context "common-downloader=docker-image://${downloader_tag}" \
+      --build-context "common=${REPO_ROOT}/base" \
+      "${cache_args[@]+"${cache_args[@]}"}"; then
+    return 1
+  fi
+  PHP_EXT_LOCAL_TAG="${php_ext_tag}"
+}
+
+# ---------------------------------------------------------------------------
+# Per-version build
+# ---------------------------------------------------------------------------
 build_version() {
   local version="$1"
   local base_context="${REPO_ROOT}/${version}/base"
@@ -152,22 +236,25 @@ build_version() {
   local base_tag="${TAG_PREFIX}:${version}-base"
   local base_extra_args=()
 
-  # New structure: per-version base Dockerfile starts with "FROM common-php-ext"
-  # and requires the intermediate to be pulled from GHCR.
-  # Read the Dockerfile once and check all named-context patterns together.
+  # New structure: per-version base Dockerfile starts with "FROM common-php-ext".
+  # Read the Dockerfile once and detect all named-context references.
   local base_df_content
   base_df_content="$(cat "$base_dockerfile")"
   if echo "$base_df_content" | grep -qE '^FROM common-php-ext'; then
-    local php_ext_ref="${GHCR_REPO}:${version}-php-ext${GHCR_TAG_SUFFIX}"
-    base_extra_args+=(--build-context "common-php-ext=docker-image://${php_ext_ref}")
-    # Also provide common-downloader context if referenced in a COPY --from= or RUN --mount=
+    # Obtain the php-ext intermediate (GHCR or local build).
+    ensure_php_ext_image "${version}" || return 1
+    base_extra_args+=(--build-context "common-php-ext=docker-image://${PHP_EXT_LOCAL_TAG}")
+
+    # common-downloader context (if referenced by version-specific instructions)
     if echo "$base_df_content" | grep -qE '^(COPY|RUN)[[:space:]].*--from=common-downloader'; then
-      local downloader_ref="${GHCR_REPO}:downloader${GHCR_TAG_SUFFIX}"
-      base_extra_args+=(--build-context "common-downloader=docker-image://${downloader_ref}")
+      ensure_downloader_image || return 1
+      local downloader_tag="${TAG_PREFIX}:downloader"
+      base_extra_args+=(--build-context "common-downloader=docker-image://${downloader_tag}")
     fi
-    # Provide the shared 'common' build context (./base/) if referenced.
-    # Match '--from=common' only when not followed by a hyphen (to avoid matching
-    # '--from=common-downloader' or similar composed names).
+
+    # Shared 'common' build context (./base/ directory).
+    # Match '--from=common' only when not followed by a hyphen to avoid matching
+    # '--from=common-downloader' or similar composed names.
     if echo "$base_df_content" | grep -qE '^(COPY|RUN)[[:space:]].*--from=common($|[^-])'; then
       base_extra_args+=(--build-context "common=${REPO_ROOT}/base")
     fi
