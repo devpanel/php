@@ -25,10 +25,20 @@ ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e
 # To pin a different version, update COPILOT_CHAT_PINNED_VERSION and recompute
 # COPILOT_CHAT_VSIX_SHA256 (see README for instructions).
 ARG COPILOT_CHAT_PINNED_VERSION=0.26.2025040204
+# By default, COPILOT_CHAT_VERSION is pinned to COPILOT_CHAT_PINNED_VERSION so that
+# direct `docker build` runs use a known version with a verified SHA256 checksum.
+# CI/Bake can override this argument to "" to auto-detect the latest compatible
+# version when reproducibility and checksum verification are handled externally.
 ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION
 # SHA256 of the VSIX for COPILOT_CHAT_PINNED_VERSION (architecture-independent).
 # The integrity check only runs when the downloaded version equals the pinned version.
 ARG COPILOT_CHAT_VSIX_SHA256=82b1bfa67f91e29682aa44b1e831b32a3ca3415676148351c5da57ca7185df98
+
+# Install unzip and zip early so they are available for VSIX validation during
+# the download step and for repacking in the subsequent step.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends unzip zip \
+    && rm -rf /var/lib/apt/lists/*
 
 # Download libsodium source (pinned release, identical for every PHP version)
 RUN mkdir -p /tmp/libsodium \
@@ -132,12 +142,22 @@ fwrite(STDERR, "No compatible copilot-chat version found for VS Code " . $vscode
 exit(1); \
 ' "$VSCODE_VERSION")" || { echo "Unable to auto-detect copilot-chat version for VS Code $VSCODE_VERSION (check preceding errors)" >&2; exit 1; }; \
   fi; \
-  [ -n "$COPILOT_CHAT_VERSION" ] || { echo "COPILOT_CHAT_VERSION is empty" >&2; exit 1; }; \
+  # Validate the version matches semver major.minor.patch with optional pre-release/
+  # build metadata using only URL-safe characters. This prevents a malformed URL
+  # from being constructed: an empty string, path separator, or other unexpected
+  # value is caught here with a clear message rather than silently producing
+  # .../copilot-chat//vspackage or similar.
+  printf '%s\n' "$COPILOT_CHAT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z._-]*)?$' \
+    || { echo "COPILOT_CHAT_VERSION has unexpected format: '${COPILOT_CHAT_VERSION}' (expected semver e.g. 1.2.3)" >&2; exit 1; }; \
+  echo "Downloading Copilot Chat VSIX version: $COPILOT_CHAT_VERSION" >&2; \
   VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"; \
   curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o /tmp/copilot-chat.vsix; \
   if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ]; then \
     echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; \
-  fi
+  fi; \
+  unzip -tq /tmp/copilot-chat.vsix >/dev/null \
+    || { echo "Downloaded copilot-chat.vsix is not a valid ZIP/VSIX (check marketplace response)" >&2; \
+         exit 1; }
 
 # Repack the Copilot Chat VSIX to use only standard deflate (method 8) or stored
 # (method 0) compression.  Newer VS Marketplace packages may use Deflate64
@@ -145,18 +165,17 @@ exit(1); \
 # code-server, causing a fatal "Extract" error at install time.  Repacking with
 # the system zip utility (which only emits methods 0 and 8) ensures the VSIX can
 # be installed by any code-server version.
-# The repack is skipped if the file does not exist (e.g. when the download step
-# was skipped due to a cache hit on an older layer that predates the download).
+# TODO: Remove this repack step once code-server upgrades yauzl (or its bundled
+# VS Code) to a version that supports Deflate64 (method 9) natively.
+# The repack is skipped only if the file does not exist (e.g. when the download
+# step was skipped due to a cache hit on an older layer that predates this code).
 # The original file is kept until the repacked archive is fully written, so that
 # a failure mid-repack does not silently lose the VSIX.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends unzip zip \
-    && rm -rf /var/lib/apt/lists/* \
-    && if [ -f /tmp/copilot-chat.vsix ]; then \
+RUN if [ -f /tmp/copilot-chat.vsix ]; then \
          mkdir /tmp/_vsix_repack \
          && unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
          && ( cd /tmp/_vsix_repack && zip -r -9 /tmp/copilot-chat-repacked.vsix . ) \
-         && mv /tmp/_vsix_repack/copilot-chat-repacked.vsix /tmp/copilot-chat.vsix \
+         && mv /tmp/copilot-chat-repacked.vsix /tmp/copilot-chat.vsix \
          && rm -rf /tmp/_vsix_repack; \
        fi
 
