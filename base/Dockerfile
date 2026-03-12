@@ -25,11 +25,11 @@ ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e
 # To pin a different version, update COPILOT_CHAT_PINNED_VERSION and recompute
 # COPILOT_CHAT_VSIX_SHA256 (see README for instructions).
 ARG COPILOT_CHAT_PINNED_VERSION=0.26.2025040204
-# Set COPILOT_CHAT_VERSION to a specific version to pin it, or leave empty (the
-# default) to auto-detect the latest version compatible with the bundled VS Code.
-# docker-bake.hcl also defaults this variable to "" so auto-detection is the
-# normal CI behaviour.
-ARG COPILOT_CHAT_VERSION=
+# By default, COPILOT_CHAT_VERSION is pinned to COPILOT_CHAT_PINNED_VERSION so that
+# direct `docker build` runs use a known version with a verified SHA256 checksum.
+# CI/Bake can override this argument to "" to auto-detect the latest compatible
+# version when reproducibility and checksum verification are handled externally.
+ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION
 # SHA256 of the VSIX for COPILOT_CHAT_PINNED_VERSION (architecture-independent).
 # The integrity check only runs when the downloaded version equals the pinned version.
 ARG COPILOT_CHAT_VSIX_SHA256=82b1bfa67f91e29682aa44b1e831b32a3ca3415676148351c5da57ca7185df98
