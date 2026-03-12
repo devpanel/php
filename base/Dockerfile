@@ -137,7 +137,16 @@ exit(1); \
   curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o /tmp/copilot-chat.vsix; \
   if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ]; then \
     echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; \
-  fi
+  fi; \
+  php -r ' \
+$f = fopen($argv[1], "rb"); \
+$h = $f ? fread($f, 4) : false; \
+if ($f) fclose($f); \
+if ($h === false || strncmp($h, "PK\x03\x04", 4) !== 0) { \
+  fwrite(STDERR, "Downloaded copilot-chat.vsix is not a valid ZIP/VSIX (check marketplace response)\n"); \
+  exit(1); \
+} \
+' /tmp/copilot-chat.vsix
 
 # Repack the Copilot Chat VSIX to use only standard deflate (method 8) or stored
 # (method 0) compression.  Newer VS Marketplace packages may use Deflate64
@@ -147,17 +156,25 @@ exit(1); \
 # be installed by any code-server version.
 # The repack is skipped if the file does not exist (e.g. when the download step
 # was skipped due to a cache hit on an older layer that predates the download).
+# The repack is also skipped if the file is not a valid ZIP archive (e.g. when
+# the download returned an HTTP error page), to avoid failing the entire build
+# due to an intermittent marketplace download error.
 # The original file is kept until the repacked archive is fully written, so that
 # a failure mid-repack does not silently lose the VSIX.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends unzip zip \
     && rm -rf /var/lib/apt/lists/* \
     && if [ -f /tmp/copilot-chat.vsix ]; then \
-         mkdir /tmp/_vsix_repack \
-         && unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
-         && ( cd /tmp/_vsix_repack && zip -r -9 /tmp/copilot-chat-repacked.vsix . ) \
-         && mv /tmp/_vsix_repack/copilot-chat-repacked.vsix /tmp/copilot-chat.vsix \
-         && rm -rf /tmp/_vsix_repack; \
+         if unzip -tq /tmp/copilot-chat.vsix >/dev/null 2>&1; then \
+           mkdir /tmp/_vsix_repack \
+           && unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
+           && ( cd /tmp/_vsix_repack && zip -r -9 /tmp/copilot-chat-repacked.vsix . ) \
+           && mv /tmp/copilot-chat-repacked.vsix /tmp/copilot-chat.vsix \
+           && rm -rf /tmp/_vsix_repack; \
+         else \
+           echo "WARNING: copilot-chat.vsix exists but is not a valid ZIP/VSIX; skipping repack" >&2; \
+           ls -lah /tmp/copilot-chat.vsix >&2; \
+         fi; \
        fi
 
 
