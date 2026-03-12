@@ -116,10 +116,13 @@ function "cache_to" {
 #   "false" → write with ignore-error=true: the pre-flight check already warned
 #              that GHCR is unwritable; errors are still visible in the bake log
 #              but must not abort a build that would otherwise succeed.
+# cache_from_registry also gates the registry read on GHCR_WRITABLE: when GHCR
+# is not writable no cache has ever been written there, so attempting a registry
+# cache-from would only produce "not found" noise.  Fall back to GHA cache only.
 
 function "cache_from_registry" {
   params = [ref, scope]
-  result = CACHE_FROM_ENABLED == "true" ? concat(["type=registry,ref=${ref}"], cache_from(scope)) : []
+  result = CACHE_FROM_ENABLED == "true" ? (GHCR_WRITABLE == "true" ? concat(["type=registry,ref=${ref}"], cache_from(scope)) : cache_from(scope)) : []
 }
 
 function "cache_to_registry" {
