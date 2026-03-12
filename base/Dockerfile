@@ -319,9 +319,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm /tmp/code-server.deb \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
-# Stage the GitHub Copilot Chat VSIX so it is available for extraction after
-# the USER switch.  The extension is extracted directly into
-# $CODES_USER_DATA_DIR/extensions below (no code-server install command needed).
+# Stage the GitHub Copilot Chat VSIX so it is available for installation after
+# the USER switch.  code-server installs it directly from the VSIX file below.
 COPY --from=common-downloader /tmp/copilot-chat.vsix /tmp/copilot-chat.vsix
 
 # Install Composer 2.x (default 2.3.10; PHP 8.3 overrides to 2.7.7 via self-update)
@@ -349,24 +348,11 @@ WORKDIR ${APP_ROOT}
 RUN touch /home/${USER}/.config/code-server/config.yaml
 
 # Install GitHub Copilot Chat extension (not available in Open VSX marketplace).
-# Extract the VSIX directly into $CODES_USER_DATA_DIR/extensions using the system
-# unzip (which supports all compression methods including Deflate64).  The
-# extension directory name is derived from the publisher, name, and version in
-# the VSIX's extension/package.json.  This replaces the previous two-step
-# repack-then-install approach and ensures the extension is found with the
-# existing --user-data-dir=$CODES_USER_DATA_DIR startup flag.
+# Installs into $CODES_USER_DATA_DIR/extensions — the same directory code-server
+# uses at runtime with --user-data-dir=$CODES_USER_DATA_DIR, so the extension
+# is found without any extra flags.
 RUN mkdir -p $CODES_USER_DATA_DIR/extensions \
-    && unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_extract \
-    && [ -d /tmp/_vsix_extract/extension ] \
-         || { echo "VSIX is missing the required 'extension/' directory" >&2; exit 1; } \
-    && EXT_DIR="$(php -r '$d=json_decode(file_get_contents("/tmp/_vsix_extract/extension/package.json"),true); if(!is_array($d)||!isset($d["publisher"],$d["name"],$d["version"])){fwrite(STDERR,"extension/package.json missing required fields\n");exit(1);} echo strtolower($d["publisher"]).".".$d["name"]."-".$d["version"];')" \
-    && [ -n "${EXT_DIR}" ] \
-         || { echo "Failed to determine extension directory name from package.json" >&2; exit 1; } \
-    && mv /tmp/_vsix_extract/extension "$CODES_USER_DATA_DIR/extensions/${EXT_DIR}" \
-    && { [ -f /tmp/_vsix_extract/extension.vsixmanifest ] \
-         && mv /tmp/_vsix_extract/extension.vsixmanifest "$CODES_USER_DATA_DIR/extensions/${EXT_DIR}/.vsixmanifest" \
-         || true; } \
-    && rm -rf /tmp/_vsix_extract \
+    && code-server --extensions-dir $CODES_USER_DATA_DIR/extensions --install-extension /tmp/copilot-chat.vsix \
     && sudo rm /tmp/copilot-chat.vsix
 
 # Bash alias for Composer 2.  The binary is installed as root above;
