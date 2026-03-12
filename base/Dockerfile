@@ -142,7 +142,14 @@ fwrite(STDERR, "No compatible copilot-chat version found for VS Code " . $vscode
 exit(1); \
 ' "$VSCODE_VERSION")" || { echo "Unable to auto-detect copilot-chat version for VS Code $VSCODE_VERSION (check preceding errors)" >&2; exit 1; }; \
   fi; \
-  [ -n "$COPILOT_CHAT_VERSION" ] || { echo "COPILOT_CHAT_VERSION is empty" >&2; exit 1; }; \
+  # Validate the version matches semver major.minor.patch with optional pre-release/
+  # build metadata using only URL-safe characters. This prevents a malformed URL
+  # from being constructed: an empty string, path separator, or other unexpected
+  # value is caught here with a clear message rather than silently producing
+  # .../copilot-chat//vspackage or similar.
+  printf '%s\n' "$COPILOT_CHAT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z._-]*)?$' \
+    || { echo "COPILOT_CHAT_VERSION has unexpected format: '${COPILOT_CHAT_VERSION}' (expected semver e.g. 1.2.3)" >&2; exit 1; }; \
+  echo "Downloading Copilot Chat VSIX version: $COPILOT_CHAT_VERSION" >&2; \
   VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"; \
   curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o /tmp/copilot-chat.vsix; \
   if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ]; then \
