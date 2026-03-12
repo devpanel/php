@@ -35,6 +35,13 @@ on:
         required: true
       DOCKERHUB_TOKEN:
         required: true
+      GHCR_TOKEN:
+        description: >
+          Optional classic Personal Access Token with the write:packages scope.
+          When provided, this token is used instead of GITHUB_TOKEN for GHCR
+          login and write-access checks. Required when the organisation's Actions
+          token policy restricts GITHUB_TOKEN from writing to packages.
+        required: false
 
 jobs:
   detect:
@@ -254,12 +261,12 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Check GHCR write access
         id: check-ghcr
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
           REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
