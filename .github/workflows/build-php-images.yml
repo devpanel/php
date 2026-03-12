@@ -463,6 +463,7 @@ jobs:
           CACHE_FROM_ENABLED:  ${{ inputs.cache_from_enabled }}
           GHCR_REPO:           ${{ steps.ghcr.outputs.repo }}
           GHCR_WRITABLE:       ${{ steps.check-ghcr.outputs.writable }}
+          GITHUB_TOKEN:        ${{ secrets.GITHUB_TOKEN }}
         with:
           source: .
           files: docker-bake.hcl
