@@ -333,9 +333,11 @@ jobs:
           **Option 2 — Repository admin: use a Personal Access Token (no org-owner access needed)**
           SUMMARY_EOF
                   cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
-          1. Create a [fine-grained personal access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token) at <https://github.com/settings/personal-access-tokens/new>: set **Resource owner** to the organisation, and under **Permissions → Repository permissions** (or **Organisation permissions**) set **Packages** to **Read and write**
+          > **Note:** A classic token is required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
+
+          1. Create a [Personal Access Token (classic)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the `write:packages` scope at <https://github.com/settings/tokens>
           2. In this repository, go to **Settings → Secrets and variables → Actions**
-          3. Add a new repository secret named **`GHCR_TOKEN`** and paste the token as the value
+          3. Add a new repository secret named **`GHCR_TOKEN`** and paste the PAT as the value
           4. Re-run the workflow
           SUMMARY_EOF
                   echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
@@ -358,9 +360,12 @@ jobs:
           See the GitHub docs: [Setting the permissions of the GITHUB\_TOKEN for your organisation](https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization#setting-the-permissions-of-the-github_token-for-your-organization)
 
           **To unblock the build — Repository admin: use a Personal Access Token (no org-owner access needed)**
-          1. Create a [fine-grained personal access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token) at <https://github.com/settings/personal-access-tokens/new>: set **Resource owner** to the organisation, and under **Permissions → Repository permissions** (or **Organisation permissions**) set **Packages** to **Read and write**
+
+          > **Note:** A classic token is required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
+
+          1. Create a [Personal Access Token (classic)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the \`write:packages\` scope at <https://github.com/settings/tokens>
           2. In this repository, go to **Settings → Secrets and variables → Actions**
-          3. Add a new repository secret named **\`GHCR_TOKEN\`** and paste the token as the value
+          3. Add a new repository secret named **\`GHCR_TOKEN\`** and paste the PAT as the value
           4. Re-run the workflow
           SUMMARY_EOF
                   echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
@@ -429,9 +434,12 @@ jobs:
           - [Configuring a package's access control and visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
 
           **Option 2 — Repository admin: use a Personal Access Token (no org-owner access needed)**
-          1. Create a [fine-grained personal access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token) at <https://github.com/settings/personal-access-tokens/new>: set **Resource owner** to the organisation, and under **Permissions → Repository permissions** (or **Organisation permissions**) set **Packages** to **Read and write**
+
+          > **Note:** A classic token is required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
+
+          1. Create a [Personal Access Token (classic)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the \`write:packages\` scope at <https://github.com/settings/tokens>
           2. In this repository, go to **Settings → Secrets and variables → Actions**
-          3. Add a new repository secret named **\`GHCR_TOKEN\`** and paste the token as the value
+          3. Add a new repository secret named **\`GHCR_TOKEN\`** and paste the PAT as the value
           4. Re-run the workflow
           SUMMARY_EOF
                 echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
