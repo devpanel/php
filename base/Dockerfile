@@ -18,13 +18,27 @@ ARG CODESERVER_VERSION=$CODESERVER_PINNED_HASH_VERSION
 ARG CODESERVER_DEB_SHA256_AMD64=74c107b33643ed11223263b86431530fbc9c9f7c8202997579a6f0c41b4cb102
 ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e5de9d55f1e2077c3
 
+# GitHub Copilot Chat is not available in the Open VSX marketplace used by
+# code-server, so we download it directly from the VS Marketplace.
+# Version 0.26.2025040204 requires VS Code ^1.99.0 and is therefore compatible
+# with code-server 4.99.4 (which bundles VS Code 1.99.4).
+# To pin a different version, update COPILOT_CHAT_PINNED_VERSION and recompute
+# COPILOT_CHAT_VSIX_SHA256 (see README for instructions).
+ARG COPILOT_CHAT_PINNED_VERSION=0.26.2025040204
+ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION
+# SHA256 of the VSIX for COPILOT_CHAT_PINNED_VERSION (architecture-independent).
+# The integrity check only runs when the downloaded version equals the pinned version.
+ARG COPILOT_CHAT_VSIX_SHA256=82b1bfa67f91e29682aa44b1e831b32a3ca3415676148351c5da57ca7185df98
+
 # Download libsodium source (pinned release, identical for every PHP version)
 RUN mkdir -p /tmp/libsodium \
     && curl -sL https://github.com/jedisct1/libsodium/archive/1.0.18-RELEASE.tar.gz \
        | tar xzf - -C /tmp/libsodium
 
-# Download code-server deb (identical binary for every PHP version).
-# php -r is used for the optional dynamic-version resolution.
+# Download code-server deb and GitHub Copilot Chat VSIX.
+# php -r is used for the optional dynamic-version resolution of both.
+# Both downloads are in the same RUN step so that the resolved
+# CODESERVER_VERSION is available when auto-detecting COPILOT_CHAT_VERSION.
 RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN,required=false \
   set -e; \
   if [ -z "$CODESERVER_VERSION" ]; then \
@@ -76,7 +90,69 @@ exit(1); \
       arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
     esac; \
     echo "$DEB_SHA256 /tmp/code-server.deb" | sha256sum -c -; \
+  fi; \
+  \
+  # Download GitHub Copilot Chat VSIX (not available in Open VSX marketplace). \
+  # If COPILOT_CHAT_VERSION is empty, detect the latest version compatible with \
+  # the VS Code release bundled in this code-server version. \
+  # code-server 4.X.Y bundles VS Code 1.X.Y (e.g. 4.99.4 → 1.99.4). \
+  if [ -z "$COPILOT_CHAT_VERSION" ]; then \
+    VSCODE_VERSION="$(printf '%s' "$CODESERVER_VERSION" | sed 's/^[0-9][0-9]*\./1./')"; \
+    MARKETPLACE_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
+      -X POST \
+      -H 'Content-Type: application/json' \
+      -H 'Accept: application/json;api-version=3.0-preview.1' \
+      -d '{"filters":[{"criteria":[{"filterType":7,"value":"GitHub.copilot-chat"}],"pageSize":100}],"flags":17}' \
+      'https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery')"; \
+    COPILOT_CHAT_VERSION="$(printf '%s' "$MARKETPLACE_JSON" | php -r ' \
+$vscode_version = $argv[1]; \
+$response = json_decode(stream_get_contents(STDIN), true); \
+ \
+if (!is_array($response)) { \
+  fwrite(STDERR, "Failed to parse Marketplace API response\n"); \
+  exit(2); \
+} \
+ \
+$versions = $response["results"][0]["extensions"][0]["versions"] ?? []; \
+foreach ($versions as $v) { \
+  $ver = $v["version"] ?? ""; \
+  if (!preg_match("/^\d+\.\d+\.\d+$/", $ver)) continue; \
+  $engine = ""; \
+  foreach ($v["properties"] ?? [] as $p) { \
+    if ($p["key"] === "Microsoft.VisualStudio.Code.Engine") { \
+      $engine = preg_replace("/^[\\^~>=]+/", "", $p["value"]); \
+      $engine = preg_replace("/-.*$/", "", $engine); \
+      break; \
+    } \
+  } \
+  if (empty($engine)) continue; \
+  if (version_compare($vscode_version, $engine, ">=")) { echo $ver; exit(0); } \
+} \
+fwrite(STDERR, "No compatible copilot-chat version found for VS Code " . $vscode_version . "\n"); \
+exit(1); \
+' "$VSCODE_VERSION")" || { echo "Unable to auto-detect copilot-chat version for VS Code $VSCODE_VERSION (check preceding errors)" >&2; exit 1; }; \
+  fi; \
+  [ -n "$COPILOT_CHAT_VERSION" ] || { echo "COPILOT_CHAT_VERSION is empty" >&2; exit 1; }; \
+  VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"; \
+  curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o /tmp/copilot-chat.vsix; \
+  if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ]; then \
+    echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; \
   fi
+
+# Repack the Copilot Chat VSIX to use only standard deflate (method 8) or stored
+# (method 0) compression.  Newer VS Marketplace packages may use Deflate64
+# (method 9) or other methods unsupported by the yauzl library bundled with
+# code-server, causing a fatal "Extract" error at install time.  Repacking with
+# the system zip utility (which only emits methods 0 and 8) ensures the VSIX can
+# be installed by any code-server version.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends unzip zip \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir /tmp/_vsix_repack \
+    && unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
+    && rm /tmp/copilot-chat.vsix \
+    && ( cd /tmp/_vsix_repack && zip -r -9 /tmp/copilot-chat.vsix . ) \
+    && rm -rf /tmp/_vsix_repack
 
 
 # ─── Common PHP extensions stage ──────────────────────────────────────────────
@@ -239,6 +315,12 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm /tmp/code-server.deb \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
+# Pre-stage the GitHub Copilot Chat VSIX so it is available after the USER switch.
+# Installation (below) runs as the app user, placing the extension directly into
+# $CODES_USER_DATA_DIR/extensions so code-server finds it with the existing
+# --user-data-dir startup flag (no --extensions-dir override needed).
+COPY --from=common-downloader /tmp/copilot-chat.vsix /tmp/copilot-chat.vsix
+
 # Install Composer 2.x (default 2.3.10; PHP 8.3 overrides to 2.7.7 via self-update)
 # and legacy Composer 1.x for projects that require it.
 # 'composer2' bash alias is set after USER switch below.
@@ -262,6 +344,14 @@ USER ${USER}
 WORKDIR ${APP_ROOT}
 
 RUN touch /home/${USER}/.config/code-server/config.yaml
+
+# Install GitHub Copilot Chat extension (not available in Open VSX marketplace).
+# Installs into $CODES_USER_DATA_DIR/extensions — the same directory code-server
+# uses at runtime with --user-data-dir=$CODES_USER_DATA_DIR, so the extension
+# is found without any extra flags.
+RUN mkdir -p $CODES_USER_DATA_DIR/extensions \
+    && code-server --extensions-dir $CODES_USER_DATA_DIR/extensions --install-extension /tmp/copilot-chat.vsix \
+    && sudo rm /tmp/copilot-chat.vsix
 
 # Bash alias for Composer 2.  The binary is installed as root above;
 # the alias is set here (as the app user) to keep it in ~/.bashrc.
