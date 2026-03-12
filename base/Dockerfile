@@ -34,10 +34,10 @@ ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION
 # The integrity check only runs when the downloaded version equals the pinned version.
 ARG COPILOT_CHAT_VSIX_SHA256=82b1bfa67f91e29682aa44b1e831b32a3ca3415676148351c5da57ca7185df98
 
-# Install unzip and zip early so they are available for VSIX validation during
-# the download step and for repacking in the subsequent step.
+# Install unzip early so it is available for VSIX validation during
+# the download step.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends unzip zip \
+    && apt-get install -y --no-install-recommends unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Download libsodium source (pinned release, identical for every PHP version)
@@ -158,27 +158,6 @@ exit(1); \
   unzip -tq /tmp/copilot-chat.vsix >/dev/null \
     || { echo "Downloaded copilot-chat.vsix is not a valid ZIP/VSIX (check marketplace response)" >&2; \
          exit 1; }
-
-# Repack the Copilot Chat VSIX to use only standard deflate (method 8) or stored
-# (method 0) compression.  Newer VS Marketplace packages may use Deflate64
-# (method 9) or other methods unsupported by the yauzl library bundled with
-# code-server, causing a fatal "Extract" error at install time.  Repacking with
-# the system zip utility (which only emits methods 0 and 8) ensures the VSIX can
-# be installed by any code-server version.
-# TODO: Remove this repack step once code-server upgrades yauzl (or its bundled
-# VS Code) to a version that supports Deflate64 (method 9) natively.
-# The repack is skipped only if the file does not exist (e.g. when the download
-# step was skipped due to a cache hit on an older layer that predates this code).
-# The original file is kept until the repacked archive is fully written, so that
-# a failure mid-repack does not silently lose the VSIX.
-RUN if [ -f /tmp/copilot-chat.vsix ]; then \
-         mkdir /tmp/_vsix_repack \
-         && unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
-         && ( cd /tmp/_vsix_repack && zip -r -9 /tmp/copilot-chat-repacked.vsix . ) \
-         && mv /tmp/copilot-chat-repacked.vsix /tmp/copilot-chat.vsix \
-         && rm -rf /tmp/_vsix_repack; \
-       fi
-
 
 # ─── Common PHP extensions stage ──────────────────────────────────────────────
 # Builds the shared intermediate that all per-version Dockerfiles extend.
@@ -340,10 +319,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm /tmp/code-server.deb \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
-# Pre-stage the GitHub Copilot Chat VSIX so it is available after the USER switch.
-# Installation (below) runs as the app user, placing the extension directly into
-# $CODES_USER_DATA_DIR/extensions so code-server finds it with the existing
-# --user-data-dir startup flag (no --extensions-dir override needed).
+# Stage the GitHub Copilot Chat VSIX so it is available for extraction after
+# the USER switch.  The extension is extracted directly into
+# $CODES_USER_DATA_DIR/extensions below (no code-server install command needed).
 COPY --from=common-downloader /tmp/copilot-chat.vsix /tmp/copilot-chat.vsix
 
 # Install Composer 2.x (default 2.3.10; PHP 8.3 overrides to 2.7.7 via self-update)
@@ -371,11 +349,24 @@ WORKDIR ${APP_ROOT}
 RUN touch /home/${USER}/.config/code-server/config.yaml
 
 # Install GitHub Copilot Chat extension (not available in Open VSX marketplace).
-# Installs into $CODES_USER_DATA_DIR/extensions — the same directory code-server
-# uses at runtime with --user-data-dir=$CODES_USER_DATA_DIR, so the extension
-# is found without any extra flags.
+# Extract the VSIX directly into $CODES_USER_DATA_DIR/extensions using the system
+# unzip (which supports all compression methods including Deflate64).  The
+# extension directory name is derived from the publisher, name, and version in
+# the VSIX's extension/package.json.  This replaces the previous two-step
+# repack-then-install approach and ensures the extension is found with the
+# existing --user-data-dir=$CODES_USER_DATA_DIR startup flag.
 RUN mkdir -p $CODES_USER_DATA_DIR/extensions \
-    && code-server --extensions-dir $CODES_USER_DATA_DIR/extensions --install-extension /tmp/copilot-chat.vsix \
+    && unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_extract \
+    && [ -d /tmp/_vsix_extract/extension ] \
+         || { echo "VSIX is missing the required 'extension/' directory" >&2; exit 1; } \
+    && EXT_DIR="$(php -r '$d=json_decode(file_get_contents("/tmp/_vsix_extract/extension/package.json"),true); if(!is_array($d)||!isset($d["publisher"],$d["name"],$d["version"])){fwrite(STDERR,"extension/package.json missing required fields\n");exit(1);} echo strtolower($d["publisher"]).".".$d["name"]."-".$d["version"];')" \
+    && [ -n "${EXT_DIR}" ] \
+         || { echo "Failed to determine extension directory name from package.json" >&2; exit 1; } \
+    && mv /tmp/_vsix_extract/extension "$CODES_USER_DATA_DIR/extensions/${EXT_DIR}" \
+    && { [ -f /tmp/_vsix_extract/extension.vsixmanifest ] \
+         && mv /tmp/_vsix_extract/extension.vsixmanifest "$CODES_USER_DATA_DIR/extensions/${EXT_DIR}/.vsixmanifest" \
+         || true; } \
+    && rm -rf /tmp/_vsix_extract \
     && sudo rm /tmp/copilot-chat.vsix
 
 # Bash alias for Composer 2.  The binary is installed as root above;
