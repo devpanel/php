@@ -145,14 +145,20 @@ exit(1); \
 # code-server, causing a fatal "Extract" error at install time.  Repacking with
 # the system zip utility (which only emits methods 0 and 8) ensures the VSIX can
 # be installed by any code-server version.
+# The repack is skipped if the file does not exist (e.g. when the download step
+# was skipped due to a cache hit on an older layer that predates the download).
+# The original file is kept until the repacked archive is fully written, so that
+# a failure mid-repack does not silently lose the VSIX.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends unzip zip \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir /tmp/_vsix_repack \
-    && unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
-    && rm /tmp/copilot-chat.vsix \
-    && ( cd /tmp/_vsix_repack && zip -r -9 /tmp/copilot-chat.vsix . ) \
-    && rm -rf /tmp/_vsix_repack
+    && if [ -f /tmp/copilot-chat.vsix ]; then \
+         mkdir /tmp/_vsix_repack \
+         && unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
+         && ( cd /tmp/_vsix_repack && zip -r -9 /tmp/copilot-chat-repacked.vsix . ) \
+         && mv /tmp/_vsix_repack/copilot-chat-repacked.vsix /tmp/copilot-chat.vsix \
+         && rm -rf /tmp/_vsix_repack; \
+       fi
 
 
 # ─── Common PHP extensions stage ──────────────────────────────────────────────
