@@ -155,8 +155,8 @@ exit(1); \
   if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ]; then \
     echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; \
   fi; \
-  unzip -tq /tmp/copilot-chat.vsix >/dev/null \
-    || { echo "Downloaded copilot-chat.vsix is not a valid ZIP/VSIX (check marketplace response)" >&2; \
+  unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
+    || { echo "Failed to extract copilot-chat.vsix — file may be invalid or not a valid ZIP/VSIX (check marketplace response)" >&2; \
          exit 1; }
 
 # Repack the Copilot Chat VSIX to use only standard deflate (method 8) or stored
@@ -167,14 +167,12 @@ exit(1); \
 # be installed by any code-server version.
 # TODO: Remove this repack step once code-server upgrades yauzl (or its bundled
 # VS Code) to a version that supports Deflate64 (method 9) natively.
-# The repack is skipped only if the file does not exist (e.g. when the download
-# step was skipped due to a cache hit on an older layer that predates this code).
-# The original file is kept until the repacked archive is fully written, so that
-# a failure mid-repack does not silently lose the VSIX.
-RUN if [ -f /tmp/copilot-chat.vsix ]; then \
-         mkdir /tmp/_vsix_repack \
-         && unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
-         && ( cd /tmp/_vsix_repack && zip -r -9 /tmp/copilot-chat-repacked.vsix . ) \
+# The files were already unpacked into /tmp/_vsix_repack by the download step
+# above.  The repack is skipped only if that directory does not exist (e.g. a
+# cache hit on a layer predating this code).  The original file is kept until the
+# repacked archive is fully written to avoid silently losing the VSIX on failure.
+RUN if [ -d /tmp/_vsix_repack ]; then \
+         ( cd /tmp/_vsix_repack && zip -r -9 /tmp/copilot-chat-repacked.vsix . ) \
          && mv /tmp/copilot-chat-repacked.vsix /tmp/copilot-chat.vsix \
          && rm -rf /tmp/_vsix_repack; \
        fi
