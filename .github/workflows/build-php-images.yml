@@ -267,10 +267,20 @@ jobs:
         id: check-ghcr
         env:
           GH_TOKEN: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+          USING_GHCR_TOKEN: ${{ secrets.GHCR_TOKEN != '' }}
         run: |
           set -uo pipefail
           REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           ORG=$(echo "${{ github.repository }}" | cut -d'/' -f1)
+
+          # Determine which credential is in use for accurate diagnostics.
+          # GHA expressions produce the string 'true'/'false', not bash booleans,
+          # so a string comparison is required here.
+          if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
+            AUTH_CRED_NAME="GHCR_TOKEN"
+          else
+            AUTH_CRED_NAME="GITHUB_TOKEN"
+          fi
 
           NOTE="The build will still attempt GHCR cache writes with ignore-error=true; errors will be visible in the bake step log but will not abort the build."
 
@@ -295,14 +305,21 @@ jobs:
           if [[ -z "${REG_TOKEN}" ]]; then
             case "${TOKEN_HTTP}" in
               401)
-                REASON="GITHUB_TOKEN was rejected by the GHCR token endpoint (HTTP 401): the token lacks 'packages: write' permission. Verify that the calling workflow job includes 'permissions: packages: write'."
+                REASON="${AUTH_CRED_NAME} was rejected by the GHCR token endpoint (HTTP 401): the token lacks the required write permissions."
                 echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
                 echo "writable=false" >> "$GITHUB_OUTPUT"
-                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+                cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
           ### ❌ GHCR cache write pre-check: failed
 
-          **Diagnosis:** GITHUB_TOKEN was rejected by the GHCR token endpoint (HTTP 401). The token lacks `packages: write` permission.
+          **Diagnosis:** ${AUTH_CRED_NAME} was rejected by the GHCR token endpoint (HTTP 401). The token lacks the required write permissions.
 
+          SUMMARY_EOF
+                if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
+                  cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+          **Fix:** Ensure the `GHCR_TOKEN` secret contains a valid [classic PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the `write:packages` scope. Classic PATs are required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry). If the token has expired, regenerate it at <https://github.com/settings/tokens> and update the `GHCR_TOKEN` secret.
+          SUMMARY_EOF
+                else
+                  cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
           **Fix:** Ensure the calling workflow job declares the following permission:
 
           ```yaml
@@ -310,6 +327,7 @@ jobs:
             packages: write
           ```
           SUMMARY_EOF
+                fi
                 echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
                 ;;
               403)
@@ -320,13 +338,13 @@ jobs:
                   "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:pull" \
                   2>/dev/null || echo "000")
                 if [[ "${PULL_HTTP}" == "200" ]]; then
-                  REASON="GITHUB_TOKEN can read from GHCR but a push token was denied (HTTP 403). The organisation's Actions token policy likely restricts package writes."
+                  REASON="${AUTH_CRED_NAME} can read from GHCR but a push token was denied (HTTP 403). The organisation's Actions token policy likely restricts package writes."
                   echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
                   echo "writable=false" >> "$GITHUB_OUTPUT"
-                  cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+                  cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
           ### ❌ GHCR cache write pre-check: failed
 
-          **Diagnosis:** GITHUB_TOKEN can read from GHCR (pull-scoped token succeeded) but a push-scoped token was denied (HTTP 403). This strongly indicates the **organisation's Actions token policy** restricts GITHUB_TOKEN from writing to packages.
+          **Diagnosis:** ${AUTH_CRED_NAME} can read from GHCR (pull-scoped token succeeded) but a push-scoped token was denied (HTTP 403). This strongly indicates the **organisation's Actions token policy** restricts ${AUTH_CRED_NAME} from writing to packages.
 
           **Option 1 — Organisation owner: allow workflow write permissions**
           SUMMARY_EOF
@@ -344,18 +362,18 @@ jobs:
 
           1. Create a [Personal Access Token (classic)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the `write:packages` scope at <https://github.com/settings/tokens>
           2. In this repository, go to **Settings → Secrets and variables → Actions**
-          3. Add a new repository secret named **`GHCR_TOKEN`** and paste the PAT as the value
+          3. Add or update the repository secret named **`GHCR_TOKEN`** and paste the PAT as the value
           4. Re-run the workflow
           SUMMARY_EOF
                   echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
                 else
-                  REASON="GITHUB_TOKEN was denied for both push (HTTP 403) and pull (HTTP ${PULL_HTTP}) scopes. The package ghcr.io/${REPO_LC} may not yet exist, may be private, or the organisation blocks all Actions token access to packages."
+                  REASON="${AUTH_CRED_NAME} was denied for both push (HTTP 403) and pull (HTTP ${PULL_HTTP}) scopes. The package ghcr.io/${REPO_LC} may not yet exist, may be private, or the organisation blocks all Actions token access to packages."
                   echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
                   echo "writable=false" >> "$GITHUB_OUTPUT"
-                  cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+                  cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
           ### ❌ GHCR cache write pre-check: failed
 
-          **Diagnosis:** GITHUB_TOKEN was denied for both push-scoped (HTTP 403) and pull-scoped tokens. The package may not yet exist, may be private, or the organisation's token policy blocks all access.
+          **Diagnosis:** ${AUTH_CRED_NAME} was denied for both push-scoped (HTTP 403) and pull-scoped tokens. The package may not yet exist, may be private, or the organisation's token policy blocks all access.
 
           **Steps to investigate:**
           SUMMARY_EOF
@@ -372,7 +390,7 @@ jobs:
 
           1. Create a [Personal Access Token (classic)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the \`write:packages\` scope at <https://github.com/settings/tokens>
           2. In this repository, go to **Settings → Secrets and variables → Actions**
-          3. Add a new repository secret named **\`GHCR_TOKEN\`** and paste the PAT as the value
+          3. Add or update the repository secret named **\`GHCR_TOKEN\`** and paste the PAT as the value
           4. Re-run the workflow
           SUMMARY_EOF
                   echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
@@ -404,14 +422,21 @@ jobs:
           else
             case "${HTTP_STATUS}" in
               401)
-                REASON="GITHUB_TOKEN was rejected when initiating a GHCR blob upload (HTTP 401): the token lacks 'packages: write' permission. Verify that the calling workflow job includes 'permissions: packages: write'."
+                REASON="${AUTH_CRED_NAME} was rejected when initiating a GHCR blob upload (HTTP 401): the token lacks the required write permissions."
                 echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
                 echo "writable=false" >> "$GITHUB_OUTPUT"
-                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+                cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
           ### ❌ GHCR cache write pre-check: failed
 
-          **Diagnosis:** GITHUB_TOKEN was rejected when initiating a GHCR blob upload (HTTP 401). The token lacks `packages: write` permission.
+          **Diagnosis:** ${AUTH_CRED_NAME} was rejected when initiating a GHCR blob upload (HTTP 401). The token lacks the required write permissions.
 
+          SUMMARY_EOF
+                if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
+                  cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+          **Fix:** Ensure the `GHCR_TOKEN` secret contains a valid [classic PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the `write:packages` scope. Classic PATs are required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry). If the token has expired, regenerate it at <https://github.com/settings/tokens> and update the `GHCR_TOKEN` secret.
+          SUMMARY_EOF
+                else
+                  cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
           **Fix:** Ensure the calling workflow job declares the following permission:
 
           ```yaml
@@ -419,16 +444,17 @@ jobs:
             packages: write
           ```
           SUMMARY_EOF
+                fi
                 echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
                 ;;
               403)
-                REASON="GITHUB_TOKEN was forbidden from writing to ghcr.io/${REPO_LC} (HTTP 403). The organisation's Actions token policy or the package's own access settings may block this token."
+                REASON="${AUTH_CRED_NAME} was forbidden from writing to ghcr.io/${REPO_LC} (HTTP 403). The organisation's Actions token policy or the package's own access settings may block this token."
                 echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
                 echo "writable=false" >> "$GITHUB_OUTPUT"
-                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+                cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
           ### ❌ GHCR cache write pre-check: failed
 
-          **Diagnosis:** GITHUB_TOKEN obtained a push-scoped token but the blob upload was still denied (HTTP 403). This can be caused by the **organisation's Actions token policy** or **package-level access restrictions**.
+          **Diagnosis:** ${AUTH_CRED_NAME} obtained a push-scoped token but the blob upload was still denied (HTTP 403). This can be caused by the **organisation's Actions token policy** or **package-level access restrictions**.
 
           **Option 1 — Organisation owner: check workflow permissions and package access**
           SUMMARY_EOF
@@ -446,13 +472,13 @@ jobs:
 
           1. Create a [Personal Access Token (classic)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the \`write:packages\` scope at <https://github.com/settings/tokens>
           2. In this repository, go to **Settings → Secrets and variables → Actions**
-          3. Add a new repository secret named **\`GHCR_TOKEN\`** and paste the PAT as the value
+          3. Add or update the repository secret named **\`GHCR_TOKEN\`** and paste the PAT as the value
           4. Re-run the workflow
           SUMMARY_EOF
                 echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
                 ;;
               *)
-                REASON="GITHUB_TOKEN does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS})."
+                REASON="${AUTH_CRED_NAME} does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS})."
                 echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
                 echo "writable=false" >> "$GITHUB_OUTPUT"
                 echo "❌ **GHCR cache write pre-check:** failed — ${REASON} ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
