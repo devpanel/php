@@ -25,10 +25,10 @@
 #         base    change → base, secure, and advance all need rebuild
 #         secure  change → secure and advance need rebuild
 #         advance change → only advance needs rebuild
-#       --stage base    returns versions where the base stage needs to rebuild.
-#       --stage secure  returns versions where the secure stage needs to rebuild
-#                       (i.e. secure OR base changed).
-#       --stage advance (default) returns every version with any change.
+#       --stage base    returns versions where base changed.
+#       --stage secure  returns versions where secure or base changed.
+#       --stage advance (default) returns versions where advance, secure, or
+#                       base changed.
 #
 # Shared-directory rule (mirrors build-php-images.yml):
 #   Changes to the top-level base/, secure/, or advance/ directories, or to

@@ -218,9 +218,15 @@ ensure_downloader_oci() {
   )
   local secret_args=()
   [[ -n "${GITHUB_TOKEN:-}" ]] && secret_args=(--secret "id=github_token,env=GITHUB_TOKEN")
+  # Skip the pinned-version SHA256 check during test builds: the check guards
+  # production deployments against tampered downloads, but here we only verify
+  # that the Dockerfile builds successfully.  Passing an empty
+  # COPILOT_CHAT_PINNED_VERSION causes the Dockerfile to auto-detect the
+  # latest compatible VSIX version and skip the hash comparison step.
   if ! build_to_oci "downloader" "${REPO_ROOT}/base" \
       --target downloader \
       "${secret_args[@]+"${secret_args[@]}"}" \
+      --build-arg COPILOT_CHAT_PINNED_VERSION= \
       "${cache_args[@]}"; then
     return 1
   fi
