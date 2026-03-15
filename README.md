@@ -77,15 +77,20 @@ for the browser-based editor.
 
 ```
 <php-version>/
-  base/       # Base image sources
-  secure/     # Secure image sources (extends base)
-  advance/    # Advance image sources (extends secure)
+  base/       # Base image sources (per-version overlay)
+  secure/     # Secure image sources (per-version overlay)
+  advance/    # Advance image sources (per-version overlay)
+base/         # Shared base stage sources (common across all versions)
+secure/       # Shared secure stage sources
+advance/      # Shared advance stage sources
+docker-bake.hcl  # Docker Bake build matrix
 .github/
   workflows/  # GitHub Actions CI / build workflows
 .githooks/    # Git hooks (activated with ./setup-hooks.sh)
 tests/
-  baselines/  # Stored violation counts for each linter
-  *.sh        # Lint and build test scripts
+  baselines/           # Stored violation counts for each linter
+  detect-versions.sh   # Shared version-detection script (used by tests and CI)
+  *.sh                 # Lint, build, and functional test scripts
   compare-baseline.py  # Shared baseline-comparison helper
 test.sh           # Run all checks locally
 setup-hooks.sh    # Configure Git to use .githooks/ (run once after cloning)
@@ -233,9 +238,8 @@ and functional tests for any changed Dockerfiles.
 | Workflow | Trigger | Purpose |
 |---|---|---|
 | `ci.yml` | push / pull_request to `main`, `develop` | Lint, build & functional checks (required) |
-| `docker-publish-php*-base.yml` | push to `*/base/**`, `workflow_dispatch` | Build & push base image |
-| `docker-publish-php*-secure.yml` | push to `*/secure/**`, workflow_run after base | Build & push secure image |
-| `docker-publish-php*-advance.yml` | push to `*/advance/**`, workflow_run after secure | Build & push advance image |
+| `docker-build-on-push.yml` | push to `main` or `develop` | Detect changed versions and build images |
+| `docker-build-all.yml` | `workflow_dispatch` | Build all versions unconditionally |
 
 `ci.yml` runs lint, build, and functional tests in parallel.  Configure branch protection
 rules in GitHub to require all `ci.yml` status checks to pass before pull
@@ -255,9 +259,11 @@ for setup instructions.
 
 ## Agent notes
 
-- All source files live under a version directory (`7.4/`, `8.0/`, …).
-  There is no shared source directory; changes to one version must be
-  replicated manually to others when appropriate.
+- Source files live under both per-version directories (`7.4/`, `8.0/`, …) and
+  shared top-level directories (`base/`, `secure/`, `advance/`).  Changes to
+  a shared directory affect all versions; changes under `X.Y/` affect only
+  that version.  Version selection for both local tests and CI is handled by
+  `tests/detect-versions.sh`.
 - Lint baselines are stored as JSON in `tests/baselines/`.  Update them with
   `./test.sh --update-baseline` whenever you make a change that intentionally
   alters lint counts.
@@ -265,12 +271,11 @@ for setup instructions.
   without pushing.  Functional tests (`tests/run-dockerfile.sh`) then start each
   built image and verify PHP, Apache, Composer, and extensions work.
   Run `./test.sh build run --version <v>` to test a single PHP version quickly.
-- Workflow files follow the naming pattern
-  `docker-publish-php<version>-<variant>.yml`.
+- Build workflows are `docker-build-on-push.yml` (push-triggered) and
+  `docker-build-all.yml` (manual dispatch).  Both call the reusable workflow
+  `build-php-images.yml` which performs detect → build.
 - The `advance` variant depends on `secure`, which depends on `base`.
-  The build chain is enforced via `workflow_run` triggers.
-- `*/base/bin/devpanel` is a compiled binary, not a shell script; exclude it
-  from shellcheck scans.
+  The build chain is enforced via the bake target dependency graph.
 
 ---
 

@@ -75,85 +75,23 @@ jobs:
           LATEST_PHP_VERSION=""
           while IFS= read -r VER; do
             LATEST_PHP_VERSION="$VER"
-          done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
+          done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*.[0-9]*' \
                      | sed 's|./||' | sort -V)
 
           if [[ -n "${{ inputs.before_sha }}" && -n "${{ inputs.after_sha }}" ]]; then
             BEFORE="${{ inputs.before_sha }}"
             AFTER="${{ inputs.after_sha }}"
 
-            # On a brand-new branch push the before SHA is all zeros.
-            IS_NEW_BRANCH=false
-            if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
-              IS_NEW_BRANCH=true
-            fi
-
-            # Returns 1 if any file under the given path changed, else 0.
-            path_changed() {
-              if $IS_NEW_BRANCH; then echo 1; return; fi
-              git diff --name-only "$BEFORE" "$AFTER" -- "$1" 2>/dev/null | wc -l
-            }
-
-            # Common-directory changes affect ALL versions.
-            BASE_COMMON=$(path_changed "base/")
-            SECURE_COMMON=$(path_changed "secure/")
-            ADVANCE_COMMON=$(path_changed "advance/")
-            BAKE_CHANGED=$(path_changed "docker-bake.hcl")
-
-            # Per-version, per-stage tracking arrays.
-            # VERSIONS_BASE_ARR / VERSIONS_SECURE_ARR: versions that need that
-            # stage pushed to Docker Hub (cascade: base → secure → advance).
-            # VERSIONS_ADV_ARR: union — every version that needs any rebuild.
-            VERSIONS_BASE_ARR=()
-            VERSIONS_SECURE_ARR=()
-            VERSIONS_ADV_ARR=()
-
-            while IFS= read -r VER; do
-              NEEDS_BASE=false
-              NEEDS_SECURE=false
-              NEEDS_ADVANCE=false
-
-              # Common-dir / bake-file changes affect this version first.
-              if [[ $BAKE_CHANGED -gt 0 || $BASE_COMMON -gt 0 ]]; then
-                NEEDS_BASE=true; NEEDS_SECURE=true; NEEDS_ADVANCE=true
-              elif [[ $SECURE_COMMON -gt 0 ]]; then
-                NEEDS_SECURE=true; NEEDS_ADVANCE=true
-              elif [[ $ADVANCE_COMMON -gt 0 ]]; then
-                NEEDS_ADVANCE=true
-              fi
-
-              # Per-version changes (only checked when the common-dir check has
-              # not already set the highest cascade level for this stage).
-              if ! $NEEDS_BASE && [[ $(path_changed "${VER}/base/") -gt 0 ]]; then
-                NEEDS_BASE=true; NEEDS_SECURE=true; NEEDS_ADVANCE=true
-              fi
-              if ! $NEEDS_SECURE && [[ $(path_changed "${VER}/secure/") -gt 0 ]]; then
-                NEEDS_SECURE=true; NEEDS_ADVANCE=true
-              fi
-              if ! $NEEDS_ADVANCE && [[ $(path_changed "${VER}/advance/") -gt 0 ]]; then
-                NEEDS_ADVANCE=true
-              fi
-
-              if $NEEDS_BASE;    then VERSIONS_BASE_ARR+=("$VER");    fi
-              if $NEEDS_SECURE;  then VERSIONS_SECURE_ARR+=("$VER");  fi
-              if $NEEDS_ADVANCE; then VERSIONS_ADV_ARR+=("$VER");     fi
-            done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
-                       | sed 's|./||' | sort -V)
-
-            # VERSIONS = union of all changed versions (= versions needing advance,
-            # since advance cascades from every upstream change).
-            VERSIONS_OUT=$(printf '%s\n' \
-                "${VERSIONS_ADV_ARR[@]+"${VERSIONS_ADV_ARR[@]}"}" \
-              | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
-            VERSIONS_BASE_OUT=$(printf '%s\n' \
-                "${VERSIONS_BASE_ARR[@]+"${VERSIONS_BASE_ARR[@]}"}" \
-              | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
-            VERSIONS_SECURE_OUT=$(printf '%s\n' \
-                "${VERSIONS_SECURE_ARR[@]+"${VERSIONS_SECURE_ARR[@]}"}" \
-              | awk '!seen[$0]++' | tr '\n' ' ' | xargs)
+            # Delegate version detection to the shared script so that the same
+            # logic is used in CI and in the local test scripts.
+            VERSIONS_OUT=$(bash tests/detect-versions.sh \
+              --before "$BEFORE" --after "$AFTER" | tr '\n' ' ' | xargs)
+            VERSIONS_BASE_OUT=$(bash tests/detect-versions.sh \
+              --before "$BEFORE" --after "$AFTER" --stage base | tr '\n' ' ' | xargs)
+            VERSIONS_SECURE_OUT=$(bash tests/detect-versions.sh \
+              --before "$BEFORE" --after "$AFTER" --stage secure | tr '\n' ' ' | xargs)
           else
-            VERSIONS_OUT=$(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' \
-                            | sed 's|./||' | sort -V | tr '\n' ' ' | xargs)
+            VERSIONS_OUT=$(bash tests/detect-versions.sh | tr '\n' ' ' | xargs)
             # No SHA range — full rebuild: push all stages for all versions.
             VERSIONS_BASE_OUT="$VERSIONS_OUT"
             VERSIONS_SECURE_OUT="$VERSIONS_OUT"

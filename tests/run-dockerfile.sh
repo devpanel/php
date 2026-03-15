@@ -48,39 +48,12 @@ declare -A TEST_VERSIONS
 
 if [[ -n "$TARGET_VERSION" ]]; then
   TEST_VERSIONS["$TARGET_VERSION"]=1
-elif [[ ${#EXTRA_FILES[@]} -gt 0 ]]; then
-  # Mirror the Detect-versions logic from build-php-images.yml:
-  # Changes to shared top-level directories (base/, secure/, advance/) or
-  # docker-bake.hcl affect ALL versions; per-version paths only affect that
-  # version.
-  ALL_VERSIONS=false
-  for f in "${EXTRA_FILES[@]}"; do
-    if echo "$f" | grep -qE '(^|/)docker-bake\.hcl$|(^|/)(base|secure|advance)/'; then
-      if ! echo "$f" | grep -qE '(^|/)[0-9]+\.[0-9]+/'; then
-        ALL_VERSIONS=true
-        break
-      fi
-    fi
-  done
-  if $ALL_VERSIONS; then
-    for dir in "$REPO_ROOT"/*/base/Dockerfile; do
-      version="$(basename "$(dirname "$(dirname "$dir")")")"
-      TEST_VERSIONS["$version"]=1
-    done
-  else
-    for f in "${EXTRA_FILES[@]}"; do
-      # Extract version from paths like .../8.2/base/Dockerfile or 8.2/base/Dockerfile
-      version="$(echo "$f" | sed 's|.*[/]\([0-9][0-9]*\.[0-9][0-9]*\)[/].*|\1|' | grep -E '^[0-9]+\.[0-9]+$' || true)"
-      if [[ -n "$version" ]]; then
-        TEST_VERSIONS["$version"]=1
-      fi
-    done
-  fi
 else
-  for dir in "$REPO_ROOT"/*/base/Dockerfile; do
-    version="$(basename "$(dirname "$(dirname "$dir")")")"
-    TEST_VERSIONS["$version"]=1
-  done
+  DETECT_ARGS=()
+  [[ ${#EXTRA_FILES[@]} -gt 0 ]] && DETECT_ARGS=(--files "${EXTRA_FILES[@]}")
+  while IFS= read -r ver; do
+    TEST_VERSIONS["$ver"]=1
+  done < <(bash "$REPO_ROOT/tests/detect-versions.sh" "${DETECT_ARGS[@]+"${DETECT_ARGS[@]}"}")
 fi
 
 if [[ ${#TEST_VERSIONS[@]} -eq 0 ]]; then
