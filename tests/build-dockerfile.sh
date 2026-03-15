@@ -216,8 +216,11 @@ ensure_downloader_oci() {
     --cache-from "type=gha,scope=php-ci-downloader"
     --cache-to   "type=gha,scope=php-ci-downloader,mode=max"
   )
+  local secret_args=()
+  [[ -n "${GITHUB_TOKEN:-}" ]] && secret_args=(--secret "id=github_token,env=GITHUB_TOKEN")
   if ! build_to_oci "downloader" "${REPO_ROOT}/base" \
       --target downloader \
+      "${secret_args[@]+"${secret_args[@]}"}" \
       "${cache_args[@]}"; then
     return 1
   fi
