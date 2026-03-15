@@ -20,10 +20,14 @@
 #
 # Optional flag (applies to all modes above):
 #   --stage base|secure|advance   (default: advance)
-#       Filter output to versions where at least the given build stage needs
-#       to be rebuilt.  The cascade order is:
-#         base → secure → advance
-#       --stage base    returns only versions where the base stage changed.
+#       Filter output to versions where the given stage needs to be rebuilt.
+#       Dependency order: advance depends on secure, which depends on base.
+#         base    change → base, secure, and advance all need rebuild
+#         secure  change → secure and advance need rebuild
+#         advance change → only advance needs rebuild
+#       --stage base    returns versions where the base stage needs to rebuild.
+#       --stage secure  returns versions where the secure stage needs to rebuild
+#                       (i.e. secure OR base changed).
 #       --stage advance (default) returns every version with any change.
 #
 # Shared-directory rule (mirrors build-php-images.yml):
@@ -137,13 +141,31 @@ fi
 # ---------------------------------------------------------------------------
 # Detect whether any shared-directory change affects all versions
 # ---------------------------------------------------------------------------
+# Cascade mirrors build-php-images.yml:
+#   docker-bake.hcl or base/ change → base, secure, and advance all affected
+#   secure/ change                  → secure and advance affected
+#   advance/ change                 → only advance affected
 if ! $ALL_VERSIONS; then
-  if path_changed "base/" \
-      || path_changed "secure/" \
-      || path_changed "advance/" \
-      || path_changed "docker-bake.hcl"; then
-    ALL_VERSIONS=true
+  SHARED_NEEDS_BASE=false
+  SHARED_NEEDS_SECURE=false
+  SHARED_NEEDS_ADVANCE=false
+
+  if path_changed "base/" || path_changed "docker-bake.hcl"; then
+    SHARED_NEEDS_BASE=true; SHARED_NEEDS_SECURE=true; SHARED_NEEDS_ADVANCE=true
   fi
+  if ! $SHARED_NEEDS_SECURE && path_changed "secure/"; then
+    SHARED_NEEDS_SECURE=true; SHARED_NEEDS_ADVANCE=true
+  fi
+  if ! $SHARED_NEEDS_ADVANCE && path_changed "advance/"; then
+    SHARED_NEEDS_ADVANCE=true
+  fi
+
+  # If the relevant shared stage is affected, every version needs that stage.
+  case "$STAGE" in
+    base)    if $SHARED_NEEDS_BASE;    then all_versions; exit 0; fi ;;
+    secure)  if $SHARED_NEEDS_SECURE;  then all_versions; exit 0; fi ;;
+    advance) if $SHARED_NEEDS_ADVANCE; then all_versions; exit 0; fi ;;
+  esac
 fi
 
 if $ALL_VERSIONS; then
