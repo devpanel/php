@@ -71,13 +71,34 @@ declare -A BUILD_VERSIONS   # key = version string, value = 1
 if [[ -n "$TARGET_VERSION" ]]; then
   BUILD_VERSIONS["$TARGET_VERSION"]=1
 elif [[ ${#EXTRA_FILES[@]} -gt 0 ]]; then
+  # Mirror the Detect-versions logic from build-php-images.yml:
+  # Changes to shared top-level directories (base/, secure/, advance/) or
+  # docker-bake.hcl affect ALL versions; per-version paths only affect that
+  # version.
+  ALL_VERSIONS=false
   for f in "${EXTRA_FILES[@]}"; do
-    # Extract version from paths like .../8.2/base/Dockerfile
-    version="$(echo "$f" | sed 's|.*[/]\([0-9][0-9]*\.[0-9][0-9]*\)[/].*|\1|' | grep -E '^[0-9]+\.[0-9]+$' || true)"
-    if [[ -n "$version" ]]; then
-      BUILD_VERSIONS["$version"]=1
+    # Shared top-level Dockerfile sources and docker-bake.hcl → rebuild all.
+    if echo "$f" | grep -qE '(^|/)docker-bake\.hcl$|(^|/)(base|secure|advance)/'; then
+      if ! echo "$f" | grep -qE '(^|/)[0-9]+\.[0-9]+/'; then
+        ALL_VERSIONS=true
+        break
+      fi
     fi
   done
+  if $ALL_VERSIONS; then
+    for dir in "$REPO_ROOT"/*/base/Dockerfile; do
+      version="$(basename "$(dirname "$(dirname "$dir")")")"
+      BUILD_VERSIONS["$version"]=1
+    done
+  else
+    for f in "${EXTRA_FILES[@]}"; do
+      # Extract version from paths like .../8.2/base/Dockerfile
+      version="$(echo "$f" | sed 's|.*[/]\([0-9][0-9]*\.[0-9][0-9]*\)[/].*|\1|' | grep -E '^[0-9]+\.[0-9]+$' || true)"
+      if [[ -n "$version" ]]; then
+        BUILD_VERSIONS["$version"]=1
+      fi
+    done
+  fi
 else
   # Build all versions found in the repo.
   for dir in "$REPO_ROOT"/*/base/Dockerfile; do
