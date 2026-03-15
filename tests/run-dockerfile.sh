@@ -31,7 +31,11 @@ EXTRA_FILES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --update-baseline) shift ;;          # no-op; accepted for compatibility
-    --version) TARGET_VERSION="$2"; shift 2 ;;
+    --version)
+      if [[ $# -lt 2 || "$2" == --* ]]; then
+        echo "Error: --version requires an argument (e.g. --version 8.2)." >&2; exit 1
+      fi
+      TARGET_VERSION="$2"; shift 2 ;;
     --files) shift; while [[ $# -gt 0 && "$1" != --* ]]; do EXTRA_FILES+=("$1"); shift; done ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
