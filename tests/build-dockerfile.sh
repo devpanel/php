@@ -106,12 +106,8 @@ fi
 #   TAG_SUFFIX           Empty; tags match run-dockerfile.sh's TAG_PREFIX.
 #   CACHE_FROM_ENABLED   false; clean build from source (no cache reads).
 #   GHCR_WRITABLE        false; cache write failures are non-fatal.
-#
-# --set override:
-#   downloader.args.COPILOT_CHAT_PINNED_VERSION=
-#     Pass an empty string to skip the SHA256 hash check on the Copilot Chat
-#     VSIX download.  The check protects production builds against supply-chain
-#     tampering; build tests only need to verify Dockerfile structure builds.
+#   GITHUB_TOKEN         Forwarded so the downloader stage can call the GitHub
+#                        API to resolve CODESERVER_VERSION when not pinned.
 #
 # --load:
 #   Import built images into the local Docker daemon so that run-dockerfile.sh
@@ -129,8 +125,7 @@ GHCR_WRITABLE=false \
 GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
 docker buildx bake \
   --file "$REPO_ROOT/docker-bake.hcl" \
-  --load \
-  --set "downloader.args.COPILOT_CHAT_PINNED_VERSION="  # empty = skip SHA256 check
+  --load
 
 echo "All Docker builds passed."
 
