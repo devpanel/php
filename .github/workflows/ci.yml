@@ -97,7 +97,7 @@ jobs:
         id: cache-vsix
         uses: actions/cache@v4
         with:
-          path: /tmp/copilot-chat.vsix
+          path: ${{ runner.temp }}/copilot-chat.vsix
           key: copilot-chat-vsix-${{ steps.copilot-version.outputs.version }}
 
       - name: Download and verify pinned Copilot Chat VSIX
@@ -108,17 +108,17 @@ jobs:
           VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${VERSION}/vspackage"
           echo "Downloading GitHub.copilot-chat ${VERSION} from VS Marketplace"
           curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
-            "${VSIX_URL}" -o /tmp/copilot-chat.vsix
-          if ! od -An -tx1 -N4 /tmp/copilot-chat.vsix | tr -d ' \n' | grep -qi '^504b0304'; then
-            ACTUAL_MAGIC="$(od -An -tx1 -N8 /tmp/copilot-chat.vsix | tr -d ' \n')"
+            "${VSIX_URL}" -o "$RUNNER_TEMP/copilot-chat.vsix"
+          if ! od -An -tx1 -N4 "$RUNNER_TEMP/copilot-chat.vsix" | tr -d ' \n' | grep -qi '^504b0304'; then
+            ACTUAL_MAGIC="$(od -An -tx1 -N8 "$RUNNER_TEMP/copilot-chat.vsix" | tr -d ' \n')"
             echo "Downloaded file is not a valid ZIP (expected magic 504b0304, got: ${ACTUAL_MAGIC})"
             echo "The Marketplace may have returned a rate-limit/error page or gzip-encoded content."
             exit 1
           fi
-          ACTUAL_SHA="$(sha256sum /tmp/copilot-chat.vsix | cut -d' ' -f1)"
+          ACTUAL_SHA="$(sha256sum "$RUNNER_TEMP/copilot-chat.vsix" | cut -d' ' -f1)"
           echo "Computed SHA256: ${ACTUAL_SHA}"
           if [ -n "${EXPECTED_SHA}" ]; then
-            echo "${EXPECTED_SHA}  /tmp/copilot-chat.vsix" | sha256sum -c -
+            echo "${EXPECTED_SHA}  $RUNNER_TEMP/copilot-chat.vsix" | sha256sum -c -
             echo "SHA256 verified."
           else
             echo "::warning::COPILOT_CHAT_VSIX_SHA256 is not set in base/Dockerfile."
@@ -142,13 +142,13 @@ jobs:
         id: cache-debs
         uses: actions/cache@v4
         with:
-          path: /tmp/code-server-debs
+          path: ${{ runner.temp }}/code-server-debs
           key: code-server-debs-${{ steps.cs-version.outputs.version }}
 
       - name: Download and verify pinned code-server .deb files
         if: steps.cache-debs.outputs.cache-hit != 'true'
         run: |
-          mkdir -p /tmp/code-server-debs
+          mkdir -p "$RUNNER_TEMP/code-server-debs"
           VERSION="${{ steps.cs-version.outputs.version }}"
           SHA256_AMD64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_AMD64=' base/Dockerfile | cut -d= -f2)"
           SHA256_ARM64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_ARM64=' base/Dockerfile | cut -d= -f2)"
@@ -157,8 +157,8 @@ jobs:
             DEB="code-server_${VERSION}_${arch}.deb"
             echo "Downloading ${DEB}"
             curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
-              "${BASE_URL}/${DEB}" -o "/tmp/code-server-debs/${DEB}"
-            ACTUAL_SHA="$(sha256sum "/tmp/code-server-debs/${DEB}" | cut -d' ' -f1)"
+              "${BASE_URL}/${DEB}" -o "$RUNNER_TEMP/code-server-debs/${DEB}"
+            ACTUAL_SHA="$(sha256sum "$RUNNER_TEMP/code-server-debs/${DEB}" | cut -d' ' -f1)"
             echo "${arch} SHA256: ${ACTUAL_SHA}"
             case "${arch}" in
               amd64) EXPECTED_SHA="${SHA256_AMD64}" ;;
@@ -166,7 +166,7 @@ jobs:
             esac
             ARCH_UPPER="$(echo "${arch}" | tr '[:lower:]' '[:upper:]')"
             if [ -n "${EXPECTED_SHA}" ]; then
-              echo "${EXPECTED_SHA}  /tmp/code-server-debs/${DEB}" | sha256sum -c -
+              echo "${EXPECTED_SHA}  $RUNNER_TEMP/code-server-debs/${DEB}" | sha256sum -c -
               echo "${arch} SHA256 verified."
             else
               echo "::warning::CODESERVER_DEB_SHA256_${ARCH_UPPER} is not set in base/Dockerfile."
