@@ -20,8 +20,27 @@ ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e
 
 # GitHub Copilot Chat is not available in the Open VSX marketplace used by
 # code-server, so we download it directly from the VS Marketplace.
-# Version 0.26.2025040204 requires VS Code ^1.99.0 and is therefore compatible
-# with code-server 4.99.4 (which bundles VS Code 1.99.4).
+#
+# How the pinned version was chosen
+# ──────────────────────────────────
+# code-server 4.99.4 bundles VS Code 1.99.4.  The VS Marketplace extensionquery
+# API was queried for GitHub.copilot-chat (the same logic used by the
+# auto-detection block below) with the resolved CODESERVER_VERSION set to
+# 4.99.4, making VSCODE_VERSION=1.99.4.  Iterating through the returned
+# versions (newest first), the first one whose Microsoft.VisualStudio.Code.Engine
+# property satisfied version_compare("1.99.4", engine, ">=") was
+# 0.26.2025040204 (released 2025-04-02, engine requirement ^1.99.0).  Versions
+# in the 0.27.x series and later require VS Code ^1.100.0 or above, so
+# 0.26.2025040204 is the most recent build compatible with code-server 4.99.4.
+#
+# Note: the VS Marketplace version-history UI only surfaces the most recent
+# ~5 versions, so 0.26.2025040204 is no longer listed there.  The vspackage
+# download URL remains valid for older versions, and the build is independently
+# archived on VsixHub: https://www.vsixhub.com/vsix/165137/
+#
+# The SHA256 below was computed by downloading the VSIX from the Marketplace
+# URL and running: shasum -a 256 copilot-chat-0.26.2025040204.vsix
+#
 # To pin a different version, update COPILOT_CHAT_PINNED_VERSION and recompute
 # COPILOT_CHAT_VSIX_SHA256 (see README for instructions).
 ARG COPILOT_CHAT_PINNED_VERSION=0.26.2025040204
