@@ -147,9 +147,14 @@ if [[ -n "$BEFORE" && -n "$AFTER" ]]; then
     # Brand-new branch push — treat every version as affected.
     ALL_VERSIONS=true
   else
-    while IFS= read -r f; do
-      CHANGED_FILES+=("$f")
-    done < <(cd "$REPO_ROOT" && git diff --name-only "$BEFORE" "$AFTER" 2>/dev/null)
+    _diff_out="$(cd "$REPO_ROOT" && git diff --name-only "$BEFORE" "$AFTER" 2>&1)" || {
+      echo "Error: git diff --name-only $BEFORE $AFTER: $_diff_out" >&2
+      exit 1
+    }
+    if [[ -n "$_diff_out" ]]; then
+      mapfile -t _diff_arr <<< "$_diff_out"
+      CHANGED_FILES+=("${_diff_arr[@]}")
+    fi
   fi
 elif [[ ${#EXTRA_FILES[@]} -gt 0 ]]; then
   CHANGED_FILES=("${EXTRA_FILES[@]}")

@@ -12,8 +12,7 @@
 # Tested per variant:
 #   base    — php --version, composer --version, apache2 -v
 #   secure  — inherits base checks; mod_security2 library present
-#   advance — inherits secure checks; redis-cli --version,
-#              varnishd -V (if installed)
+#   advance — inherits secure checks; redis-cli --version
 #
 # Options:
 #   --version <v>           Test a single PHP version (e.g. 8.2).
@@ -139,7 +138,7 @@ test_base() {
     apache2 -v
 
   # PHP extensions: common extensions that should always be installed
-  assert_contains "$image" "pdo" "pdo extension loaded" \
+  assert_contains "$image" "PDO" "PDO extension loaded" \
     php -m
 
   assert_contains "$image" "mbstring" "mbstring extension loaded" \

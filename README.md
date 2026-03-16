@@ -101,7 +101,9 @@ setup-hooks.sh    # Configure Git to use .githooks/ (run once after cloning)
 
 1. Copy an existing version directory (e.g. `cp -r 8.3 8.4`).
 2. Update the `FROM` line and any version-specific package pins.
-3. Add a matching set of workflow files in `.github/workflows/`.
+3. Update `docker-bake.hcl` if any bake variables need adjusting (the matrix
+   auto-generates build targets for every `X.Y/` directory; no per-version
+   workflow files are needed).
 4. Run `./test.sh` to make sure there are no new lint or build violations.
 5. If the new Dockerfiles introduce violations that are intentional or
    unavoidable, update the baseline:
