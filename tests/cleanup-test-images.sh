@@ -12,6 +12,11 @@
 # devpanel-php-test:* images intact.  Call without arguments for a full cleanup.
 set -euo pipefail
 
+if ! command -v docker &>/dev/null; then
+  echo "Error: docker is not installed or not in PATH" >&2
+  exit 1
+fi
+
 TAG_PREFIX="devpanel-php-test"
 
 if [[ $# -gt 0 ]]; then
