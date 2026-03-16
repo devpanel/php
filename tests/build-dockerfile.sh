@@ -122,7 +122,6 @@ GHCR_WRITABLE=false \
 GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
 docker buildx bake \
   --file "$REPO_ROOT/docker-bake.hcl" \
-  --no-push \
   --load \
   --set "downloader.args.COPILOT_CHAT_PINNED_VERSION="  # empty = skip SHA256 check
 
