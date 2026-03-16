@@ -20,15 +20,26 @@
 #
 # Optional flag (applies to all modes above):
 #   --stage base|secure|advance   (default: advance)
-#       Filter output to versions where the given stage needs to be rebuilt.
-#       Dependency order: advance depends on secure, which depends on base.
-#         base    change → base, secure, and advance all need rebuild
-#         secure  change → secure and advance need rebuild
-#         advance change → only advance needs rebuild
-#       --stage base    returns versions where base changed.
-#       --stage secure  returns versions where secure or base changed.
-#       --stage advance (default) returns versions where advance, secure, or
-#                       base changed.
+#       Filter output to versions with source changes that affect the given
+#       stage's image.  Because advance is built on secure, which is built on
+#       base, a change at any level cascades up and makes all higher-level
+#       images different too.  Each flag therefore maps to a progressively
+#       wider set of triggering changes:
+#
+#         --stage advance (broadest, default)
+#             Returns all versions with any changed file.  A base or secure
+#             change cascades up and makes the advance image different too.
+#             Mirrors the workflow's 'versions' output.
+#
+#         --stage secure
+#             Returns versions where the secure or base source changed.  A
+#             base change cascades up and makes the secure image different.
+#             Mirrors the workflow's 'versions_secure' output.
+#
+#         --stage base    (narrowest)
+#             Returns versions where the base source changed.  Changes to
+#             secure or advance do not affect the base image.
+#             Mirrors the workflow's 'versions_base' output.
 #
 # Shared-directory rule (mirrors build-php-images.yml):
 #   Changes to the top-level base/, secure/, or advance/ directories, or to
