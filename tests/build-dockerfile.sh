@@ -35,8 +35,6 @@
 #   --version <v>           Build all variants for a single PHP version (e.g. 8.2).
 #   --files <f1> [f2 ...]   Build the variants that own those Dockerfiles
 #                           (dependency chain is always honoured).
-#   --update-baseline       Accepted for compatibility; has no effect (builds are
-#                           pass/fail — there is no baseline to update).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -52,7 +50,6 @@ TARGET_VERSION=""
 EXTRA_FILES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --update-baseline) shift ;;          # no-op; accepted for compatibility
     --version)
       if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "Error: --version requires an argument (e.g. --version 8.2)." >&2; exit 1

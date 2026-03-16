@@ -78,7 +78,7 @@ for suite in "${SUITES[@]}"; do
     shell)      run_suite "Shell lint"       "${TESTS_DIR}/lint-shell.sh"       "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
     dockerfile) run_suite "Dockerfile lint"  "${TESTS_DIR}/lint-dockerfile.sh"  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
     build)      run_suite "Docker build"     "${TESTS_DIR}/build-dockerfile.sh" \
-                  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" "${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}" ;;
+                  "${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}" ;;
     run)        run_suite "Docker run"       "${TESTS_DIR}/run-dockerfile.sh"   \
                   "${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}" ;;
   esac
