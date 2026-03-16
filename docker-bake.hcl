@@ -139,7 +139,11 @@ target "downloader" {
   args = {
     LATEST_PHP_VERSION   = LATEST_PHP_VERSION
     CODESERVER_VERSION   = CODESERVER_VERSION
-    COPILOT_CHAT_VERSION = COPILOT_CHAT_VERSION
+    # Only pass COPILOT_CHAT_VERSION when it is explicitly set (non-empty).
+    # When empty (the default), omit the build-arg entirely so the Dockerfile's
+    # ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION default takes effect,
+    # using the pinned version without contacting the VS Marketplace API.
+    COPILOT_CHAT_VERSION = COPILOT_CHAT_VERSION != "" ? COPILOT_CHAT_VERSION : null
   }
   secret     = ["id=github_token,env=GITHUB_TOKEN"]
   tags       = ["${GHCR_REPO}:downloader${TAG_SUFFIX}"]

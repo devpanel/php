@@ -334,19 +334,36 @@ Marketplace at image-build time.
 
 ### How the pinned version is chosen
 
-Each GitHub Copilot Chat release declares a minimum VS Code engine version in
-its `Microsoft.VisualStudio.Code.Engine` property (e.g. `^1.99.0`).
+The Copilot Chat extension publishes to two channels on the VS Marketplace:
+
+| Channel | Version format | Example | Where visible |
+|---|---|---|---|
+| **Stable** (release) | `MAJOR.MINOR.PATCH` | `0.26.7` | VS Code desktop "Version History" |
+| **Pre-release** | `MAJOR.MINOR.YYYYMMDDNN` | `0.26.2025040204` | Marketplace API (`flags=17`) |
+
+The "Version History" panel in the VS Code desktop app shows stable patch releases
+(e.g. `0.26.0` through `0.26.7`).  Pre-release builds use a date-stamped third
+component (`YYYYMMDDNN` = year + month + day + sequence), so `0.26.2025040204`
+is build #04 on 2025-04-02.  Because this date-derived number is much larger
+than the stable patch counter (`2025040204` > `7`), and the Marketplace API
+returns all versions newest-first by publish date (regardless of channel), the
+pre-release `0.26.2025040204` appears before the stable `0.26.7` in the API
+response.
+
+Each release declares a minimum VS Code engine version in its
+`Microsoft.VisualStudio.Code.Engine` property (e.g. `^1.99.0`).
 code-server `4.X.Y` bundles VS Code `1.X.Y` (e.g. `4.99.4` → VS Code
 `1.99.4`), so the correct pinned version is **the most recent Copilot Chat
-build whose engine minimum is ≤ the VS Code version bundled in the target
-code-server release**.
+build (stable or pre-release) whose engine minimum is ≤ the VS Code version
+bundled in the target code-server release**.
 
-The current pin `0.26.2025040204` (released 2025-04-02) was identified by
-querying the VS Marketplace extensionquery API for `GitHub.copilot-chat` and
-iterating through the returned versions (newest first) to find the first one
-whose engine requirement was satisfied by VS Code `1.99.4`.  Versions in the
-`0.27.x` series and later require VS Code `^1.100.0` or higher, so
-`0.26.2025040204` is the most recent build compatible with code-server `4.99.4`.
+The current pin `0.26.2025040204` (pre-release from 2025-04-02) was identified
+by querying the VS Marketplace extensionquery API for `GitHub.copilot-chat` with
+`flags=17` (which returns both channels), iterating newest-first for VS Code
+`1.99.4`.  It is newer than the stable `0.26.7` in the API ordering, and both
+require VS Code `^1.99.0`.  Versions in the `0.27.x` series and later require
+VS Code `^1.100.0` or higher, making `0.26.2025040204` the most recent
+compatible build for code-server `4.99.4`.
 
 > **Note:** The VS Marketplace version-history UI only surfaces the most recent
 > ~5 versions, so older builds like `0.26.2025040204` are no longer listed

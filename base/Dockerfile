@@ -23,15 +23,22 @@ ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e
 #
 # How the pinned version was chosen
 # ──────────────────────────────────
+# The Copilot Chat extension publishes two channels to the VS Marketplace:
+#   • Stable releases use simple MAJOR.MINOR.PATCH version numbers
+#     (e.g. 0.26.7, visible as "0.26.0 … 0.26.7" in the VS Code desktop UI).
+#   • Pre-release builds use a build-date-stamped format: MAJOR.MINOR.YYYYMMDDNN
+#     (e.g. 0.26.2025040204 = 0.26, released 2025-04-02, sequence 04).
+# The extensionquery API (flags=17) returns both channels, newest-first.
+#
 # code-server 4.99.4 bundles VS Code 1.99.4.  The VS Marketplace extensionquery
-# API was queried for GitHub.copilot-chat (the same logic used by the
-# auto-detection block below) with the resolved CODESERVER_VERSION set to
-# 4.99.4, making VSCODE_VERSION=1.99.4.  Iterating through the returned
-# versions (newest first), the first one whose Microsoft.VisualStudio.Code.Engine
+# API was queried for GitHub.copilot-chat with VSCODE_VERSION=1.99.4, iterating
+# newest-first.  The first build whose Microsoft.VisualStudio.Code.Engine
 # property satisfied version_compare("1.99.4", engine, ">=") was
-# 0.26.2025040204 (released 2025-04-02, engine requirement ^1.99.0).  Versions
-# in the 0.27.x series and later require VS Code ^1.100.0 or above, so
-# 0.26.2025040204 is the most recent build compatible with code-server 4.99.4.
+# 0.26.2025040204 (pre-release build from 2025-04-02, engine requirement ^1.99.0).
+# Versions in the 0.27.x series and later require VS Code ^1.100.0 or higher,
+# so 0.26.2025040204 is the most recent pre-release build compatible with
+# code-server 4.99.4.  (The stable 0.26.7 is also compatible but is an
+# earlier build than 0.26.2025040204 in the API's newest-first ordering.)
 #
 # Note: the VS Marketplace version-history UI only surfaces the most recent
 # ~5 versions, so 0.26.2025040204 is no longer listed there.  The vspackage
@@ -384,12 +391,16 @@ WORKDIR ${APP_ROOT}
 
 RUN touch /home/${USER}/.config/code-server/config.yaml
 
+# Create the base directory for code-server extensions.
+# This must be done as USER ${USER} so that code-server (which runs as the
+# same user) can write into it when installing extensions.
+RUN mkdir -p $CODES_USER_DATA_DIR/extensions
+
 # Install GitHub Copilot Chat extension (not available in Open VSX marketplace).
 # The VSIX was repacked above to use standard Deflate so code-server's bundled
 # yauzl can extract it.  Installs into $CODES_USER_DATA_DIR/extensions so the
 # extension is found with the existing --user-data-dir=$CODES_USER_DATA_DIR flag.
-RUN mkdir -p $CODES_USER_DATA_DIR/extensions \
-    && code-server --extensions-dir $CODES_USER_DATA_DIR/extensions --install-extension /tmp/copilot-chat.vsix \
+RUN code-server --extensions-dir $CODES_USER_DATA_DIR/extensions --install-extension /tmp/copilot-chat.vsix \
     && sudo rm /tmp/copilot-chat.vsix
 
 # Bash alias for Composer 2.  The binary is installed as root above;
