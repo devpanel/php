@@ -64,29 +64,35 @@ RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN,required=false \
         -H 'X-GitHub-Api-Version: 2022-11-28' \
         https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
     fi; \
+  printf 'RELEASES_JSON (%d total chars, showing first 500): %.500s\n' "${#RELEASES_JSON}" "$RELEASES_JSON" >&2; \
   CODESERVER_VERSION="$(printf '%s' "$RELEASES_JSON" | php -r ' \
 $major = $argv[1]; \
-$releases = json_decode(stream_get_contents(STDIN), true); \
+$raw = stream_get_contents(STDIN); \
+$releases = json_decode($raw, true); \
  \
 if (!is_array($releases)) { \
-  fwrite(STDERR, "Failed to parse releases JSON\n"); \
+  fwrite(STDERR, "Failed to parse releases JSON (got: " . substr($raw, 0, 200) . ")\n"); \
   exit(2); \
 } \
  \
+$tag_names = []; \
 foreach ($releases as $release) { \
   if (($release["draft"] ?? false) || ($release["prerelease"] ?? false)) { \
     continue; \
   } \
  \
   $tag = $release["tag_name"] ?? ""; \
+  $tag_names[] = $tag; \
   if (preg_match("/^v?" . preg_quote($major, "/") . "\\.[0-9]+\\.[0-9]+(?:[-+].*)?$/", $tag)) { \
     echo ltrim($tag, "v"); \
     exit(0); \
   } \
 } \
  \
+fwrite(STDERR, "No release matching major " . $major . " found (checked " . count($tag_names) . " non-draft/non-pre releases; first tags: " . implode(", ", array_slice($tag_names, 0, 5)) . ")\n"); \
 exit(1); \
 ' "$CODESERVER_MAJOR_VERSION")" || { echo "Unable to resolve code-server major $CODESERVER_MAJOR_VERSION from GitHub releases" >&2; exit 1; }; \
+  echo "CODESERVER_VERSION: $CODESERVER_VERSION" >&2; \
   fi; \
   # code-server is required: fail build if version is empty
   [ -n "$CODESERVER_VERSION" ] || { echo "CODESERVER_VERSION is empty" >&2; exit 1; }; \

@@ -112,10 +112,24 @@ fi
 #                        and unaffected by this flag.
 #   GITHUB_TOKEN         Forwarded so the downloader stage can call the GitHub
 #                        API to resolve CODESERVER_VERSION when not pinned.
+#   CODESERVER_VERSION   When not set in the environment, read from the pinned
+#                        ARG in base/Dockerfile to avoid transient GitHub API
+#                        call failures during tests.
+#   COPILOT_CHAT_VERSION When not set in the environment, read from the pinned
+#                        ARG in base/Dockerfile to avoid transient VS Marketplace
+#                        API call failures during tests.
 #
 # --load:
 #   Import built images into the local Docker daemon so that run-dockerfile.sh
 #   can run functional tests against them (requires single-platform build).
+if [[ -z "${CODESERVER_VERSION:-}" ]]; then
+  CODESERVER_VERSION="$(sed -n 's/^ARG CODESERVER_PINNED_HASH_VERSION=//p' "$REPO_ROOT/base/Dockerfile")"
+  [[ -n "$CODESERVER_VERSION" ]] || { echo "Failed to read CODESERVER_PINNED_HASH_VERSION from base/Dockerfile" >&2; exit 1; }
+fi
+if [[ -z "${COPILOT_CHAT_VERSION:-}" ]]; then
+  COPILOT_CHAT_VERSION="$(sed -n 's/^ARG COPILOT_CHAT_PINNED_VERSION=//p' "$REPO_ROOT/base/Dockerfile")"
+  [[ -n "$COPILOT_CHAT_VERSION" ]] || { echo "Failed to read COPILOT_CHAT_PINNED_VERSION from base/Dockerfile" >&2; exit 1; }
+fi
 VERSIONS="$VERSIONS_LIST" \
 VERSIONS_BASE="$VERSIONS_LIST" \
 VERSIONS_SECURE="$VERSIONS_LIST" \
@@ -127,6 +141,8 @@ PLATFORMS="$PLATFORMS" \
 CACHE_FROM_ENABLED="${CACHE_FROM_ENABLED:-false}" \
 GHCR_WRITABLE=false \
 GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+CODESERVER_VERSION="${CODESERVER_VERSION}" \
+COPILOT_CHAT_VERSION="${COPILOT_CHAT_VERSION}" \
 docker buildx bake \
   --file "$REPO_ROOT/docker-bake.hcl" \
   --load
