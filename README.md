@@ -353,7 +353,7 @@ Versions in the `0.27.x` series and later require VS Code `^1.100.0` or higher.
 1. Determine the VS Code version bundled with the target code-server release
    (e.g. code-server `4.99.4` → VS Code `1.99.4`).
 2. Query the VS Marketplace extensionquery API for `GitHub.copilot-chat`,
-   filtering for stable versions only (patch component ≤ 4 digits):
+   filtering for stable versions only (patch component 1–9 digits, excluding 10-digit pre-release date-stamps):
    ```bash
    curl -fsSL -X POST \
      -H 'Content-Type: application/json' \
@@ -367,7 +367,7 @@ Versions in the `0.27.x` series and later require VS Code `^1.100.0` or higher.
    for v in data['results'][0]['extensions'][0]['versions']:
        ver = v.get('version','')
        # Skip pre-release builds (10-digit date-stamped patch component).
-       if not re.match(r'^\d+\.\d+\.\d{1,4}$', ver): continue
+       if not re.match(r'^\d+\.\d+\.\d{1,9}$', ver): continue
        engine = next((p['value'] for p in v.get('properties',[])
                       if p['key']=='Microsoft.VisualStudio.Code.Engine'), '')
        eng_min = engine.lstrip('^~>=').split('-')[0]
@@ -384,11 +384,12 @@ Versions in the `0.27.x` series and later require VS Code `^1.100.0` or higher.
 
 ### Computing and updating the SHA256
 
-Once you have the correct version string, download the VSIX and compute its SHA256:
+Once you have the correct version string, download the VSIX with `--compressed` (the
+Marketplace serves the VSIX with gzip transfer encoding) and compute its SHA256:
 
 ```bash
 VERSION=0.26.7
-curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
+curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
 	"https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${VERSION}/vspackage" \
 	-o "/tmp/copilot-chat-${VERSION}.vsix"
 shasum -a 256 "/tmp/copilot-chat-${VERSION}.vsix"

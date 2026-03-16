@@ -45,9 +45,11 @@ ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e
 # version from the VS Marketplace API, confirms the file is a valid ZIP, and
 # verifies the SHA256.
 #
-# To update the pin, download the new VSIX from the VS Marketplace API URL:
-#   curl -fsSL ".../publishers/GitHub/vsextensions/copilot-chat/<ver>/vspackage"
-#        -o copilot-chat-<ver>.vsix
+# To update the pin, download the new VSIX from the VS Marketplace API URL with
+# --compressed so curl decompresses the gzip transfer encoding (required):
+#   curl -fsSL --compressed \
+#     "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/<ver>/vspackage" \
+#     -o copilot-chat-<ver>.vsix
 # Then run: sha256sum copilot-chat-<ver>.vsix
 # Update COPILOT_CHAT_PINNED_VERSION and COPILOT_CHAT_VSIX_SHA256 below
 # (see README for step-by-step instructions).
@@ -62,7 +64,7 @@ ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION
 # COPILOT_CHAT_PINNED_VERSION (architecture-independent).
 # The integrity check only runs when the downloaded version equals the pinned
 # version AND this value is non-empty.
-ARG COPILOT_CHAT_VSIX_SHA256=e1525fd0f64d51ce91cbcf0c0fdbec9a51ab069999c3b8f94d1bc8a93f313362
+ARG COPILOT_CHAT_VSIX_SHA256=
 
 # Install unzip and zip early so they are available for VSIX validation and
 # repacking during the download step.
@@ -138,7 +140,7 @@ exit(1); \
   # code-server 4.X.Y bundles VS Code 1.X.Y (e.g. 4.99.4 → 1.99.4). \
   # Only stable releases are considered: pre-release builds use a 10-digit \
   # date-stamped patch component (YYYYMMDDNN, e.g. 2025040204) which is excluded \
-  # by limiting the patch to at most 3 digits (< 1000). \
+  # by limiting the patch to at most 9 digits (< 10^9, i.e. not a date-stamp). \
   if [ -z "$COPILOT_CHAT_VERSION" ]; then \
     VSCODE_VERSION="$(printf '%s' "$CODESERVER_VERSION" | sed 's/^[0-9][0-9]*\./1./')"; \
     MARKETPLACE_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
@@ -159,7 +161,7 @@ if (!is_array($response)) { \
 $versions = $response["results"][0]["extensions"][0]["versions"] ?? []; \
 foreach ($versions as $v) { \
   $ver = $v["version"] ?? ""; \
-  if (!preg_match("/^\d+\.\d+\.\d{1,3}$/", $ver)) continue; \
+  if (!preg_match("/^\d+\.\d+\.\d{1,9}$/", $ver)) continue; \
   $engine = ""; \
   foreach ($v["properties"] ?? [] as $p) { \
     if ($p["key"] === "Microsoft.VisualStudio.Code.Engine") { \
@@ -184,7 +186,7 @@ exit(1); \
     || { echo "COPILOT_CHAT_VERSION has unexpected format: '${COPILOT_CHAT_VERSION}' (expected semver e.g. 1.2.3)" >&2; exit 1; }; \
   echo "Downloading Copilot Chat VSIX version: $COPILOT_CHAT_VERSION" >&2; \
   VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"; \
-  curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o /tmp/copilot-chat.vsix; \
+  curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o /tmp/copilot-chat.vsix; \
   if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ] && [ -n "$COPILOT_CHAT_VSIX_SHA256" ]; then \
     echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; \
   fi; \
@@ -194,8 +196,10 @@ exit(1); \
   # the binary, this guard gives a clear diagnostic rather than a cryptic
   # "cannot find zipfile directory" message from unzip.
   if ! od -An -tx1 -N4 /tmp/copilot-chat.vsix | tr -d ' \n' | grep -qi '^504b0304'; then \
-    echo "Copilot Chat VSIX is not a valid ZIP — Marketplace may have returned an error page:" >&2; \
-    head -c 512 /tmp/copilot-chat.vsix >&2 || true; \
+    ACTUAL_MAGIC="$(od -An -tx1 -N8 /tmp/copilot-chat.vsix | tr -d ' \n')"; \
+    echo "Copilot Chat VSIX is not a valid ZIP (expected magic 504b0304, got: ${ACTUAL_MAGIC})." >&2; \
+    echo "The Marketplace may have returned a rate-limit/error page instead of the binary." >&2; \
+    echo "If the first bytes are 1f8b (gzip), re-run with --compressed on the curl command." >&2; \
     exit 1; \
   fi; \
   unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
