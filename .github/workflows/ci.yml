@@ -74,6 +74,7 @@ jobs:
       - name: Build PHP images
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CACHE_FROM_ENABLED: "true"
         run: bash tests/build-dockerfile.sh
 
       - name: Run PHP functional tests

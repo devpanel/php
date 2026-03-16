@@ -104,8 +104,12 @@ fi
 #   REPO/GHCR_REPO       Use a local test namespace; no real registry is pushed.
 #   VERSIONS_BASE/SECURE Set equal to VERSIONS so every version's stages build.
 #   TAG_SUFFIX           Empty; tags match run-dockerfile.sh's TAG_PREFIX.
-#   CACHE_FROM_ENABLED   false; clean build from source (no cache reads).
-#   GHCR_WRITABLE        false; cache write failures are non-fatal.
+#   CACHE_FROM_ENABLED   Defaults to false (clean build from source) for local
+#                        runs.  Set to true (e.g. in CI) to read from GHA cache
+#                        and benefit from layer reuse on re-runs.
+#   GHCR_WRITABLE        false; registry cache write failures are non-fatal
+#                        (ignore-error=true).  GHA cache writes are unconditional
+#                        and unaffected by this flag.
 #   GITHUB_TOKEN         Forwarded so the downloader stage can call the GitHub
 #                        API to resolve CODESERVER_VERSION when not pinned.
 #
@@ -120,7 +124,7 @@ GHCR_REPO="$TEST_REPO" \
 TAG_SUFFIX="" \
 LATEST_PHP_VERSION="$LATEST_PHP_VERSION" \
 PLATFORMS="$PLATFORMS" \
-CACHE_FROM_ENABLED=false \
+CACHE_FROM_ENABLED="${CACHE_FROM_ENABLED:-false}" \
 GHCR_WRITABLE=false \
 GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
 docker buildx bake \
