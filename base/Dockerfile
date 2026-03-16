@@ -128,9 +128,12 @@ exit(1); \
   case "$DEB_ARCH" in amd64|arm64) ;; *) echo "Unsupported architecture for code-server: $DEB_ARCH" >&2; exit 1 ;; esac; \
   DEB_URL="https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
   DEB_CACHE="/var/cache/code-server-debs/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
+  DEB_CACHE_TMP="${DEB_CACHE}.tmp"; \
   if [ ! -f "$DEB_CACHE" ]; then \
     echo "Downloading code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; \
-    curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o "$DEB_CACHE"; \
+    curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o "$DEB_CACHE_TMP" \
+      && mv "$DEB_CACHE_TMP" "$DEB_CACHE" \
+      || { rm -f "$DEB_CACHE_TMP"; echo "Failed to download code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; exit 1; }; \
   else \
     echo "Using cached code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; \
   fi; \
@@ -140,7 +143,11 @@ exit(1); \
       amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
       arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
     esac; \
-    echo "$DEB_SHA256 /tmp/code-server.deb" | sha256sum -c -; \
+    if ! echo "$DEB_SHA256  /tmp/code-server.deb" | sha256sum -c -; then \
+      rm -f "$DEB_CACHE"; \
+      echo "SHA256 mismatch for code-server — cache cleared, please retry" >&2; \
+      exit 1; \
+    fi; \
   fi; \
   \
   # Download GitHub Copilot Chat VSIX (not available in Open VSX marketplace). \
@@ -196,15 +203,22 @@ exit(1); \
   echo "Fetching Copilot Chat VSIX version: $COPILOT_CHAT_VERSION" >&2; \
   VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"; \
   VSIX_CACHE="/var/cache/copilot-chat-vsix/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"; \
+  VSIX_CACHE_TMP="${VSIX_CACHE}.tmp"; \
   if [ ! -f "$VSIX_CACHE" ]; then \
     echo "Downloading Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
-    curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o "$VSIX_CACHE"; \
+    curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o "$VSIX_CACHE_TMP" \
+      && mv "$VSIX_CACHE_TMP" "$VSIX_CACHE" \
+      || { rm -f "$VSIX_CACHE_TMP"; echo "Failed to download Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; exit 1; }; \
   else \
     echo "Using cached Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
   fi; \
   cp "$VSIX_CACHE" /tmp/copilot-chat.vsix; \
   if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ] && [ -n "$COPILOT_CHAT_VSIX_SHA256" ]; then \
-    echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; \
+    if ! echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; then \
+      rm -f "$VSIX_CACHE"; \
+      echo "SHA256 mismatch for Copilot Chat VSIX — cache cleared, please retry" >&2; \
+      exit 1; \
+    fi; \
   fi; \
   # Verify the download is a valid ZIP (VSIX is a ZIP archive).
   # A ZIP file starts with the PK magic bytes: 50 4b 03 04 (hex).
@@ -216,6 +230,8 @@ exit(1); \
     echo "Copilot Chat VSIX is not a valid ZIP (expected magic 504b0304, got: ${ACTUAL_MAGIC})." >&2; \
     echo "The Marketplace may have returned a rate-limit/error page instead of the binary." >&2; \
     echo "If the first bytes are 1f8b (gzip), re-run with --compressed on the curl command." >&2; \
+    rm -f "$VSIX_CACHE"; \
+    echo "Cache cleared, please retry" >&2; \
     exit 1; \
   fi; \
   unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \

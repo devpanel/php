@@ -100,15 +100,18 @@ jobs:
           path: ${{ runner.temp }}/copilot-chat.vsix
           key: copilot-chat-vsix-${{ steps.copilot-version.outputs.version }}
 
-      - name: Download and verify pinned Copilot Chat VSIX
+      - name: Download Copilot Chat VSIX (cache miss only)
         if: steps.cache-vsix.outputs.cache-hit != 'true'
         run: |
           VERSION="${{ steps.copilot-version.outputs.version }}"
-          EXPECTED_SHA="$(grep -m1 '^ARG COPILOT_CHAT_VSIX_SHA256=' base/Dockerfile | cut -d= -f2)"
           VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${VERSION}/vspackage"
           echo "Downloading GitHub.copilot-chat ${VERSION} from VS Marketplace"
           curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
             "${VSIX_URL}" -o "$RUNNER_TEMP/copilot-chat.vsix"
+
+      - name: Verify Copilot Chat VSIX
+        run: |
+          EXPECTED_SHA="$(grep -m1 '^ARG COPILOT_CHAT_VSIX_SHA256=' base/Dockerfile | cut -d= -f2)"
           if ! od -An -tx1 -N4 "$RUNNER_TEMP/copilot-chat.vsix" | tr -d ' \n' | grep -qi '^504b0304'; then
             ACTUAL_MAGIC="$(od -An -tx1 -N8 "$RUNNER_TEMP/copilot-chat.vsix" | tr -d ' \n')"
             echo "Downloaded file is not a valid ZIP (expected magic 504b0304, got: ${ACTUAL_MAGIC})"
@@ -145,19 +148,26 @@ jobs:
           path: ${{ runner.temp }}/code-server-debs
           key: code-server-debs-${{ steps.cs-version.outputs.version }}
 
-      - name: Download and verify pinned code-server .deb files
+      - name: Download pinned code-server .deb files (cache miss only)
         if: steps.cache-debs.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/code-server-debs"
           VERSION="${{ steps.cs-version.outputs.version }}"
-          SHA256_AMD64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_AMD64=' base/Dockerfile | cut -d= -f2)"
-          SHA256_ARM64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_ARM64=' base/Dockerfile | cut -d= -f2)"
           BASE_URL="https://github.com/coder/code-server/releases/download/v${VERSION}"
           for arch in amd64 arm64; do
             DEB="code-server_${VERSION}_${arch}.deb"
             echo "Downloading ${DEB}"
             curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
               "${BASE_URL}/${DEB}" -o "$RUNNER_TEMP/code-server-debs/${DEB}"
+          done
+
+      - name: Verify pinned code-server .deb files
+        run: |
+          VERSION="${{ steps.cs-version.outputs.version }}"
+          SHA256_AMD64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_AMD64=' base/Dockerfile | cut -d= -f2)"
+          SHA256_ARM64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_ARM64=' base/Dockerfile | cut -d= -f2)"
+          for arch in amd64 arm64; do
+            DEB="code-server_${VERSION}_${arch}.deb"
             ACTUAL_SHA="$(sha256sum "$RUNNER_TEMP/code-server-debs/${DEB}" | cut -d' ' -f1)"
             echo "${arch} SHA256: ${ACTUAL_SHA}"
             case "${arch}" in
