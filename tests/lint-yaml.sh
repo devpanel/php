@@ -56,8 +56,8 @@ def rel(path):
 
 counts = {}
 # parsable format: path:line:col: [level] (rule) message
-# Only the rule name (last capture group) is needed for counting.
-PATTERN = re.compile(r"^.+?:\d+:\d+: \[(?:warning|error)\] .+ \((.+)\)$")
+# The rule name appears in parentheses immediately after the [level] token.
+PATTERN = re.compile(r"^.+?:\d+:\d+: \[(?:warning|error)\] \((.+?)\)")
 
 for f in files:
     result = subprocess.run(
