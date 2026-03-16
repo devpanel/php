@@ -101,25 +101,17 @@ fi
 # Build using docker-bake.hcl in test mode
 # ---------------------------------------------------------------------------
 # Test-mode overrides:
-#   REPO/GHCR_REPO           Use a local test namespace; no real registry is pushed.
-#   VERSIONS_BASE/SECURE     Set equal to VERSIONS so every version's stages build.
-#   TAG_SUFFIX               Empty; tags match run-dockerfile.sh's TAG_PREFIX.
-#   CACHE_FROM_ENABLED       Defaults to false (clean build from source) for local
-#                            runs.  Set to true (e.g. in CI) to read from GHA cache
-#                            and benefit from layer reuse on re-runs.
-#   GHCR_WRITABLE            false; registry cache write failures are non-fatal
-#                            (ignore-error=true).  GHA cache writes are unconditional
-#                            and unaffected by this flag.
-#   GITHUB_TOKEN             Forwarded so the downloader stage can call the GitHub
-#                            API to resolve CODESERVER_VERSION when not pinned.
-#   COPILOT_CHAT_VERSION     Explicitly set to the Dockerfile's pinned version so
-#                            test builds skip the VS Marketplace auto-detection
-#                            call (which may be blocked or slow in test environments).
-
-# Read the pinned Copilot Chat version from the Dockerfile so test builds use
-# the same known-good version without contacting the VS Marketplace API.
-COPILOT_CHAT_PINNED="$(grep -m1 '^ARG COPILOT_CHAT_PINNED_VERSION=' \
-  "$REPO_ROOT/base/Dockerfile" | cut -d= -f2)"
+#   REPO/GHCR_REPO       Use a local test namespace; no real registry is pushed.
+#   VERSIONS_BASE/SECURE Set equal to VERSIONS so every version's stages build.
+#   TAG_SUFFIX           Empty; tags match run-dockerfile.sh's TAG_PREFIX.
+#   CACHE_FROM_ENABLED   Defaults to false (clean build from source) for local
+#                        runs.  Set to true (e.g. in CI) to read from GHA cache
+#                        and benefit from layer reuse on re-runs.
+#   GHCR_WRITABLE        false; registry cache write failures are non-fatal
+#                        (ignore-error=true).  GHA cache writes are unconditional
+#                        and unaffected by this flag.
+#   GITHUB_TOKEN         Forwarded so the downloader stage can call the GitHub
+#                        API to resolve CODESERVER_VERSION when not pinned.
 #
 # --load:
 #   Import built images into the local Docker daemon so that run-dockerfile.sh
@@ -135,7 +127,6 @@ PLATFORMS="$PLATFORMS" \
 CACHE_FROM_ENABLED="${CACHE_FROM_ENABLED:-false}" \
 GHCR_WRITABLE=false \
 GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
-COPILOT_CHAT_VERSION="$COPILOT_CHAT_PINNED" \
 docker buildx bake \
   --file "$REPO_ROOT/docker-bake.hcl" \
   --load
