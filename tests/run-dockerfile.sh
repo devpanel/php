@@ -77,8 +77,7 @@ TESTED_IMAGES=()
 
 cleanup_test_images() {
   if [[ ${#TESTED_IMAGES[@]} -gt 0 ]]; then
-    echo "Removing test images: ${TESTED_IMAGES[*]}"
-    docker image rm --force "${TESTED_IMAGES[@]}" &>/dev/null || true
+    bash "$REPO_ROOT/tests/cleanup-test-images.sh" "${TESTED_IMAGES[@]}"
   fi
 }
 trap cleanup_test_images EXIT
