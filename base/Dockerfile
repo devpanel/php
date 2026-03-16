@@ -30,36 +30,43 @@ ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e
 #     (e.g. 0.26.2025040204 = series 0.26, released 2025-04-02, build 04).
 # Only stable releases are used (see auto-detect logic below).
 # Production Docker Bake builds pass COPILOT_CHAT_VERSION="" (the default in
-# docker-bake.hcl) which triggers the auto-detection block below.  Auto-detection
-# queries the VS Marketplace API and returns only the latest STABLE release
-# whose engine requirement is satisfied by the bundled VS Code version.
+# docker-bake.hcl), which overrides the Dockerfile default and triggers the
+# auto-detection block below.  Auto-detection queries the VS Marketplace API
+# and returns only the latest STABLE release whose engine requirement is
+# satisfied by the bundled VS Code version.
 # code-server 4.X.Y bundles VS Code 1.X.Y (e.g. 4.99.4 → VS Code 1.99.4).
 #
-# Pinned stable fallback
-# ──────────────────────
-# COPILOT_CHAT_PINNED_VERSION is the latest stable release compatible with
-# code-server 4.99.4 (VS Code 1.99.4).  It is used as a fallback when
-# COPILOT_CHAT_VERSION is explicitly passed as a non-empty string (e.g.
-# in test builds that must avoid the VS Marketplace API).
-# The SHA256 is verified by the CI "Verify Copilot Chat VSIX" job which
-# downloads the pinned VSIX to extensions/ and confirms the hash matches.
+# Pinned version
+# ──────────────
+# COPILOT_CHAT_PINNED_VERSION is the Dockerfile default: a known-good stable
+# release compatible with code-server 4.99.4 (VS Code 1.99.4).  It is used
+# when COPILOT_CHAT_VERSION is not overridden (e.g. a plain `docker build .`
+# without Bake).  The CI "Verify Copilot Chat VSIX" job downloads the pinned
+# version from the VS Marketplace API, confirms the file is a valid ZIP, and
+# verifies the SHA256.
 #
-# To update the pin, download the new VSIX and run:
-#   shasum -a 256 copilot-chat-<version>.vsix
-# Then update COPILOT_CHAT_PINNED_VERSION and COPILOT_CHAT_VSIX_SHA256 below
+# To update the pin, download the new VSIX from the VS Marketplace API URL:
+#   curl -fsSL ".../publishers/GitHub/vsextensions/copilot-chat/<ver>/vspackage"
+#        -o copilot-chat-<ver>.vsix
+# Then run: sha256sum copilot-chat-<ver>.vsix
+# Update COPILOT_CHAT_PINNED_VERSION and COPILOT_CHAT_VSIX_SHA256 below
 # (see README for step-by-step instructions).
 ARG COPILOT_CHAT_PINNED_VERSION=0.26.7
-# COPILOT_CHAT_VERSION: when empty (the default passed by docker-bake.hcl),
-# the auto-detection block below queries the VS Marketplace and selects the
-# latest compatible STABLE release.  Pass an explicit non-empty version to use
-# a specific release (e.g. COPILOT_CHAT_PINNED_VERSION) with SHA verification.
-ARG COPILOT_CHAT_VERSION=
-# SHA256 of the VSIX for COPILOT_CHAT_PINNED_VERSION (architecture-independent).
+# COPILOT_CHAT_VERSION: defaults to COPILOT_CHAT_PINNED_VERSION (the same
+# pattern used by CODESERVER_VERSION above).  Docker Bake passes an explicit
+# empty string to trigger auto-detection and use the latest STABLE release
+# compatible with the bundled VS Code version.  Pass an explicit non-empty
+# version to reproduce a specific build with SHA verification.
+ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION
+# SHA256 of the VSIX downloaded from the VS Marketplace vspackage endpoint for
+# COPILOT_CHAT_PINNED_VERSION (architecture-independent).
+# Note: the Marketplace API URL serves a different binary from the VS Code
+# desktop UI download, so the hash of base/extensions/*.vsix (downloaded via
+# the UI) will differ from this value.
 # The integrity check only runs when the downloaded version equals the pinned
 # version AND this value is non-empty.
-# The pinned VSIX is committed at base/extensions/ for independent verification:
-#   sha256sum base/extensions/github.copilot-chat-<version>.vsix
-ARG COPILOT_CHAT_VSIX_SHA256=691e80194fdba0399879fd065a76b9b14b32bfd29818292e816a4522eb0330d1
+# The pinned VSIX is committed at base/extensions/ for independent reference.
+ARG COPILOT_CHAT_VSIX_SHA256=e1525fd0f64d51ce91cbcf0c0fdbec9a51ab069999c3b8f94d1bc8a93f313362
 
 # Install unzip and zip early so they are available for VSIX validation and
 # repacking during the download step.
@@ -184,6 +191,16 @@ exit(1); \
   curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o /tmp/copilot-chat.vsix; \
   if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ] && [ -n "$COPILOT_CHAT_VSIX_SHA256" ]; then \
     echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; \
+  fi; \
+  # Verify the download is a valid ZIP (VSIX is a ZIP archive).
+  # A ZIP file starts with the PK magic bytes: 50 4b 03 04 (hex).
+  # If the Marketplace returned an error page or rate-limit HTML instead of
+  # the binary, this guard gives a clear diagnostic rather than a cryptic
+  # "cannot find zipfile directory" message from unzip.
+  if ! od -An -tx1 -N4 /tmp/copilot-chat.vsix | tr -d ' \n' | grep -qi '^504b0304'; then \
+    echo "Copilot Chat VSIX is not a valid ZIP — Marketplace may have returned an error page:" >&2; \
+    head -c 512 /tmp/copilot-chat.vsix >&2 || true; \
+    exit 1; \
   fi; \
   unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
     || { echo "Failed to extract copilot-chat.vsix — file may be invalid or not a valid ZIP/VSIX (check marketplace response)" >&2; \
