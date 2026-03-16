@@ -20,26 +20,31 @@
 #
 # Optional flag (applies to all modes above):
 #   --stage base|secure|advance   (default: advance)
-#       Filter output to versions with source changes that affect the given
-#       stage's image.  Because advance is built on secure, which is built on
-#       base, a change at any level cascades up and makes all higher-level
-#       images different too.  Each flag therefore maps to a progressively
-#       wider set of triggering changes:
+#       Return only versions that need the given stage rebuilt.
 #
-#         --stage advance (broadest, default)
-#             Returns all versions with any changed file.  A base or secure
-#             change cascades up and makes the advance image different too.
-#             Mirrors the workflow's 'versions' output.
+#       Build order (and image dependency chain):
+#           base → secure (built FROM base) → advance (built FROM secure)
+#
+#       A change to a lower stage forces all stages that depend on it to be
+#       rebuilt.  Therefore each --stage value selects a different subset:
+#
+#         --stage base
+#             Returns versions where base source changed.
+#             Only a base change requires rebuilding base; changes to secure
+#             or advance do not affect the base image.
+#             Mirrors the workflow's 'versions_base' output.
 #
 #         --stage secure
-#             Returns versions where the secure or base source changed.  A
-#             base change cascades up and makes the secure image different.
+#             Returns versions where secure or base source changed.
+#             A base change requires rebuilding secure (secure is built FROM
+#             base), so those versions are included too.
 #             Mirrors the workflow's 'versions_secure' output.
 #
-#         --stage base    (narrowest)
-#             Returns versions where the base source changed.  Changes to
-#             secure or advance do not affect the base image.
-#             Mirrors the workflow's 'versions_base' output.
+#         --stage advance  (default)
+#             Returns versions where advance, secure, or base source changed.
+#             A secure or base change requires rebuilding advance (advance is
+#             built FROM secure FROM base), so those versions are included too.
+#             Mirrors the workflow's 'versions' output.
 #
 # Shared-directory rule (mirrors build-php-images.yml):
 #   Changes to the top-level base/, secure/, or advance/ directories, or to
