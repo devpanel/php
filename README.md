@@ -384,21 +384,20 @@ Versions in the `0.27.x` series and later require VS Code `^1.100.0` or higher.
 
 ### Computing and updating the SHA256
 
-Once you have the correct version string, download the VSIX to the `extensions/`
-directory and compute its SHA256:
+Once you have the correct version string, download the VSIX and compute its SHA256:
 
 ```bash
 VERSION=0.26.7
 curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
 	"https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${VERSION}/vspackage" \
-	-o "extensions/copilot-chat-${VERSION}.vsix"
-shasum -a 256 "extensions/copilot-chat-${VERSION}.vsix"
+	-o "/tmp/copilot-chat-${VERSION}.vsix"
+shasum -a 256 "/tmp/copilot-chat-${VERSION}.vsix"
 ```
 
 Then update `COPILOT_CHAT_PINNED_VERSION` and `COPILOT_CHAT_VSIX_SHA256` in
-`base/Dockerfile`.  The CI "Verify Copilot Chat VSIX" job also downloads the
-pinned VSIX to `extensions/` automatically and will output the computed hash
-if `COPILOT_CHAT_VSIX_SHA256` is not yet set in the Dockerfile.
+`base/Dockerfile`.  The CI "Verify Copilot Chat VSIX" job independently downloads
+the pinned VSIX from the same URL, validates it is a valid ZIP, and verifies the
+SHA256 on every CI run.
 
 The VSIX is architecture-independent, so only one hash value is needed (unlike
 code-server which ships separate `amd64`/`arm64` packages).

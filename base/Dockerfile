@@ -60,12 +60,8 @@ ARG COPILOT_CHAT_PINNED_VERSION=0.26.7
 ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION
 # SHA256 of the VSIX downloaded from the VS Marketplace vspackage endpoint for
 # COPILOT_CHAT_PINNED_VERSION (architecture-independent).
-# Note: the Marketplace API URL serves a different binary from the VS Code
-# desktop UI download, so the hash of base/extensions/*.vsix (downloaded via
-# the UI) will differ from this value.
 # The integrity check only runs when the downloaded version equals the pinned
 # version AND this value is non-empty.
-# The pinned VSIX is committed at base/extensions/ for independent reference.
 ARG COPILOT_CHAT_VSIX_SHA256=e1525fd0f64d51ce91cbcf0c0fdbec9a51ab069999c3b8f94d1bc8a93f313362
 
 # Install unzip and zip early so they are available for VSIX validation and
