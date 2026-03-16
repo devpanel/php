@@ -21,44 +21,44 @@ ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e
 # GitHub Copilot Chat is not available in the Open VSX marketplace used by
 # code-server, so we download it directly from the VS Marketplace.
 #
-# How the pinned version was chosen
+# Version channels
 # ──────────────────────────────────
 # The Copilot Chat extension publishes two channels to the VS Marketplace:
 #   • Stable releases use simple MAJOR.MINOR.PATCH version numbers
 #     (e.g. 0.26.7, visible as "0.26.0 … 0.26.7" in the VS Code desktop UI).
 #   • Pre-release builds use a build-date-stamped format: MAJOR.MINOR.YYYYMMDDNN
-#     (e.g. 0.26.2025040204 = 0.26, released 2025-04-02, sequence 04).
-# The extensionquery API (flags=17) returns both channels, newest-first.
+#     (e.g. 0.26.2025040204 = series 0.26, released 2025-04-02, build 04).
+# Only stable releases are used (see auto-detect logic below).
+# Production Docker Bake builds pass COPILOT_CHAT_VERSION="" (the default in
+# docker-bake.hcl) which triggers the auto-detection block below.  Auto-detection
+# queries the VS Marketplace API and returns only the latest STABLE release
+# whose engine requirement is satisfied by the bundled VS Code version.
+# code-server 4.X.Y bundles VS Code 1.X.Y (e.g. 4.99.4 → VS Code 1.99.4).
 #
-# code-server 4.99.4 bundles VS Code 1.99.4.  The VS Marketplace extensionquery
-# API was queried for GitHub.copilot-chat with VSCODE_VERSION=1.99.4, iterating
-# newest-first.  The first build whose Microsoft.VisualStudio.Code.Engine
-# property satisfied version_compare("1.99.4", engine, ">=") was
-# 0.26.2025040204 (pre-release build from 2025-04-02, engine requirement ^1.99.0).
-# Versions in the 0.27.x series and later require VS Code ^1.100.0 or higher,
-# so 0.26.2025040204 is the most recent pre-release build compatible with
-# code-server 4.99.4.  (The stable 0.26.7 is also compatible but is an
-# earlier build than 0.26.2025040204 in the API's newest-first ordering.)
+# Pinned stable fallback
+# ──────────────────────
+# COPILOT_CHAT_PINNED_VERSION is the latest stable release compatible with
+# code-server 4.99.4 (VS Code 1.99.4).  It is used as a fallback when
+# COPILOT_CHAT_VERSION is explicitly passed as a non-empty string (e.g.
+# in test builds that must avoid the VS Marketplace API).
+# The SHA256 is verified by the CI "Verify Copilot Chat VSIX" job which
+# downloads the pinned VSIX to extensions/ and confirms the hash matches.
 #
-# Note: the VS Marketplace version-history UI only surfaces the most recent
-# ~5 versions, so 0.26.2025040204 is no longer listed there.  The vspackage
-# download URL remains valid for older versions, and the build is independently
-# archived on VsixHub: https://www.vsixhub.com/vsix/165137/
-#
-# The SHA256 below was computed by downloading the VSIX from the Marketplace
-# URL and running: shasum -a 256 copilot-chat-0.26.2025040204.vsix
-#
-# To pin a different version, update COPILOT_CHAT_PINNED_VERSION and recompute
-# COPILOT_CHAT_VSIX_SHA256 (see README for instructions).
-ARG COPILOT_CHAT_PINNED_VERSION=0.26.2025040204
-# By default, COPILOT_CHAT_VERSION is pinned to COPILOT_CHAT_PINNED_VERSION so that
-# direct `docker build` runs use a known version with a verified SHA256 checksum.
-# CI/Bake can override this argument to "" to auto-detect the latest compatible
-# version when reproducibility and checksum verification are handled externally.
-ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION
+# To update the pin, download the new VSIX and run:
+#   shasum -a 256 copilot-chat-<version>.vsix
+# Then update COPILOT_CHAT_PINNED_VERSION and COPILOT_CHAT_VSIX_SHA256 below
+# (see README for step-by-step instructions).
+ARG COPILOT_CHAT_PINNED_VERSION=0.26.7
+# COPILOT_CHAT_VERSION: when empty (the default passed by docker-bake.hcl),
+# the auto-detection block below queries the VS Marketplace and selects the
+# latest compatible STABLE release.  Pass an explicit non-empty version to use
+# a specific release (e.g. COPILOT_CHAT_PINNED_VERSION) with SHA verification.
+ARG COPILOT_CHAT_VERSION=
 # SHA256 of the VSIX for COPILOT_CHAT_PINNED_VERSION (architecture-independent).
-# The integrity check only runs when the downloaded version equals the pinned version.
-ARG COPILOT_CHAT_VSIX_SHA256=82b1bfa67f91e29682aa44b1e831b32a3ca3415676148351c5da57ca7185df98
+# The integrity check only runs when the downloaded version equals the pinned
+# version AND this value is non-empty.  See the CI "Verify Copilot Chat VSIX"
+# job which downloads the VSIX to extensions/ and prints the computed hash.
+ARG COPILOT_CHAT_VSIX_SHA256=
 
 # Install unzip and zip early so they are available for VSIX validation and
 # repacking during the download step.
@@ -129,9 +129,12 @@ exit(1); \
   fi; \
   \
   # Download GitHub Copilot Chat VSIX (not available in Open VSX marketplace). \
-  # If COPILOT_CHAT_VERSION is empty, detect the latest version compatible with \
-  # the VS Code release bundled in this code-server version. \
+  # If COPILOT_CHAT_VERSION is empty, detect the latest stable version compatible \
+  # with the VS Code release bundled in this code-server version. \
   # code-server 4.X.Y bundles VS Code 1.X.Y (e.g. 4.99.4 → 1.99.4). \
+  # Only stable releases are considered: pre-release builds use a 10-digit \
+  # date-stamped patch component (YYYYMMDDNN, e.g. 2025040204) which is excluded \
+  # by limiting the patch to at most 3 digits (< 1000). \
   if [ -z "$COPILOT_CHAT_VERSION" ]; then \
     VSCODE_VERSION="$(printf '%s' "$CODESERVER_VERSION" | sed 's/^[0-9][0-9]*\./1./')"; \
     MARKETPLACE_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
@@ -152,7 +155,7 @@ if (!is_array($response)) { \
 $versions = $response["results"][0]["extensions"][0]["versions"] ?? []; \
 foreach ($versions as $v) { \
   $ver = $v["version"] ?? ""; \
-  if (!preg_match("/^\d+\.\d+\.\d+$/", $ver)) continue; \
+  if (!preg_match("/^\d+\.\d+\.\d{1,3}$/", $ver)) continue; \
   $engine = ""; \
   foreach ($v["properties"] ?? [] as $p) { \
     if ($p["key"] === "Microsoft.VisualStudio.Code.Engine") { \
@@ -178,7 +181,7 @@ exit(1); \
   echo "Downloading Copilot Chat VSIX version: $COPILOT_CHAT_VERSION" >&2; \
   VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"; \
   curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o /tmp/copilot-chat.vsix; \
-  if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ]; then \
+  if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ] && [ -n "$COPILOT_CHAT_VSIX_SHA256" ]; then \
     echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; \
   fi; \
   unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \

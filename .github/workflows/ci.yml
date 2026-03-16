@@ -79,3 +79,29 @@ jobs:
 
       - name: Run PHP functional tests
         run: bash tests/run-dockerfile.sh
+
+  verify-extension:
+    name: Verify Copilot Chat VSIX
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download and verify pinned Copilot Chat VSIX
+        run: |
+          VERSION="$(grep -m1 '^ARG COPILOT_CHAT_PINNED_VERSION=' base/Dockerfile | cut -d= -f2)"
+          EXPECTED_SHA="$(grep -m1 '^ARG COPILOT_CHAT_VSIX_SHA256=' base/Dockerfile | cut -d= -f2)"
+          VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${VERSION}/vspackage"
+          echo "Downloading GitHub.copilot-chat ${VERSION} to extensions/"
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
+            "${VSIX_URL}" -o "extensions/copilot-chat-${VERSION}.vsix"
+          ACTUAL_SHA="$(sha256sum "extensions/copilot-chat-${VERSION}.vsix" | cut -d' ' -f1)"
+          echo "Computed SHA256: ${ACTUAL_SHA}"
+          if [ -n "${EXPECTED_SHA}" ]; then
+            echo "${EXPECTED_SHA}  extensions/copilot-chat-${VERSION}.vsix" | sha256sum -c -
+            echo "SHA256 verified."
+          else
+            echo "::warning::COPILOT_CHAT_VSIX_SHA256 is not set in base/Dockerfile."
+            echo "::warning::Set ARG COPILOT_CHAT_VSIX_SHA256=${ACTUAL_SHA} in base/Dockerfile to enable integrity verification."
+          fi

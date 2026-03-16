@@ -139,11 +139,12 @@ target "downloader" {
   args = {
     LATEST_PHP_VERSION   = LATEST_PHP_VERSION
     CODESERVER_VERSION   = CODESERVER_VERSION
-    # Only pass COPILOT_CHAT_VERSION when it is explicitly set (non-empty).
-    # When empty (the default), omit the build-arg entirely so the Dockerfile's
-    # ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION default takes effect,
-    # using the pinned version without contacting the VS Marketplace API.
-    COPILOT_CHAT_VERSION = COPILOT_CHAT_VERSION != "" ? COPILOT_CHAT_VERSION : null
+    # Pass COPILOT_CHAT_VERSION as-is.  The default is "" (see variable above),
+    # which causes the Dockerfile's auto-detection path to find the latest
+    # compatible stable Copilot Chat version at build time.  Set this variable
+    # to a specific version string to pin an exact release (e.g. in local
+    # test builds that must avoid the VS Marketplace API).
+    COPILOT_CHAT_VERSION = COPILOT_CHAT_VERSION
   }
   secret     = ["id=github_token,env=GITHUB_TOKEN"]
   tags       = ["${GHCR_REPO}:downloader${TAG_SUFFIX}"]
