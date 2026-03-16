@@ -173,7 +173,12 @@ base  →  secure (built FROM base)  →  advance (built FROM secure)
 ```
 
 Locally-created test tags are cleaned up by `run-dockerfile.sh` after
-functional tests complete.
+functional tests complete (only the images tested in that invocation are
+removed).  To remove all `devpanel-php-test:*` images at once, run:
+
+```bash
+bash tests/cleanup-test-images.sh
+```
 
 Build tests take several minutes per PHP version because the images download
 packages (code-server, composer, etc.).  Run a single version during

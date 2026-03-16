@@ -68,16 +68,17 @@ if ! command -v docker &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# Register cleanup trap — remove test images on exit
+# Track images that this invocation actually uses, then clean up on exit.
+# Only these tags are removed — pre-existing devpanel-php-test:* images
+# built by earlier runs or pulled manually are left intact.
+# To remove all devpanel-php-test:* images, run tests/cleanup-test-images.sh.
 # ---------------------------------------------------------------------------
+TESTED_IMAGES=()
+
 cleanup_test_images() {
-  local images
-  # Find all locally loaded test images in the devpanel-php-test namespace.
-  mapfile -t images < <(docker images --format '{{.Repository}}:{{.Tag}}' \
-    | grep "^${TAG_PREFIX}:" || true)
-  if [[ ${#images[@]} -gt 0 ]]; then
-    echo "Removing test images: ${images[*]}"
-    docker image rm --force "${images[@]}" &>/dev/null || true
+  if [[ ${#TESTED_IMAGES[@]} -gt 0 ]]; then
+    echo "Removing test images: ${TESTED_IMAGES[*]}"
+    docker image rm --force "${TESTED_IMAGES[@]}" &>/dev/null || true
   fi
 }
 trap cleanup_test_images EXIT
@@ -203,6 +204,8 @@ for version in "${SORTED_VERSIONS[@]}"; do
       echo
       continue
     fi
+
+    TESTED_IMAGES+=("$tag")
 
     case "$variant" in
       base)    test_base    "$tag" "$version" ;;
