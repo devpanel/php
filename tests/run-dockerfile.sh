@@ -68,6 +68,21 @@ if ! command -v docker &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
+# Register cleanup trap — remove test images on exit
+# ---------------------------------------------------------------------------
+cleanup_test_images() {
+  local images
+  # Find all locally loaded test images in the devpanel-php-test namespace.
+  mapfile -t images < <(docker images --format '{{.Repository}}:{{.Tag}}' \
+    | grep "^${TAG_PREFIX}:" || true)
+  if [[ ${#images[@]} -gt 0 ]]; then
+    echo "Removing test images: ${images[*]}"
+    docker image rm --force "${images[@]}" &>/dev/null || true
+  fi
+}
+trap cleanup_test_images EXIT
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 PASS=0

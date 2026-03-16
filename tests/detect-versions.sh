@@ -135,6 +135,19 @@ path_changed() {
   return 1
 }
 
+# Return true (exit 0) when CHANGED_FILES contains an exact match for the
+# given path (relative to the repo root).
+file_changed() {
+  local target="$1" f norm
+  for f in "${CHANGED_FILES[@]+"${CHANGED_FILES[@]}"}"; do
+    norm="$(normalize_path "$f")"
+    if [[ "$norm" == "$target" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Build the CHANGED_FILES list
 # ---------------------------------------------------------------------------
@@ -176,7 +189,7 @@ if ! $ALL_VERSIONS; then
   SHARED_NEEDS_SECURE=false
   SHARED_NEEDS_ADVANCE=false
 
-  if path_changed "base/" || path_changed "docker-bake.hcl"; then
+  if path_changed "base/" || file_changed "docker-bake.hcl"; then
     SHARED_NEEDS_BASE=true; SHARED_NEEDS_SECURE=true; SHARED_NEEDS_ADVANCE=true
   fi
   if ! $SHARED_NEEDS_SECURE && path_changed "secure/"; then

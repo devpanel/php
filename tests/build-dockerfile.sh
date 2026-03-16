@@ -90,6 +90,13 @@ if [[ -z "${PLATFORMS:-}" ]]; then
   esac
 fi
 
+# --load requires a single platform; reject multi-platform values early.
+if [[ "$PLATFORMS" == *","* || "$PLATFORMS" == *" "* ]]; then
+  echo "Error: PLATFORMS must be a single platform when using --load (got: $PLATFORMS)." >&2
+  echo "       Set PLATFORMS to one of: linux/amd64, linux/arm64, etc." >&2
+  exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Build using docker-bake.hcl in test mode
 # ---------------------------------------------------------------------------

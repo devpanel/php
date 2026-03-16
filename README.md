@@ -166,13 +166,14 @@ change that justifies the update.
 
 `tests/build-dockerfile.sh` builds every Dockerfile in the repository (without
 pushing) to verify the images are buildable.  Images are built in dependency
-order per PHP version:
+order per PHP version using `docker buildx bake`:
 
 ```
-base  →  secure (--build-arg BASE_IMAGE=<local base>)  →  advance (--build-arg BASE_IMAGE=<local secure>)
+base  →  secure (built FROM base)  →  advance (built FROM secure)
 ```
 
-Locally-created test tags are cleaned up automatically on script exit.
+Locally-created test tags are cleaned up by `run-dockerfile.sh` after
+functional tests complete.
 
 Build tests take several minutes per PHP version because the images download
 packages (code-server, composer, etc.).  Run a single version during
@@ -239,7 +240,7 @@ and functional tests for any changed Dockerfiles.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `ci.yml` | push / pull_request to `main`, `develop` | Lint, build & functional checks (required) |
+| `ci.yml` | push to `main`/`develop`; pull_request (any branch) | Lint, build & functional checks (required) |
 | `docker-build-on-push.yml` | push to `main` or `develop` | Detect changed versions and build images |
 | `docker-build-all.yml` | `workflow_dispatch` | Build all versions unconditionally |
 
