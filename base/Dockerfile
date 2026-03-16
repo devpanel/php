@@ -57,7 +57,7 @@ ARG COPILOT_CHAT_VERSION=
 # SHA256 of the VSIX for COPILOT_CHAT_PINNED_VERSION (architecture-independent).
 # The integrity check only runs when the downloaded version equals the pinned
 # version AND this value is non-empty.
-# Verified from base/extensions/github.copilot-chat-${COPILOT_CHAT_PINNED_VERSION}.vsix:
+# The pinned VSIX is committed at base/extensions/ for independent verification:
 #   sha256sum base/extensions/github.copilot-chat-<version>.vsix
 ARG COPILOT_CHAT_VSIX_SHA256=691e80194fdba0399879fd065a76b9b14b32bfd29818292e816a4522eb0330d1
 

@@ -105,3 +105,38 @@ jobs:
             echo "::warning::COPILOT_CHAT_VSIX_SHA256 is not set in base/Dockerfile."
             echo "::warning::Set ARG COPILOT_CHAT_VSIX_SHA256=${ACTUAL_SHA} in base/Dockerfile to enable integrity verification."
           fi
+
+  verify-code-server:
+    name: Verify code-server .deb hashes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download and verify pinned code-server .deb files
+        run: |
+          VERSION="$(grep -m1 '^ARG CODESERVER_PINNED_HASH_VERSION=' base/Dockerfile | cut -d= -f2)"
+          SHA256_AMD64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_AMD64=' base/Dockerfile | cut -d= -f2)"
+          SHA256_ARM64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_ARM64=' base/Dockerfile | cut -d= -f2)"
+          BASE_URL="https://github.com/coder/code-server/releases/download/v${VERSION}"
+          for arch in amd64 arm64; do
+            DEB="code-server_${VERSION}_${arch}.deb"
+            echo "Downloading ${DEB}"
+            curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
+              "${BASE_URL}/${DEB}" -o "/tmp/${DEB}"
+            ACTUAL_SHA="$(sha256sum "/tmp/${DEB}" | cut -d' ' -f1)"
+            echo "${arch} SHA256: ${ACTUAL_SHA}"
+            case "${arch}" in
+              amd64) EXPECTED_SHA="${SHA256_AMD64}" ;;
+              arm64) EXPECTED_SHA="${SHA256_ARM64}" ;;
+            esac
+            ARCH_UPPER="$(echo "${arch}" | tr '[:lower:]' '[:upper:]')"
+            if [ -n "${EXPECTED_SHA}" ]; then
+              echo "${EXPECTED_SHA}  /tmp/${DEB}" | sha256sum -c -
+              echo "${arch} SHA256 verified."
+            else
+              echo "::warning::CODESERVER_DEB_SHA256_${ARCH_UPPER} is not set in base/Dockerfile."
+              echo "::warning::Set ARG CODESERVER_DEB_SHA256_${ARCH_UPPER}=${ACTUAL_SHA} in base/Dockerfile to enable integrity verification."
+            fi
+          done

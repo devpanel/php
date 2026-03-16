@@ -289,8 +289,9 @@ for setup instructions.
 
 ## Code-server artifact pinning
 
-`base/Dockerfile` files define `CODESERVER_PINNED_HASH_VERSION` (currently `4.99.4`) and use it as the default `CODESERVER_VERSION`.
+`base/Dockerfile` defines `CODESERVER_PINNED_HASH_VERSION` (currently `4.99.4`) and uses it as the default `CODESERVER_VERSION`.
 Checksum verification is applied when `CODESERVER_VERSION` matches `CODESERVER_PINNED_HASH_VERSION`.
+The CI "Verify code-server .deb hashes" job independently downloads both platform packages and confirms they match the hashes stored in the Dockerfile.
 
 For the pinned hash version, keep both hashes in sync:
 
@@ -311,20 +312,7 @@ for arch in amd64 arm64; do
 done
 ```
 
-Then update each `*/base/Dockerfile` so the version condition and both SHA256 values stay in sync.
-
-Example pattern used in `base/Dockerfile` files:
-
-```dockerfile
-if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
-	case "$DEB_ARCH" in \
-		amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
-		arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
-	esac; \
-	echo "$DEB_SHA256  /tmp/code-server.deb" | sha256sum -c -; \
-fi; \
-dpkg -i /tmp/code-server.deb
-```
+Then update `CODESERVER_PINNED_HASH_VERSION`, `CODESERVER_DEB_SHA256_AMD64`, and `CODESERVER_DEB_SHA256_ARM64` in `base/Dockerfile`.
 
 ## GitHub Copilot Chat extension pinning
 
