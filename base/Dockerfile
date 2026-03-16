@@ -82,6 +82,8 @@ RUN mkdir -p /tmp/libsodium \
 # Both downloads are in the same RUN step so that the resolved
 # CODESERVER_VERSION is available when auto-detecting COPILOT_CHAT_VERSION.
 RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN,required=false \
+    --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sharing=locked \
+    --mount=type=cache,id=copilot-chat-vsix,target=/var/cache/copilot-chat-vsix,sharing=locked \
   set -e; \
   if [ -z "$CODESERVER_VERSION" ]; then \
     if [ -n "${GITHUB_TOKEN:-}" ]; then \
@@ -125,7 +127,14 @@ exit(1); \
   DEB_ARCH="$(dpkg --print-architecture)"; \
   case "$DEB_ARCH" in amd64|arm64) ;; *) echo "Unsupported architecture for code-server: $DEB_ARCH" >&2; exit 1 ;; esac; \
   DEB_URL="https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
-  curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o /tmp/code-server.deb; \
+  DEB_CACHE="/var/cache/code-server-debs/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
+  if [ ! -f "$DEB_CACHE" ]; then \
+    echo "Downloading code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; \
+    curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o "$DEB_CACHE"; \
+  else \
+    echo "Using cached code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; \
+  fi; \
+  cp "$DEB_CACHE" /tmp/code-server.deb; \
   if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
     case "$DEB_ARCH" in \
       amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
@@ -184,9 +193,16 @@ exit(1); \
   # .../copilot-chat//vspackage or similar.
   printf '%s\n' "$COPILOT_CHAT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z._-]*)?$' \
     || { echo "COPILOT_CHAT_VERSION has unexpected format: '${COPILOT_CHAT_VERSION}' (expected semver e.g. 1.2.3)" >&2; exit 1; }; \
-  echo "Downloading Copilot Chat VSIX version: $COPILOT_CHAT_VERSION" >&2; \
+  echo "Fetching Copilot Chat VSIX version: $COPILOT_CHAT_VERSION" >&2; \
   VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"; \
-  curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o /tmp/copilot-chat.vsix; \
+  VSIX_CACHE="/var/cache/copilot-chat-vsix/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"; \
+  if [ ! -f "$VSIX_CACHE" ]; then \
+    echo "Downloading Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
+    curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o "$VSIX_CACHE"; \
+  else \
+    echo "Using cached Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
+  fi; \
+  cp "$VSIX_CACHE" /tmp/copilot-chat.vsix; \
   if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ] && [ -n "$COPILOT_CHAT_VSIX_SHA256" ]; then \
     echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; \
   fi; \

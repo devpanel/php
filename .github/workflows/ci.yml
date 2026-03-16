@@ -88,9 +88,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Download and verify pinned Copilot Chat VSIX
+      - name: Get pinned Copilot Chat version
+        id: copilot-version
         run: |
-          VERSION="$(grep -m1 '^ARG COPILOT_CHAT_PINNED_VERSION=' base/Dockerfile | cut -d= -f2)"
+          echo "version=$(grep -m1 '^ARG COPILOT_CHAT_PINNED_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Copilot Chat VSIX from cache
+        id: cache-vsix
+        uses: actions/cache@v4
+        with:
+          path: /tmp/copilot-chat.vsix
+          key: copilot-chat-vsix-${{ steps.copilot-version.outputs.version }}
+
+      - name: Download and verify pinned Copilot Chat VSIX
+        if: steps.cache-vsix.outputs.cache-hit != 'true'
+        run: |
+          VERSION="${{ steps.copilot-version.outputs.version }}"
           EXPECTED_SHA="$(grep -m1 '^ARG COPILOT_CHAT_VSIX_SHA256=' base/Dockerfile | cut -d= -f2)"
           VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${VERSION}/vspackage"
           echo "Downloading GitHub.copilot-chat ${VERSION} from VS Marketplace"
@@ -120,9 +133,23 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Download and verify pinned code-server .deb files
+      - name: Get pinned code-server version
+        id: cs-version
         run: |
-          VERSION="$(grep -m1 '^ARG CODESERVER_PINNED_HASH_VERSION=' base/Dockerfile | cut -d= -f2)"
+          echo "version=$(grep -m1 '^ARG CODESERVER_PINNED_HASH_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore code-server .deb files from cache
+        id: cache-debs
+        uses: actions/cache@v4
+        with:
+          path: /tmp/code-server-debs
+          key: code-server-debs-${{ steps.cs-version.outputs.version }}
+
+      - name: Download and verify pinned code-server .deb files
+        if: steps.cache-debs.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/code-server-debs
+          VERSION="${{ steps.cs-version.outputs.version }}"
           SHA256_AMD64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_AMD64=' base/Dockerfile | cut -d= -f2)"
           SHA256_ARM64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_ARM64=' base/Dockerfile | cut -d= -f2)"
           BASE_URL="https://github.com/coder/code-server/releases/download/v${VERSION}"
@@ -130,8 +157,8 @@ jobs:
             DEB="code-server_${VERSION}_${arch}.deb"
             echo "Downloading ${DEB}"
             curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
-              "${BASE_URL}/${DEB}" -o "/tmp/${DEB}"
-            ACTUAL_SHA="$(sha256sum "/tmp/${DEB}" | cut -d' ' -f1)"
+              "${BASE_URL}/${DEB}" -o "/tmp/code-server-debs/${DEB}"
+            ACTUAL_SHA="$(sha256sum "/tmp/code-server-debs/${DEB}" | cut -d' ' -f1)"
             echo "${arch} SHA256: ${ACTUAL_SHA}"
             case "${arch}" in
               amd64) EXPECTED_SHA="${SHA256_AMD64}" ;;
@@ -139,7 +166,7 @@ jobs:
             esac
             ARCH_UPPER="$(echo "${arch}" | tr '[:lower:]' '[:upper:]')"
             if [ -n "${EXPECTED_SHA}" ]; then
-              echo "${EXPECTED_SHA}  /tmp/${DEB}" | sha256sum -c -
+              echo "${EXPECTED_SHA}  /tmp/code-server-debs/${DEB}" | sha256sum -c -
               echo "${arch} SHA256 verified."
             else
               echo "::warning::CODESERVER_DEB_SHA256_${ARCH_UPPER} is not set in base/Dockerfile."
