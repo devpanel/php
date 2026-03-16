@@ -376,7 +376,7 @@ build_version() {
 # Build each version
 # ---------------------------------------------------------------------------
 # Sort versions for deterministic output.
-mapfile -t SORTED_VERSIONS < <(printf '%s\n' "${!BUILD_VERSIONS[@]}" | sort)
+mapfile -t SORTED_VERSIONS < <(printf '%s\n' "${!BUILD_VERSIONS[@]}" | sort -V)
 
 echo "Building Docker images for PHP version(s): ${SORTED_VERSIONS[*]}"
 echo

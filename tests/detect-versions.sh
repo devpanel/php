@@ -97,6 +97,11 @@ if [[ "$STAGE" != "base" && "$STAGE" != "secure" && "$STAGE" != "advance" ]]; th
   exit 1
 fi
 
+if [[ (-n "$BEFORE" && -z "$AFTER") || (-z "$BEFORE" && -n "$AFTER") ]]; then
+  echo "Error: --before and --after must be provided together." >&2
+  exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

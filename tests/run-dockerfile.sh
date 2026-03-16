@@ -17,6 +17,7 @@
 #
 # Options:
 #   --version <v>           Test a single PHP version (e.g. 8.2).
+#   --files <f1> [f2 ...]   Derive versions to test from changed file paths.
 #   --update-baseline       Accepted for compatibility; no-op.
 set -euo pipefail
 
@@ -174,7 +175,7 @@ test_advance() {
 # Run tests per version
 # ---------------------------------------------------------------------------
 OVERALL_FAIL=0
-mapfile -t SORTED_VERSIONS < <(printf '%s\n' "${!TEST_VERSIONS[@]}" | sort)
+mapfile -t SORTED_VERSIONS < <(printf '%s\n' "${!TEST_VERSIONS[@]}" | sort -V)
 
 echo "Running functional tests for PHP version(s): ${SORTED_VERSIONS[*]}"
 echo

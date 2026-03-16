@@ -45,11 +45,11 @@ for f in "${CHANGED_FILES[@]}"; do
   full="${REPO_ROOT}/${f}"
   [[ -f "$full" ]] || continue
   case "$f" in
-    *.sh)              SH_FILES+=("$full") ;;
+    *.sh | .githooks/*)  SH_FILES+=("$full") ;;
     */Dockerfile)      DOCKER_FILES+=("$full") ;;
     .github/workflows/*.yml | .github/workflows/*.yaml) YAML_FILES+=("$full") ;;
     .yamllint.yml)
-      mapfile -t _wf < <(find "${REPO_ROOT}/.github/workflows" -name "*.yml" -o -name "*.yaml" 2>/dev/null)
+      mapfile -t _wf < <(find "${REPO_ROOT}/.github/workflows" -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null)
       YAML_FILES+=("${_wf[@]+"${_wf[@]}"}")
       ;;
   esac

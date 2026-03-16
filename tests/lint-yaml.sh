@@ -27,7 +27,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
-  mapfile -t FILES < <(find "$REPO_ROOT/.github/workflows" -name "*.yml" -o -name "*.yaml" 2>/dev/null | sort)
+  mapfile -t FILES < <(find "$REPO_ROOT/.github/workflows" -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null | sort)
 fi
 
 # ---------------------------------------------------------------------------

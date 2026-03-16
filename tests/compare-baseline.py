@@ -2,7 +2,7 @@
 """
 Shared baseline-comparison helper.
 
-Usage: compare_baseline.py <baseline-json> <current-json>
+Usage: compare-baseline.py <baseline-json> <current-json>
 
 Both JSON files must be objects whose keys are "path:RULE_CODE" and whose
 values are occurrence counts.  Exits non-zero and prints every violation

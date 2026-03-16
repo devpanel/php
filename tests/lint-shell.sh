@@ -26,7 +26,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
-  mapfile -t FILES < <(find "$REPO_ROOT" -name "*.sh" -not -path "*/.git/*" | sort)
+  mapfile -t FILES < <(
+    {
+      find "$REPO_ROOT" -name "*.sh" -not -path "*/.git/*"
+      find "$REPO_ROOT/.githooks" -type f -not -path "*/.git/*" 2>/dev/null || true
+    } | sort -u
+  )
 fi
 
 # ---------------------------------------------------------------------------
