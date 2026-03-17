@@ -245,9 +245,13 @@ ENV CODES_ENABLE=yes
 # instruction so it never persists into the final image.
 # Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
 # resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
+# Within each attempt: apt-get install -f (fix-broken) runs after apt-get upgrade to
+# resolve any unmet dependencies left by the upgrade (e.g. mariadb-client-10.5 requiring
+# a higher mariadb-client-core version on Debian 11) before the main package install.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && for i in $(seq 1 3); do \
       apt-get update && apt-get upgrade -y --fix-missing \
+        && apt-get install -f -y --no-install-recommends \
         && apt-get install -y --fix-missing --no-install-recommends \
           apt-utils \
           sendmail-bin \
@@ -278,8 +282,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
           rsync \
           ssh \
           default-mysql-client \
-        && break \
-      || { [ "$i" -lt 3 ] && sleep 5; }; \
+        && break; \
+      [ "$i" -lt 3 ] && sleep 5; \
     done \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
