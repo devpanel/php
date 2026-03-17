@@ -103,7 +103,7 @@ jobs:
       - name: Get pinned Copilot Chat version
         id: copilot-version
         run: |
-          echo "version=$(grep -m1 '^ARG COPILOT_CHAT_PINNED_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+          echo "version=$(grep -m1 '^ARG COPILOT_CHAT_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
 
       - name: Restore Copilot Chat VSIX from cache
         id: cache-vsix
@@ -151,7 +151,7 @@ jobs:
       - name: Get pinned code-server version
         id: cs-version
         run: |
-          echo "version=$(grep -m1 '^ARG CODESERVER_PINNED_HASH_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+          echo "version=$(grep -m1 '^ARG CODESERVER_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
 
       - name: Restore code-server .deb files from cache
         id: cache-debs
