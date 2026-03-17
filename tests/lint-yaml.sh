@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # tests/lint-yaml.sh — Run yamllint on all GitHub Actions YAML files
 # (workflows and composite actions) and compare against the stored baseline.
-# Only *new* violations cause failure; a stale (over-counted) baseline also
-# causes failure to enforce regeneration.
+# Any change in the number of violations (increase or decrease) causes failure —
+# the baseline must match exactly.
 #
 # Options:
 #   --files <f1> [f2 ...]   Lint specific files instead of all YAML files.
