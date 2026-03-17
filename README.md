@@ -392,6 +392,9 @@ VERSION=0.26.7
 curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
 	"https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${VERSION}/vspackage" \
 	-o "/tmp/copilot-chat-${VERSION}.vsix"
+# Linux:
+sha256sum "/tmp/copilot-chat-${VERSION}.vsix"
+# macOS:
 shasum -a 256 "/tmp/copilot-chat-${VERSION}.vsix"
 ```
 

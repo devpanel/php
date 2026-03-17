@@ -50,7 +50,9 @@ ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e
 #   curl -fsSL --compressed \
 #     "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/<ver>/vspackage" \
 #     -o copilot-chat-<ver>.vsix
-# Then run: sha256sum copilot-chat-<ver>.vsix
+# Then run one of (use the appropriate command for your platform):
+#   sha256sum copilot-chat-<ver>.vsix          # Linux
+#   shasum -a 256 copilot-chat-<ver>.vsix      # macOS
 # Update COPILOT_CHAT_PINNED_VERSION and COPILOT_CHAT_VSIX_SHA256 below
 # (see README for step-by-step instructions).
 ARG COPILOT_CHAT_PINNED_VERSION=0.26.7
