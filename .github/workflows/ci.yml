@@ -75,7 +75,7 @@ jobs:
   build-dockerfiles:
     name: Build and test PHP images
     runs-on: ubuntu-latest
-    needs: [lint-yaml, lint-shell, lint-dockerfile, preseed-artifacts]
+    needs: [lint-yaml, lint-shell, lint-dockerfile, verify-extension, verify-code-server]
     permissions:
       contents: read
       packages: read
