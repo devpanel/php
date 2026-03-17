@@ -110,13 +110,19 @@ fi
 #   GHCR_WRITABLE        false; registry cache write failures are non-fatal
 #                        (ignore-error=true).  GHA cache writes are unconditional
 #                        and unaffected by this flag.
-#   GITHUB_TOKEN         Forwarded so the downloader stage can call the GitHub
-#                        API to resolve CODESERVER_VERSION when not pinned.
-#   DOWNLOADS_DIR        Path to a pre-seeded artifacts directory (optional).
-#                        When set by CI to a runner-local directory populated by
-#                        actions/cache@v4, the downloader stage uses cached files
-#                        instead of re-downloading.  Defaults to
-#                        base/downloads-empty (empty committed placeholder).
+#   CODESERVER_VERSION   Version passed to the downloader stage.  Defaults to the
+#                        value in docker-bake.hcl when not set.  CI sets this from
+#                        the preseed-downloads composite action output.
+#   COPILOT_CHAT_VERSION Version passed to the downloader stage.  Defaults to the
+#                        value in docker-bake.hcl when not set.  CI sets this from
+#                        the preseed-downloads composite action output.
+#   DOWNLOADS_DIR        Path to a directory whose pre-downloaded/ subdirectory
+#                        contains pre-seeded artifacts.  When set by CI to a
+#                        runner-local directory populated by actions/cache@v4,
+#                        the downloader stage uses cached files instead of
+#                        re-downloading.  When empty (default), the Dockerfile's
+#                        'downloads' stage (FROM alpine:3 with an empty
+#                        /pre-downloaded dir) is used as the fallback.
 #
 # --load:
 #   Import built images into the local Docker daemon so that run-dockerfile.sh
@@ -131,8 +137,9 @@ LATEST_PHP_VERSION="$LATEST_PHP_VERSION" \
 PLATFORMS="$PLATFORMS" \
 CACHE_FROM_ENABLED="${CACHE_FROM_ENABLED:-false}" \
 GHCR_WRITABLE=false \
-GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
-DOWNLOADS_DIR="${DOWNLOADS_DIR:-base/downloads-empty}" \
+CODESERVER_VERSION="${CODESERVER_VERSION:-}" \
+COPILOT_CHAT_VERSION="${COPILOT_CHAT_VERSION:-}" \
+DOWNLOADS_DIR="${DOWNLOADS_DIR:-}" \
 docker buildx bake \
   --file "$REPO_ROOT/docker-bake.hcl" \
   --load

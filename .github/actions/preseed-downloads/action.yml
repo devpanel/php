@@ -1,0 +1,123 @@
+name: Pre-seed build downloads
+description: >
+  Resolve the latest compatible code-server and Copilot Chat versions, restore
+  previously downloaded files from the actions/cache, and download them on a
+  cache miss.  Files are placed in a pre-downloaded/ subdirectory of the output
+  directory so that docker-bake.hcl can pass the parent directory as the
+  'downloads' named context and the Dockerfile can bind-mount source=/pre-downloaded.
+
+inputs:
+  github_token:
+    description: GitHub token used for authenticated GitHub API calls during version resolution.
+    required: true
+
+outputs:
+  downloads_dir:
+    description: >
+      Path to the directory whose pre-downloaded/ subdirectory contains the
+      pre-seeded artifacts.  Pass as DOWNLOADS_DIR to docker buildx bake.
+    value: ${{ steps.set-dir.outputs.downloads_dir }}
+  codeserver_version:
+    description: Resolved code-server version (e.g. 4.99.4)
+    value: ${{ steps.resolve.outputs.codeserver_version }}
+  copilot_chat_version:
+    description: Resolved Copilot Chat version (e.g. 0.26.7)
+    value: ${{ steps.resolve.outputs.copilot_chat_version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set downloads directory
+      id: set-dir
+      shell: bash
+      run: echo "downloads_dir=${{ runner.temp }}/build-downloads" >> "$GITHUB_OUTPUT"
+
+    - name: Resolve artifact versions
+      id: resolve
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+        # Detect the latest stable code-server major-4 release.
+        CODESERVER_RELEASES_JSON=$(curl -fsSL --retry 3 --connect-timeout 30 \
+          -H 'Accept: application/vnd.github+json' \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H 'X-GitHub-Api-Version: 2022-11-28' \
+          'https://api.github.com/repos/coder/code-server/releases?per_page=100')
+        CODESERVER_VERSION=$(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
+          first(
+            .[] |
+            select(.draft==false and .prerelease==false) |
+            select(.tag_name | test("^v?4\\.[0-9]+\\.[0-9]+([-+].*)?$")) |
+            .tag_name | ltrimstr("v")
+          ) // ""
+        ')
+        [ -n "$CODESERVER_VERSION" ] || { echo "Failed to detect code-server version" >&2; exit 1; }
+
+        # Derive the VS Code version bundled with this code-server release
+        # (code-server 4.X.Y bundles VS Code 1.X.Y, e.g. 4.99.4 → 1.99.4).
+        VSCODE_VERSION="$(printf '%s' "$CODESERVER_VERSION" | sed 's/^[0-9][0-9]*\./1./')"
+
+        # Detect the latest stable Copilot Chat version whose engine requirement
+        # is satisfied by that VS Code version.  Stable versions have a patch
+        # component of at most 9 digits (excludes 10-digit YYYYMMDDNN pre-releases).
+        MARKETPLACE_JSON=$(curl -fsSL --retry 3 --connect-timeout 30 \
+          -X POST \
+          -H 'Content-Type: application/json' \
+          -H 'Accept: application/json;api-version=3.0-preview.1' \
+          -d '{"filters":[{"criteria":[{"filterType":7,"value":"GitHub.copilot-chat"}],"pageSize":100}],"flags":17}' \
+          'https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery')
+        COPILOT_CHAT_VERSION=$(printf '%s' "$MARKETPLACE_JSON" | jq -r \
+          --arg vscode "$VSCODE_VERSION" '
+            def vparts: split(".") | map(tonumber? // 0);
+            first(
+              .results[0].extensions[0].versions[]? |
+              select(.version | test("^[0-9]+\\.[0-9]+\\.[0-9]{1,9}$")) |
+              (.properties // [] |
+               map(select(.key == "Microsoft.VisualStudio.Code.Engine")) |
+               .[0].value // "") as $engine |
+              select($engine != "") |
+              ($engine | gsub("^[^0-9]+"; "") | split("-")[0]) as $min_vscode |
+              select(($vscode | vparts) >= ($min_vscode | vparts)) |
+              .version
+            ) // ""
+          ')
+        [ -n "$COPILOT_CHAT_VERSION" ] || { echo "Failed to detect Copilot Chat version" >&2; exit 1; }
+
+        echo "codeserver_version=${CODESERVER_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "copilot_chat_version=${COPILOT_CHAT_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "Resolved: code-server=${CODESERVER_VERSION}  VS Code=${VSCODE_VERSION}  copilot-chat=${COPILOT_CHAT_VERSION}"
+
+    - name: Restore pre-seeded downloads from cache
+      id: cache-downloads
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.set-dir.outputs.downloads_dir }}
+        key: build-downloads-cs-${{ steps.resolve.outputs.codeserver_version }}-cc-${{ steps.resolve.outputs.copilot_chat_version }}
+
+    - name: Pre-seed downloads (cache miss only)
+      if: steps.cache-downloads.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
+        COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
+        PRE_DOWNLOADED_DIR="${{ steps.set-dir.outputs.downloads_dir }}/pre-downloaded"
+        mkdir -p "$PRE_DOWNLOADED_DIR"
+
+        # code-server .deb for both architectures (the bake build targets
+        # linux/amd64 and linux/arm64; each arch looks up its own .deb).
+        for ARCH in amd64 arm64; do
+          DEB="code-server_${CODESERVER_VERSION}_${ARCH}.deb"
+          echo "Downloading ${DEB}"
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
+            "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/${DEB}" \
+            -o "${PRE_DOWNLOADED_DIR}/${DEB}"
+        done
+
+        # Copilot Chat VSIX (architecture-independent).
+        VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"
+        echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
+        curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
+          "${VSIX_URL}" -o "${PRE_DOWNLOADED_DIR}/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
+

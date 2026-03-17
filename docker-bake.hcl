@@ -56,16 +56,17 @@ variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "VERSIONS_BASE"                 { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "VERSIONS_SECURE"               { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "LATEST_PHP_VERSION"            { default = "8.3"                     }
-variable "CODESERVER_VERSION"            { default = ""                        }
-variable "COPILOT_CHAT_VERSION"          { default = ""                        }
+variable "CODESERVER_VERSION"            { default = "4.99.4"                  }
+variable "COPILOT_CHAT_VERSION"          { default = "0.26.7"                  }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
-# DOWNLOADS_DIR: path to a directory of pre-seeded build artifacts (code-server
-# .deb files and Copilot Chat VSIX).  When set by CI to a runner-local path
-# pre-populated by actions/cache@v4, the downloader stage bind-mounts it and
-# uses any matching files instead of downloading from the internet.  Defaults
-# to base/downloads-empty (committed empty directory) so standalone builds
-# always have a valid context and simply fall through to the network path.
-variable "DOWNLOADS_DIR"                 { default = "base/downloads-empty"    }
+# DOWNLOADS_DIR: path to a directory whose pre-downloaded/ subdirectory contains
+# pre-seeded build artifacts (code-server .deb files and Copilot Chat VSIX).
+# When set by CI to a runner-local path pre-populated by actions/cache@v4, the
+# downloader stage bind-mounts /pre-downloaded from it instead of downloading.
+# When empty (default), no named context override is provided and the Dockerfile's
+# 'downloads' stage (FROM alpine:3 with an empty /pre-downloaded dir) is used,
+# causing all downloads to fall through to the normal network path.
+variable "DOWNLOADS_DIR"                 { default = ""                        }
 variable "CACHE_FROM_ENABLED"            { default = "true"                    }
 # GHCR_WRITABLE is set by the "Check GHCR write access" workflow step.
 # "true"  → GHCR cache writes proceed without ignore-error: any failure is a
@@ -143,25 +144,17 @@ target "downloader" {
   context    = "base"
   target     = "downloader"
   platforms  = split(",", PLATFORMS)
-  contexts = {
-    # Named context for pre-seeded artifacts (code-server .deb, Copilot Chat VSIX).
-    # Overridden by CI when DOWNLOADS_DIR points to a runner-local directory
-    # pre-populated by actions/cache@v4.  Defaults to base/downloads-empty (an
-    # empty committed directory) so standalone builds silently fall through to
-    # the normal network download path.
-    downloads = DOWNLOADS_DIR
-  }
+  # When DOWNLOADS_DIR is set, override the 'downloads' named context with that
+  # directory so Docker uses pre-seeded files instead of downloading from the
+  # internet.  When empty (default), no override is provided and the Dockerfile's
+  # 'downloads' stage (FROM alpine:3 with an empty /pre-downloaded dir) is used,
+  # causing all downloads to fall through to the normal network path.
+  contexts = DOWNLOADS_DIR != "" ? { downloads = DOWNLOADS_DIR } : {}
   args = {
     LATEST_PHP_VERSION   = LATEST_PHP_VERSION
     CODESERVER_VERSION   = CODESERVER_VERSION
-    # Pass COPILOT_CHAT_VERSION as-is.  The default is "" (see variable above),
-    # which causes the Dockerfile's auto-detection path to find the latest
-    # compatible stable Copilot Chat version at build time.  Set this variable
-    # to a specific version string to pin an exact release (e.g. in local
-    # test builds that must avoid the VS Marketplace API).
     COPILOT_CHAT_VERSION = COPILOT_CHAT_VERSION
   }
-  secret     = ["id=github_token,env=GITHUB_TOKEN"]
   tags       = ["${GHCR_REPO}:downloader${TAG_SUFFIX}"]
   cache-from = cache_from_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}", "downloader")
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}", "downloader")
