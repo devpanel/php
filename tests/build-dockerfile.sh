@@ -125,6 +125,18 @@ fi
 #                        re-downloading.  When empty (default), the Dockerfile's
 #                        'downloads' stage (FROM alpine:3 with an empty
 #                        /pre-downloaded dir) is used as the fallback.
+#   CODESERVER_DEB_SHA256_AMD64
+#                        SHA256 of the code-server amd64 .deb for the resolved
+#                        version.  When unset, the ARG default in base/Dockerfile
+#                        is used.  CI sets this from the preseed-downloads action
+#                        output (computed after download or cache restore).
+#   CODESERVER_DEB_SHA256_ARM64
+#                        Same as above for the arm64 .deb.
+#   COPILOT_CHAT_VSIX_SHA256
+#                        SHA256 of the Copilot Chat .vsix for the resolved
+#                        version.  When unset, the ARG default in base/Dockerfile
+#                        is used.  CI sets this from the preseed-downloads action
+#                        output.
 #
 # --load:
 #   Import built images into the local Docker daemon so that run-dockerfile.sh
@@ -142,7 +154,7 @@ BAKE_ENV=(
   GHCR_WRITABLE=false
 )
 # Only forward the optional version/download/hash variables when they are set
-# to a non-empty value; docker-bake.hcl defaults all five to "" and omits them
+# to a non-empty value; docker-bake.hcl defaults all six to "" and omits them
 # as build args when empty, so the Dockerfile ARG defaults are the fallback.
 [ -n "${CODESERVER_VERSION:-}" ]          && BAKE_ENV+=( "CODESERVER_VERSION=${CODESERVER_VERSION}" )
 [ -n "${COPILOT_CHAT_VERSION:-}" ]        && BAKE_ENV+=( "COPILOT_CHAT_VERSION=${COPILOT_CHAT_VERSION}" )
