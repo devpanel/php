@@ -127,10 +127,41 @@ function "cache_to" {
 #   "false" → write with ignore-error=true: the pre-flight check already warned
 #              that GHCR is unwritable; errors are still visible in the bake log
 #              but must not abort a build that would otherwise succeed.
+#
+# Cross-branch cache sharing:
+#   actions/cache entries are scoped to the current branch + its base branches
+#   + the default branch, so sibling branches cannot share each other's
+#   actions/cache entries.  The GHCR registry cache is not subject to that
+#   restriction: any branch with pull access to GHCR can read any tag.
+#   cache_from_registry therefore always reads from the branch-specific ref
+#   (the primary source) and, when TAG_SUFFIX is non-empty (i.e. not on main),
+#   also reads from main's cache ref (the same ref with TAG_SUFFIX stripped).
+#   This means any intermediate layer that was previously built and cached by
+#   a main-branch CI run is immediately reusable on any other branch, even for
+#   sibling branches that cannot access each other's actions/cache entries.
+#
+# main_cache_ref: strips TAG_SUFFIX from the image tag portion of a GHCR ref,
+# yielding the main-branch equivalent ref.  A greedy regex extracts everything
+# up to the last ":" as the registry+path component and everything after as the
+# tag, so refs with a port in the hostname (e.g. localhost:5000/repo:tag) are
+# handled correctly.  The TAG_SUFFIX is appended once by the detect step, so a
+# plain replace on the tag portion always removes exactly one occurrence.
+
+function "main_cache_ref" {
+  params = [ref]
+  result = join(":", [
+    regex("^(.+):([^:]+)$", ref)[0],
+    replace(regex("^(.+):([^:]+)$", ref)[1], TAG_SUFFIX, "")
+  ])
+}
 
 function "cache_from_registry" {
   params = [ref, scope]
-  result = CACHE_FROM_ENABLED == "true" ? concat(["type=registry,ref=${ref}"], cache_from(scope)) : []
+  result = CACHE_FROM_ENABLED == "true" ? concat(
+    ["type=registry,ref=${ref}"],
+    TAG_SUFFIX != "" ? ["type=registry,ref=${main_cache_ref(ref)}"] : [],
+    cache_from(scope)
+  ) : []
 }
 
 function "cache_to_registry" {
