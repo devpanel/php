@@ -289,8 +289,9 @@ for setup instructions.
 
 ## Code-server artifact pinning
 
-`base/Dockerfile` files define `CODESERVER_PINNED_HASH_VERSION` (currently `4.99.4`) and use it as the default `CODESERVER_VERSION`.
+`base/Dockerfile` defines `CODESERVER_PINNED_HASH_VERSION` (currently `4.99.4`) and uses it as the default `CODESERVER_VERSION`.
 Checksum verification is applied when `CODESERVER_VERSION` matches `CODESERVER_PINNED_HASH_VERSION`.
+The CI "Verify code-server .deb hashes" job independently downloads both platform packages and confirms they match the hashes stored in the Dockerfile.
 
 For the pinned hash version, keep both hashes in sync:
 
@@ -311,54 +312,96 @@ for arch in amd64 arm64; do
 done
 ```
 
-Then update each `*/base/Dockerfile` so the version condition and both SHA256 values stay in sync.
-
-Example pattern used in `base/Dockerfile` files:
-
-```dockerfile
-if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
-	case "$DEB_ARCH" in \
-		amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
-		arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
-	esac; \
-	echo "$DEB_SHA256  /tmp/code-server.deb" | sha256sum -c -; \
-fi; \
-dpkg -i /tmp/code-server.deb
-```
+Then update `CODESERVER_PINNED_HASH_VERSION`, `CODESERVER_DEB_SHA256_AMD64`, and `CODESERVER_DEB_SHA256_ARM64` in `base/Dockerfile`.
 
 ## GitHub Copilot Chat extension pinning
 
 GitHub Copilot Chat is not available in the Open VSX marketplace used by
 code-server, so `base/Dockerfile` downloads it directly from the Visual Studio
-Marketplace at image-build time.
+Marketplace at image-build time.  Only **stable** releases are used.
 
-The pinned version (`COPILOT_CHAT_PINNED_VERSION`, currently `0.26.2025040204`)
-was chosen because it requires VS Code `^1.99.0`, making it compatible with
-code-server `4.99.4` (which bundles VS Code `1.99.4`).
+### How the pinned version is chosen
 
-When upgrading to a new code-server version, find a compatible Copilot Chat
-release by checking the `engines.vscode` field in the extension's
-[`package.json`](https://github.com/microsoft/vscode-copilot-chat) (available
-for versions v0.29.0 and later; for earlier versions use the
-[VsixHub version history](https://www.vsixhub.com/history/143611/)).
-Pick the newest version whose `engines.vscode` minimum is &le; the VS Code version
-bundled with the target code-server release.
+The Copilot Chat extension publishes to two channels on the VS Marketplace:
 
-To enable integrity checking, compute the SHA256 of the VSIX for the chosen
-version and set `COPILOT_CHAT_VSIX_SHA256` in `base/Dockerfile`:
+| Channel | Version format | Example | Where visible |
+|---|---|---|---|
+| **Stable** (release) | `MAJOR.MINOR.PATCH` | `0.26.7` | VS Code desktop "Version History" |
+| **Pre-release** | `MAJOR.MINOR.YYYYMMDDNN` | `0.26.2025040204` | Marketplace API (`flags=17`) only |
+
+The "Version History" panel in the VS Code desktop app shows stable patch releases
+(e.g. `0.26.0` through `0.26.7`).  Pre-release builds use a date-stamped third
+component (`YYYYMMDDNN` = year + month + day + sequence), so `0.26.2025040204`
+is build #04 on 2025-04-02.  Because this date-derived number is much larger
+than the stable patch counter, and the Marketplace API returns all versions
+newest-first by publish date (regardless of channel), pre-release builds appear
+before their stable equivalents in the API response.
+
+Each release declares a minimum VS Code engine version in its
+`Microsoft.VisualStudio.Code.Engine` property (e.g. `^1.99.0`).
+code-server `4.X.Y` bundles VS Code `1.X.Y` (e.g. `4.99.4` → VS Code
+`1.99.4`), so the correct pinned version is **the most recent stable Copilot
+Chat release whose engine minimum is ≤ the VS Code version bundled in the
+target code-server release**.
+
+The current pin `0.26.7` is the latest stable release compatible with
+code-server `4.99.4` (VS Code `1.99.4`, engine requirement `^1.99.0`).
+Versions in the `0.27.x` series and later require VS Code `^1.100.0` or higher.
+
+### Finding the right version for a new code-server release
+
+1. Determine the VS Code version bundled with the target code-server release
+   (e.g. code-server `4.99.4` → VS Code `1.99.4`).
+2. Query the VS Marketplace extensionquery API for `GitHub.copilot-chat`,
+   filtering for stable versions only (patch component 1–9 digits, excluding 10-digit pre-release date-stamps):
+   ```bash
+   curl -fsSL -X POST \
+     -H 'Content-Type: application/json' \
+     -H 'Accept: application/json;api-version=3.0-preview.1' \
+     -d '{"filters":[{"criteria":[{"filterType":7,"value":"GitHub.copilot-chat"}],"pageSize":100}],"flags":17}' \
+     'https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery' \
+   | python3 -c "
+   import json, sys, re
+   vscode = sys.argv[1]
+   data = json.load(sys.stdin)
+   for v in data['results'][0]['extensions'][0]['versions']:
+       ver = v.get('version','')
+       # Skip pre-release builds (10-digit date-stamped patch component).
+       if not re.match(r'^\d+\.\d+\.\d{1,9}$', ver): continue
+       engine = next((p['value'] for p in v.get('properties',[])
+                      if p['key']=='Microsoft.VisualStudio.Code.Engine'), '')
+       eng_min = engine.lstrip('^~>=').split('-')[0]
+       if eng_min and tuple(int(x) for x in vscode.split('.')) >= \
+                      tuple(int(x) for x in eng_min.split('.')):
+           print(ver); break
+   " 1.99.4
+   ```
+3. For versions `v0.29.0` and later the engine requirement is also visible in
+   the extension's
+   [`package.json`](https://github.com/microsoft/vscode-copilot-chat) on GitHub.
+   For earlier versions (before the repository was open-sourced in June 2025)
+   use the [VsixHub version history](https://www.vsixhub.com/history/143611/).
+
+### Computing and updating the SHA256
+
+Once you have the correct version string, download the VSIX with `--compressed` (the
+Marketplace serves the VSIX with gzip transfer encoding) and compute its SHA256:
 
 ```bash
-VERSION=0.26.2025040204
-TMPDIR=$(mktemp -d)
-curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
+VERSION=0.26.7
+curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
 	"https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${VERSION}/vspackage" \
-	-o "${TMPDIR}/copilot-chat-${VERSION}.vsix"
-shasum -a 256 "${TMPDIR}/copilot-chat-${VERSION}.vsix"
-rm -rf "${TMPDIR}"
+	-o "/tmp/copilot-chat-${VERSION}.vsix"
+# Linux:
+sha256sum "/tmp/copilot-chat-${VERSION}.vsix"
+# macOS:
+shasum -a 256 "/tmp/copilot-chat-${VERSION}.vsix"
 ```
 
 Then update `COPILOT_CHAT_PINNED_VERSION` and `COPILOT_CHAT_VSIX_SHA256` in
-`base/Dockerfile`.
+`base/Dockerfile`.  The CI "Verify Copilot Chat VSIX" job independently downloads
+the pinned VSIX from the same URL, validates it is a valid ZIP, and verifies the
+SHA256 on every CI run.
 
 The VSIX is architecture-independent, so only one hash value is needed (unlike
 code-server which ships separate `amd64`/`arm64` packages).

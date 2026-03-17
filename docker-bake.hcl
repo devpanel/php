@@ -139,6 +139,11 @@ target "downloader" {
   args = {
     LATEST_PHP_VERSION   = LATEST_PHP_VERSION
     CODESERVER_VERSION   = CODESERVER_VERSION
+    # Pass COPILOT_CHAT_VERSION as-is.  The default is "" (see variable above),
+    # which causes the Dockerfile's auto-detection path to find the latest
+    # compatible stable Copilot Chat version at build time.  Set this variable
+    # to a specific version string to pin an exact release (e.g. in local
+    # test builds that must avoid the VS Marketplace API).
     COPILOT_CHAT_VERSION = COPILOT_CHAT_VERSION
   }
   secret     = ["id=github_token,env=GITHUB_TOKEN"]
