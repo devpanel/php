@@ -237,8 +237,8 @@ ENV CODES_ENABLE=yes
 # resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && for i in $(seq 1 3); do \
-      apt-get update && apt-get upgrade -y \
-        && apt-get install -y --no-install-recommends \
+      apt-get update && apt-get upgrade -y --fix-missing \
+        && apt-get install -y --fix-missing --no-install-recommends \
           apt-utils \
           sendmail-bin \
           sendmail \

@@ -122,7 +122,7 @@ jobs:
             "${VSIX_URL}" -o "$RUNNER_TEMP/copilot-chat.vsix"
 
       - name: Save Copilot Chat VSIX to cache
-        if: steps.cache-vsix.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        if: steps.cache-vsix.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/copilot-chat.vsix
@@ -181,7 +181,7 @@ jobs:
           done
 
       - name: Save code-server .deb files to cache
-        if: steps.cache-debs.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        if: steps.cache-debs.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/code-server-debs

@@ -104,13 +104,14 @@ runs:
     # verify-extension CI jobs so that every job in the same workflow can share
     # the same cache entry rather than downloading independently.
     #
-    # Use actions/cache/restore (lookup only) + a conditional actions/cache/save
-    # so that cache entries are only written from branch pushes (not PRs).
-    # GitHub Actions scopes cache entries to the ref that creates them; entries
-    # written during a pull_request run are scoped to refs/pull/N/merge and are
-    # NOT accessible from other PRs.  Saving only from branch refs ensures the
-    # entry is stored under refs/heads/<branch> and is therefore accessible by
-    # all PRs targeting that branch, eliminating duplicate per-PR downloads.
+    # Use actions/cache/restore (lookup only) + actions/cache/save so that
+    # cache entries are always written.  On push events the entry is stored
+    # under refs/heads/<branch> and is accessible by all PRs targeting that
+    # branch.  On pull_request events the entry is stored under
+    # refs/pull/N/merge (PR-specific), which at minimum means re-runs of the
+    # same PR skip the download.  GitHub Actions does not allow a PR workflow
+    # to write under refs/heads/<PR-source-branch>, so per-branch sharing
+    # across PRs is only possible via push-event-seeded caches.
     - name: Restore code-server debs from cache
       id: cache-cs
       uses: actions/cache/restore@v5
@@ -147,7 +148,7 @@ runs:
         done
 
     - name: Save code-server debs to cache
-      if: steps.cache-cs.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+      if: steps.cache-cs.outputs.cache-hit != 'true'
       uses: actions/cache/save@v5
       with:
         path: ${{ runner.temp }}/code-server-debs
@@ -169,7 +170,7 @@ runs:
           { echo "ERROR: Downloaded VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
 
     - name: Save Copilot Chat VSIX to cache
-      if: steps.cache-cc.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+      if: steps.cache-cc.outputs.cache-hit != 'true'
       uses: actions/cache/save@v5
       with:
         path: ${{ runner.temp }}/copilot-chat.vsix
