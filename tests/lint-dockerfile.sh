@@ -111,8 +111,14 @@ PYEOF
 # Update baseline if requested
 # ---------------------------------------------------------------------------
 if [[ "$UPDATE_BASELINE" == true ]]; then
-  cp "$TMP_CURRENT" "$BASELINE"
-  echo "Baseline updated: $BASELINE"
+  count=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$TMP_CURRENT")
+  if [[ "$count" == "0" ]]; then
+    rm -f "$BASELINE"
+    echo "No violations found; baseline file removed: $BASELINE"
+  else
+    cp "$TMP_CURRENT" "$BASELINE"
+    echo "Baseline updated: $BASELINE"
+  fi
   exit 0
 fi
 
