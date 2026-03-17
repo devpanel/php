@@ -162,7 +162,14 @@ BAKE_ENV=(
 [ -n "${CODESERVER_DEB_SHA256_AMD64:-}" ] && BAKE_ENV+=( "CODESERVER_DEB_SHA256_AMD64=${CODESERVER_DEB_SHA256_AMD64}" )
 [ -n "${CODESERVER_DEB_SHA256_ARM64:-}" ] && BAKE_ENV+=( "CODESERVER_DEB_SHA256_ARM64=${CODESERVER_DEB_SHA256_ARM64}" )
 [ -n "${COPILOT_CHAT_VSIX_SHA256:-}" ]    && BAKE_ENV+=( "COPILOT_CHAT_VSIX_SHA256=${COPILOT_CHAT_VSIX_SHA256}" )
+# BUILDX_BAKE_ENTITLEMENTS_FS=0 bypasses the filesystem entitlement check
+# introduced in buildx v0.32.1 for bake files that reference local filesystem
+# paths as named contexts (i.e. when DOWNLOADS_DIR is set).  The check is
+# non-deterministic — the same invocation passes or fails across runner
+# environments without any code change — so we disable it here to match the
+# behaviour of the build-php-images composite action.
 env "${BAKE_ENV[@]}" \
+BUILDX_BAKE_ENTITLEMENTS_FS=0 \
 docker buildx bake \
   --file "$REPO_ROOT/docker-bake.hcl" \
   --load
