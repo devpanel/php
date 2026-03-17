@@ -94,7 +94,7 @@ Example `TODO.md` structure:
 ## Conventions
 
 ### General
-- All text files must end with a single blank line (a trailing newline). The baseline-generating lint scripts (`tests/lint-dockerfile.sh`, `tests/lint-shell.sh`, `tests/lint-yaml.sh`) enforce this by appending `\n` after every generated JSON baseline.
+- All text files must end with a trailing newline. The baseline-generating lint scripts (`tests/lint-dockerfile.sh`, `tests/lint-shell.sh`, `tests/lint-yaml.sh`) enforce this by appending `\n` after every generated JSON baseline.
 
 ### Dockerfile Style
 - Section headers use `#==` comments (e.g. `#== Install Composer`).
