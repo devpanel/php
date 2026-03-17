@@ -80,11 +80,24 @@ jobs:
 
   build:
     needs: prepare
-    uses: ./.github/workflows/build-php-images.yml
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    with:
-      before_sha: ${{ needs.prepare.outputs.before_sha }}
-      after_sha: ${{ github.sha }}
-    secrets: inherit
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          # Full history is needed when before_sha/after_sha are provided so
+          # that git diff can compare before_sha..after_sha.
+          fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
+
+      - name: Build PHP images
+        uses: ./.github/actions/build-php-images
+        with:
+          before_sha:          ${{ needs.prepare.outputs.before_sha }}
+          after_sha:           ${{ github.sha }}
+          dockerhub_username:  ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:     ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token:        ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token:          ${{ secrets.GHCR_TOKEN }}

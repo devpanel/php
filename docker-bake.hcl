@@ -14,7 +14,8 @@
 #   TAG_SUFFIX                    Image tag suffix                             ("" on main, "-rc" on develop)
 #   VERSIONS                      Space-separated PHP version dirs             ("7.4 8.0 8.1 8.2 8.3")
 #   LATEST_PHP_VERSION            Highest PHP version dir in the repo          (8.3)
-#   CODESERVER_VERSION            code-server version to pin ("" = auto)       ("")
+#   CODESERVER_VERSION            code-server version ("" = use Dockerfile default) ("")
+#   COPILOT_CHAT_VERSION          Copilot Chat VSIX version ("" = use Dockerfile default) ("")
 #   CORERULESET_VERSION           ModSecurity CRS version                      (3.3.5)
 #   CACHE_FROM_ENABLED            Read from GHA/GHCR cache ("true"/"false")    ("true")
 #   PLATFORMS                     Comma-separated target platforms             ("linux/amd64,linux/arm64")
@@ -55,8 +56,20 @@ variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "VERSIONS_BASE"                 { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "VERSIONS_SECURE"               { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "LATEST_PHP_VERSION"            { default = "8.3"                     }
-variable "CODESERVER_VERSION"            { default = ""                        }
+variable "CODESERVER_VERSION"            { default = ""                                                     }
+variable "CODESERVER_DEB_SHA256_AMD64"   { default = ""                                                     }
+variable "CODESERVER_DEB_SHA256_ARM64"   { default = ""                                                     }
+variable "COPILOT_CHAT_VERSION"          { default = ""                                                     }
+variable "COPILOT_CHAT_VSIX_SHA256"      { default = ""                                                     }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
+# DOWNLOADS_DIR: path to a directory whose pre-downloaded/ subdirectory contains
+# pre-seeded build artifacts (code-server .deb files and Copilot Chat VSIX).
+# When set by CI to a runner-local path pre-populated by actions/cache@v5, the
+# downloader stage bind-mounts /pre-downloaded from it instead of downloading.
+# When empty (default), no named context override is provided and the Dockerfile's
+# 'downloads' stage (FROM alpine:3 with an empty /pre-downloaded dir) is used,
+# causing all downloads to fall through to the normal network path.
+variable "DOWNLOADS_DIR"                 { default = ""                        }
 variable "CACHE_FROM_ENABLED"            { default = "true"                    }
 # GHCR_WRITABLE is set by the "Check GHCR write access" workflow step.
 # "true"  → GHCR cache writes proceed without ignore-error: any failure is a
@@ -114,10 +127,45 @@ function "cache_to" {
 #   "false" → write with ignore-error=true: the pre-flight check already warned
 #              that GHCR is unwritable; errors are still visible in the bake log
 #              but must not abort a build that would otherwise succeed.
+#
+# Cross-branch cache sharing:
+#   actions/cache entries are scoped to the current branch + its base branches
+#   + the default branch, so sibling branches cannot share each other's
+#   actions/cache entries.  The GHCR registry cache is not subject to that
+#   restriction: any branch with pull access to GHCR can read any tag.
+#   cache_from_registry therefore always reads from the branch-specific ref
+#   (the primary source) and, when TAG_SUFFIX is non-empty (i.e. not on main),
+#   also reads from main's cache ref (the same ref with TAG_SUFFIX stripped).
+#   This means any intermediate layer that was previously built and cached by
+#   a main-branch CI run is immediately reusable on any other branch, even for
+#   sibling branches that cannot access each other's actions/cache entries.
+#
+# main_cache_ref: strips TAG_SUFFIX from the image tag portion of a GHCR ref,
+# yielding the main-branch equivalent ref.  A greedy regex extracts everything
+# up to the last ":" as the registry+path component and everything after as the
+# tag, so refs with a port in the hostname (e.g. localhost:5000/repo:tag) are
+# handled correctly.  The TAG_SUFFIX is appended once by the detect step, so a
+# plain replace on the tag portion always removes exactly one occurrence.
+
+function "main_cache_ref" {
+  params = [ref]
+  # Strips TAG_SUFFIX from only the tag portion of ref (everything after the
+  # last ":"), keeping the registry/path portion unchanged even if it happens
+  # to contain the same string.  HCL functions have no local variables, so
+  # regex() is evaluated twice; the identical calls are intentional.
+  result = join(":", [
+    regex("^(.+):([^:]+)$", ref)[0],
+    replace(regex("^(.+):([^:]+)$", ref)[1], TAG_SUFFIX, "")
+  ])
+}
 
 function "cache_from_registry" {
   params = [ref, scope]
-  result = CACHE_FROM_ENABLED == "true" ? concat(["type=registry,ref=${ref}"], cache_from(scope)) : []
+  result = CACHE_FROM_ENABLED == "true" ? concat(
+    ["type=registry,ref=${ref}"],
+    TAG_SUFFIX != "" ? ["type=registry,ref=${main_cache_ref(ref)}"] : [],
+    cache_from(scope)
+  ) : []
 }
 
 function "cache_to_registry" {
@@ -134,11 +182,20 @@ target "downloader" {
   context    = "base"
   target     = "downloader"
   platforms  = split(",", PLATFORMS)
-  args = {
-    LATEST_PHP_VERSION = LATEST_PHP_VERSION
-    CODESERVER_VERSION = CODESERVER_VERSION
-  }
-  secret     = ["id=github_token,env=GITHUB_TOKEN"]
+  # When DOWNLOADS_DIR is set, override the 'downloads' named context with that
+  # directory so Docker uses pre-seeded files instead of downloading from the
+  # internet.  When empty (default), no override is provided and the Dockerfile's
+  # 'downloads' stage (FROM alpine:3 with an empty /pre-downloaded dir) is used,
+  # causing all downloads to fall through to the normal network path.
+  contexts = DOWNLOADS_DIR != "" ? { downloads = DOWNLOADS_DIR } : {}
+  args = merge(
+    { LATEST_PHP_VERSION = LATEST_PHP_VERSION },
+    CODESERVER_VERSION          != "" ? { CODESERVER_VERSION          = CODESERVER_VERSION          } : {},
+    CODESERVER_DEB_SHA256_AMD64 != "" ? { CODESERVER_DEB_SHA256_AMD64 = CODESERVER_DEB_SHA256_AMD64 } : {},
+    CODESERVER_DEB_SHA256_ARM64 != "" ? { CODESERVER_DEB_SHA256_ARM64 = CODESERVER_DEB_SHA256_ARM64 } : {},
+    COPILOT_CHAT_VERSION        != "" ? { COPILOT_CHAT_VERSION        = COPILOT_CHAT_VERSION        } : {},
+    COPILOT_CHAT_VSIX_SHA256    != "" ? { COPILOT_CHAT_VSIX_SHA256    = COPILOT_CHAT_VSIX_SHA256    } : {}
+  )
   tags       = ["${GHCR_REPO}:downloader${TAG_SUFFIX}"]
   cache-from = cache_from_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}", "downloader")
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}", "downloader")

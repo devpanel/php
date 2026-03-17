@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tests/lint-shell.sh — Run shellcheck (style+) on all shell scripts and
-# compare against the stored baseline.  Only *new* violations cause failure.
+# compare against the stored baseline.  Any deviation from the baseline counts
+# (increase or decrease) causes failure — the baseline must match exactly.
 #
 # Options:
 #   --files <f1> [f2 ...]   Lint specific files instead of all scripts.
@@ -91,6 +92,7 @@ for f in files:
 
 with open(current_path, "w") as fh:
     json.dump(counts, fh, indent=2, sort_keys=True)
+    fh.write("\n")
 
 if parse_error:
     sys.exit(1)
@@ -100,8 +102,21 @@ PYEOF
 # Update baseline if requested
 # ---------------------------------------------------------------------------
 if [[ "$UPDATE_BASELINE" == true ]]; then
+  count=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$TMP_CURRENT")
   cp "$TMP_CURRENT" "$BASELINE"
-  echo "Baseline updated: $BASELINE"
+  if [[ "$count" == "0" ]]; then
+    echo "All violations resolved. Baseline written as empty: $BASELINE"
+    BASELINE_REL="${BASELINE#"${REPO_ROOT}/"}"
+    TODO_ENTRY="- [ ] Remove shellcheck baseline comparison: delete ${BASELINE_REL} and the baseline comparison logic from tests/lint-shell.sh, and update the script to fail when shellcheck reports any violations (fail when the generated JSON is non-empty). After that, any new shellcheck violation will be an immediate CI failure."
+    if ! grep -qFe "$TODO_ENTRY" "${REPO_ROOT}/TODO.md" 2>/dev/null; then
+      echo "$TODO_ENTRY" >> "${REPO_ROOT}/TODO.md"
+      echo "TODO entry appended to TODO.md — remove the baseline comparison for this linter entirely."
+    else
+      echo "TODO entry already present in TODO.md."
+    fi
+  else
+    echo "Baseline updated: $BASELINE"
+  fi
   exit 0
 fi
 

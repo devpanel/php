@@ -1,0 +1,455 @@
+name: Detect versions and build PHP images
+description: >
+  Detects which PHP versions to build (and which platforms to target), then
+  builds and pushes the images to Docker Hub and GHCR.
+
+  When before_sha and after_sha are provided, only the PHP versions whose
+  source files changed between those two commits are built.  Otherwise every
+  versioned directory is built.
+
+  The repository must be checked out by the calling job before this action
+  is invoked.  Pass fetch-depth: 0 when before_sha/after_sha are used so
+  that the git history required by detect-versions.sh is available.
+
+inputs:
+  before_sha:
+    description: >
+      Commit SHA before the push.  When provided together with after_sha,
+      only changed versions are built.
+    default: ''
+  after_sha:
+    description: >
+      Commit SHA after the push.  When provided together with before_sha,
+      only changed versions are built.
+    default: ''
+  cache_from_enabled:
+    description: Whether to read from cache (set to 'false' for a forced full rebuild)
+    default: 'true'
+  platforms_filter:
+    description: >
+      Optional comma-separated list of platforms (e.g. "linux/amd64").
+      When provided, the build is restricted to platforms that appear in
+      both the auto-detected list and this filter.
+    default: 'linux/amd64,linux/arm64'
+  dockerhub_username:
+    description: Docker Hub username for image push authentication.
+    required: true
+  dockerhub_token:
+    description: Docker Hub token for image push authentication.
+    required: true
+  github_token:
+    description: >
+      GITHUB_TOKEN for GHCR login, GHCR write-access check, and download
+      pre-seeding.  Use secrets.GITHUB_TOKEN from the calling workflow.
+    required: true
+  ghcr_token:
+    description: >
+      Optional classic Personal Access Token with the write:packages scope.
+      When provided, this token is used instead of github_token for GHCR
+      login and write-access checks.  Required when the organisation's
+      Actions token policy restricts GITHUB_TOKEN from writing to packages.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # ── Detect versions and platforms ────────────────────────────────────────
+    - name: Detect versions and platforms
+      id: detect
+      shell: bash
+      env:
+        BEFORE_SHA: ${{ inputs.before_sha }}
+        AFTER_SHA:  ${{ inputs.after_sha }}
+        PLATFORMS_FILTER: ${{ inputs.platforms_filter }}
+        REF:        ${{ github.ref }}
+        REF_NAME:   ${{ github.ref_name }}
+      run: |
+        set -euo pipefail
+
+        if [[ "${REF}" == "refs/heads/main" ]]; then
+          TAG_SUFFIX=""
+        elif [[ "${REF}" == "refs/heads/develop" ]]; then
+          TAG_SUFFIX="-rc"
+        else
+          TAG_SUFFIX="-${REF_NAME//\//-}"
+        fi
+
+        # Collect all versioned directories (numeric names), sorted by version.
+        LATEST_PHP_VERSION=""
+        while IFS= read -r VER; do
+          LATEST_PHP_VERSION="$VER"
+        done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*.[0-9]*' \
+                   | sed 's|./||' | sort -V)
+
+        if [[ -n "${BEFORE_SHA}" && -n "${AFTER_SHA}" ]]; then
+          # Delegate version detection to the shared script so that the same
+          # logic is used in CI and in the local test scripts.
+          VERSIONS_OUT=$(bash tests/detect-versions.sh \
+            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" | tr '\n' ' ' | xargs)
+          VERSIONS_BASE_OUT=$(bash tests/detect-versions.sh \
+            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage base | tr '\n' ' ' | xargs)
+          VERSIONS_SECURE_OUT=$(bash tests/detect-versions.sh \
+            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage secure | tr '\n' ' ' | xargs)
+        else
+          VERSIONS_OUT=$(bash tests/detect-versions.sh | tr '\n' ' ' | xargs)
+          # No SHA range — full rebuild: push all stages for all versions.
+          VERSIONS_BASE_OUT="$VERSIONS_OUT"
+          VERSIONS_SECURE_OUT="$VERSIONS_OUT"
+        fi
+
+        echo "tag_suffix=${TAG_SUFFIX}"                     >> "$GITHUB_OUTPUT"
+        echo "latest_php_version=${LATEST_PHP_VERSION}"     >> "$GITHUB_OUTPUT"
+        echo "versions=${VERSIONS_OUT}"                     >> "$GITHUB_OUTPUT"
+        echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
+        echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
+
+        # If no versions were selected for build, skip platform detection/filtering.
+        PLATFORMS_OUT=""
+        if [[ -z "$VERSIONS_OUT" ]]; then
+          echo "No PHP versions selected for build; skipping platform detection and filtering."
+        else
+          # Determine build platforms by inspecting every PHP base image
+          # manifest and keeping only the platforms supported by all versions.
+          PLATFORMS_INTERSECT=""
+          while IFS= read -r VER; do
+            PHP_MANIFEST=$(docker manifest inspect "php:${VER}-apache" 2>/dev/null || echo "")
+            VER_PLATFORMS=""
+            if [[ -n "$PHP_MANIFEST" ]]; then
+              VER_PLATFORMS=$(echo "$PHP_MANIFEST" \
+                | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
+                | sort | tr '\n' ',' | sed 's/,$//')
+            fi
+            # Skip versions whose manifest is unavailable.
+            [[ -z "$VER_PLATFORMS" ]] && continue
+            if [[ -z "$PLATFORMS_INTERSECT" ]]; then
+              PLATFORMS_INTERSECT="$VER_PLATFORMS"
+            else
+              # Keep only platforms present in both sets.
+              PLATFORMS_INTERSECT=$(comm -12 \
+                <(echo "$PLATFORMS_INTERSECT" | tr ',' '\n' | sort) \
+                <(echo "$VER_PLATFORMS"       | tr ',' '\n' | sort) \
+                | tr '\n' ',' | sed 's/,$//')
+            fi
+          done < <(echo "$VERSIONS_OUT" | tr ' ' '\n' | grep -v '^$')
+
+          # If versions were selected but no platforms were detected at all, fail with a clear error.
+          if [[ -z "$PLATFORMS_INTERSECT" ]]; then
+            echo "::error::Failed to detect any platforms for the selected PHP versions. 'docker manifest inspect' did not return a usable manifest for any candidate image."
+            exit 1
+          fi
+
+          PLATFORMS_OUT="$PLATFORMS_INTERSECT"
+
+          # Apply optional platforms_filter: keep detected platforms where the
+          # detected entry equals or starts with a filter entry (e.g. the filter
+          # value "linux/arm64" matches the manifest entry "linux/arm64/v8").
+          if [[ -n "${PLATFORMS_FILTER}" ]]; then
+            FILTERED_LIST=()
+            while IFS= read -r FILTER_PLAT; do
+              while IFS= read -r DETECTED_PLAT; do
+                if [[ "$DETECTED_PLAT" == "$FILTER_PLAT" || "$DETECTED_PLAT" == "$FILTER_PLAT/"* ]]; then
+                  FILTERED_LIST+=("$DETECTED_PLAT")
+                fi
+              done < <(echo "$PLATFORMS_OUT" | tr ',' '\n')
+            done < <(echo "${PLATFORMS_FILTER}" | tr ',' '\n')
+            PLATFORMS_OUT=$(printf '%s\n' "${FILTERED_LIST[@]+"${FILTERED_LIST[@]}"}" \
+              | sort -u | tr '\n' ',' | sed 's/,$//')
+            if [[ -z "$PLATFORMS_OUT" ]]; then
+              echo "::error::No detected platforms matched platforms_filter '${PLATFORMS_FILTER}'. Detected: ${PLATFORMS_INTERSECT}"
+              exit 1
+            fi
+          fi
+        fi
+
+        echo "platforms=${PLATFORMS_OUT}" >> "$GITHUB_OUTPUT"
+
+    # ── Build steps (skipped when no versions were detected) ─────────────────
+    - name: Login to Docker Hub
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      uses: docker/login-action@v4
+      with:
+        username: ${{ inputs.dockerhub_username }}
+        password: ${{ inputs.dockerhub_token }}
+
+    - name: Compute GHCR repository (lowercase)
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      id: ghcr
+      shell: bash
+      env:
+        REPO: ${{ github.repository }}
+      run: echo "repo=ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+    - name: Login to GitHub Container Registry
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.ghcr_token || inputs.github_token }}
+
+    - name: Check GHCR write access
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      id: check-ghcr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.ghcr_token || inputs.github_token }}
+        USING_GHCR_TOKEN: ${{ inputs.ghcr_token != '' }}
+        REPO: ${{ github.repository }}
+        ACTOR: ${{ github.actor }}
+      run: |
+        set -uo pipefail
+        REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
+        ORG=$(echo "${REPO}" | cut -d'/' -f1)
+
+        # Determine which credential is in use for accurate diagnostics.
+        # GHA expressions produce the string 'true'/'false', not bash booleans,
+        # so a string comparison is required here.
+        if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
+          AUTH_CRED_NAME="GHCR_TOKEN"
+        else
+          AUTH_CRED_NAME="GITHUB_TOKEN"
+        fi
+
+        NOTE="The build will still attempt GHCR cache writes with ignore-error=true; errors will be visible in the bake step log but will not abort the build."
+
+        # Use a temp netrc file so credentials are not exposed as command-line arguments.
+        # umask 0177 ensures the file is created with 0600 from the start (no race window).
+        NETRC=$(umask 0177 && mktemp)
+        # Ensure the netrc temp file is removed when this step's shell exits,
+        # regardless of which code path is taken.
+        trap 'rm -f "${NETRC}"' EXIT
+        printf 'machine ghcr.io login %s password %s\n' "${ACTOR}" "${GH_TOKEN}" > "${NETRC}"
+
+        # Capture both body and HTTP status from the token endpoint so failures are specific.
+        TOKEN_RESP=$(umask 0177 && mktemp)
+        TOKEN_HTTP=$(curl -s -o "${TOKEN_RESP}" -w "%{http_code}" --netrc-file "${NETRC}" \
+          "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:push" \
+          2>/dev/null || echo "000")
+        AUTH_JSON=$(cat "${TOKEN_RESP}" 2>/dev/null || true)
+        rm -f "${TOKEN_RESP}"
+
+        REG_TOKEN=$(printf '%s' "${AUTH_JSON}" | jq -r '.token // empty' 2>/dev/null || true)
+
+        if [[ -z "${REG_TOKEN}" ]]; then
+          case "${TOKEN_HTTP}" in
+            401)
+              REASON="${AUTH_CRED_NAME} was rejected by the GHCR token endpoint (HTTP 401): the token lacks the required write permissions."
+              echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
+              echo "writable=false" >> "$GITHUB_OUTPUT"
+              cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
+        ### ❌ GHCR cache write pre-check: failed
+
+        **Diagnosis:** ${AUTH_CRED_NAME} was rejected by the GHCR token endpoint (HTTP 401). The token lacks the required write permissions.
+
+        SUMMARY_EOF
+              if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
+                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+        **Fix:** Ensure the `GHCR_TOKEN` secret contains a valid [classic PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the `write:packages` scope. Classic PATs are required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry). If the token has expired, regenerate it at <https://github.com/settings/tokens> and update the `GHCR_TOKEN` secret.
+        SUMMARY_EOF
+              else
+                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+        **Fix:** Ensure the calling workflow job declares the following permission:
+
+        ```yaml
+        permissions:
+          packages: write
+        ```
+        SUMMARY_EOF
+              fi
+              echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            403)
+              # Probe read-only access: if a pull token succeeds, the credential is valid
+              # but write access is blocked by organisation policy; otherwise the token
+              # itself cannot reach the package at all.
+              PULL_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --netrc-file "${NETRC}" \
+                "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:pull" \
+                2>/dev/null || echo "000")
+              if [[ "${PULL_HTTP}" == "200" ]]; then
+                REASON="${AUTH_CRED_NAME} can read from GHCR but a push token was denied (HTTP 403). The organisation's Actions token policy likely restricts package writes."
+                echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
+                echo "writable=false" >> "$GITHUB_OUTPUT"
+                cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
+        ### ❌ GHCR cache write pre-check: failed
+
+        **Diagnosis:** ${AUTH_CRED_NAME} can read from GHCR (pull-scoped token succeeded) but a push-scoped token was denied (HTTP 403). This strongly indicates the **organisation's Actions token policy** restricts ${AUTH_CRED_NAME} from writing to packages.
+
+        **Option 1 — Organisation owner: allow workflow write permissions**
+        SUMMARY_EOF
+                cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
+        1. Open <https://github.com/organizations/${ORG}/settings/actions>
+        2. Scroll to **Workflow permissions**
+        3. Select **"Read and write permissions"** and save
+
+        See the GitHub docs: [Setting the permissions of the GITHUB\_TOKEN for your organisation](https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization#setting-the-permissions-of-the-github_token-for-your-organization)
+
+        **Option 2 — Repository admin: use a Personal Access Token (no org-owner access needed)**
+        SUMMARY_EOF
+                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+        > **Note:** A classic token is required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
+
+        1. Create a [Personal Access Token (classic)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the `write:packages` scope at <https://github.com/settings/tokens>
+        2. In this repository, go to **Settings → Secrets and variables → Actions**
+        3. Add or update the repository secret named **`GHCR_TOKEN`** and paste the PAT as the value
+        4. Re-run the workflow
+        SUMMARY_EOF
+                echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
+              else
+                REASON="${AUTH_CRED_NAME} was denied for both push (HTTP 403) and pull (HTTP ${PULL_HTTP}) scopes. The package ghcr.io/${REPO_LC} may not yet exist, may be private, or the organisation blocks all Actions token access to packages."
+                echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
+                echo "writable=false" >> "$GITHUB_OUTPUT"
+                cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
+        ### ❌ GHCR cache write pre-check: failed
+
+        **Diagnosis:** ${AUTH_CRED_NAME} was denied for both push-scoped (HTTP 403) and pull-scoped tokens. The package may not yet exist, may be private, or the organisation's token policy blocks all access.
+
+        **Steps to investigate:**
+        SUMMARY_EOF
+                cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
+        1. Check whether the package exists: <https://github.com/orgs/${ORG}/packages>
+        2. If the package does not yet exist, it will be created on first push — but write access must be granted first (see options below).
+        3. Check the organisation's Actions settings: <https://github.com/organizations/${ORG}/settings/actions> → **Workflow permissions**
+
+        See the GitHub docs: [Setting the permissions of the GITHUB\_TOKEN for your organisation](https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization#setting-the-permissions-of-the-github_token-for-your-organization)
+
+        **To unblock the build — Repository admin: use a Personal Access Token (no org-owner access needed)**
+
+        > **Note:** A classic token is required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
+
+        1. Create a [Personal Access Token (classic)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the \`write:packages\` scope at <https://github.com/settings/tokens>
+        2. In this repository, go to **Settings → Secrets and variables → Actions**
+        3. Add or update the repository secret named **\`GHCR_TOKEN\`** and paste the PAT as the value
+        4. Re-run the workflow
+        SUMMARY_EOF
+                echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
+              fi
+              ;;
+            *)
+              REASON="Could not obtain a GHCR push token for ghcr.io/${REPO_LC} (token endpoint returned HTTP ${TOKEN_HTTP})."
+              echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
+              echo "writable=false" >> "$GITHUB_OUTPUT"
+              echo "❌ **GHCR cache write pre-check:** failed — ${REASON} ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
+          exit 0
+        fi
+
+        # Probe write permission: initiate (and immediately abandon) a blob upload.
+        # Use a temp curl config file so the bearer token is not a command-line argument.
+        CFG=$(umask 0177 && mktemp)
+        printf 'header = "Authorization: Bearer %s"\n' "${REG_TOKEN}" > "${CFG}"
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+          -K "${CFG}" \
+          "https://ghcr.io/v2/${REPO_LC}/blobs/uploads/")
+        rm -f "${CFG}"
+
+        if [[ "${HTTP_STATUS}" == "202" || "${HTTP_STATUS}" == "201" ]]; then
+          echo "GHCR write access confirmed for ghcr.io/${REPO_LC}."
+          echo "writable=true" >> "$GITHUB_OUTPUT"
+          echo "✅ **GHCR cache write pre-check:** passed — intermediate-layer caches will be written to ghcr.io/${REPO_LC}." >> "$GITHUB_STEP_SUMMARY"
+        else
+          case "${HTTP_STATUS}" in
+            401)
+              REASON="${AUTH_CRED_NAME} was rejected when initiating a GHCR blob upload (HTTP 401): the token lacks the required write permissions."
+              echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
+              echo "writable=false" >> "$GITHUB_OUTPUT"
+              cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
+        ### ❌ GHCR cache write pre-check: failed
+
+        **Diagnosis:** ${AUTH_CRED_NAME} was rejected when initiating a GHCR blob upload (HTTP 401). The token lacks the required write permissions.
+
+        SUMMARY_EOF
+              if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
+                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+        **Fix:** Ensure the `GHCR_TOKEN` secret contains a valid [classic PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the `write:packages` scope. Classic PATs are required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry). If the token has expired, regenerate it at <https://github.com/settings/tokens> and update the `GHCR_TOKEN` secret.
+        SUMMARY_EOF
+              else
+                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+        **Fix:** Ensure the calling workflow job declares the following permission:
+
+        ```yaml
+        permissions:
+          packages: write
+        ```
+        SUMMARY_EOF
+              fi
+              echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            403)
+              REASON="${AUTH_CRED_NAME} was forbidden from writing to ghcr.io/${REPO_LC} (HTTP 403). The organisation's Actions token policy or the package's own access settings may block this token."
+              echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
+              echo "writable=false" >> "$GITHUB_OUTPUT"
+              cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
+        ### ❌ GHCR cache write pre-check: failed
+
+        **Diagnosis:** ${AUTH_CRED_NAME} obtained a push-scoped token but the blob upload was still denied (HTTP 403). This can be caused by the **organisation's Actions token policy** or **package-level access restrictions**.
+
+        **Option 1 — Organisation owner: check workflow permissions and package access**
+        SUMMARY_EOF
+              cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
+        1. Check workflow permissions: <https://github.com/organizations/${ORG}/settings/actions> → **Workflow permissions** → select **"Read and write permissions"** and save
+        2. If the package already exists, check its access settings: navigate to the package at <https://github.com/orgs/${ORG}/packages>, open its **Settings** tab, and ensure this repository has write access under **Actions access**
+
+        See:
+        - [Setting the permissions of the GITHUB\_TOKEN for your organisation](https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization#setting-the-permissions-of-the-github_token-for-your-organization)
+        - [Configuring a package's access control and visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
+
+        **Option 2 — Repository admin: use a Personal Access Token (no org-owner access needed)**
+
+        > **Note:** A classic token is required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
+
+        1. Create a [Personal Access Token (classic)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the \`write:packages\` scope at <https://github.com/settings/tokens>
+        2. In this repository, go to **Settings → Secrets and variables → Actions**
+        3. Add or update the repository secret named **\`GHCR_TOKEN\`** and paste the PAT as the value
+        4. Re-run the workflow
+        SUMMARY_EOF
+              echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              REASON="${AUTH_CRED_NAME} does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS})."
+              echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
+              echo "writable=false" >> "$GITHUB_OUTPUT"
+              echo "❌ **GHCR cache write pre-check:** failed — ${REASON} ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
+        fi
+
+    - name: Set up QEMU
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      uses: docker/setup-qemu-action@v4
+
+    - name: Set up Docker Buildx
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      uses: docker/setup-buildx-action@v4
+
+    - name: Pre-seed build downloads
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      id: preseed
+      uses: ./.github/actions/preseed-downloads
+      with:
+        github_token: ${{ inputs.github_token }}
+
+    - name: Build and push images
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      uses: docker/bake-action@v6
+      env:
+        TAG_SUFFIX:                  ${{ steps.detect.outputs.tag_suffix }}
+        LATEST_PHP_VERSION:          ${{ steps.detect.outputs.latest_php_version }}
+        VERSIONS:                    ${{ steps.detect.outputs.versions }}
+        VERSIONS_BASE:               ${{ steps.detect.outputs.versions_base }}
+        VERSIONS_SECURE:             ${{ steps.detect.outputs.versions_secure }}
+        PLATFORMS:                   ${{ steps.detect.outputs.platforms }}
+        CACHE_FROM_ENABLED:          ${{ inputs.cache_from_enabled }}
+        GHCR_REPO:                   ${{ steps.ghcr.outputs.repo }}
+        GHCR_WRITABLE:               ${{ steps.check-ghcr.outputs.writable }}
+        DOWNLOADS_DIR:               ${{ steps.preseed.outputs.downloads_dir }}
+        CODESERVER_VERSION:          ${{ steps.preseed.outputs.codeserver_version }}
+        CODESERVER_DEB_SHA256_AMD64: ${{ steps.preseed.outputs.codeserver_deb_sha256_amd64 }}
+        CODESERVER_DEB_SHA256_ARM64: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64 }}
+        COPILOT_CHAT_VERSION:        ${{ steps.preseed.outputs.copilot_chat_version }}
+        COPILOT_CHAT_VSIX_SHA256:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256 }}
+        BUILDX_BAKE_ENTITLEMENTS_FS: 0
+      with:
+        source: .
+        files: docker-bake.hcl
+        push:  true
