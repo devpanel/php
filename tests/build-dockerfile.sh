@@ -162,39 +162,17 @@ BAKE_ENV=(
 [ -n "${CODESERVER_DEB_SHA256_AMD64:-}" ] && BAKE_ENV+=( "CODESERVER_DEB_SHA256_AMD64=${CODESERVER_DEB_SHA256_AMD64}" )
 [ -n "${CODESERVER_DEB_SHA256_ARM64:-}" ] && BAKE_ENV+=( "CODESERVER_DEB_SHA256_ARM64=${CODESERVER_DEB_SHA256_ARM64}" )
 [ -n "${COPILOT_CHAT_VSIX_SHA256:-}" ]    && BAKE_ENV+=( "COPILOT_CHAT_VSIX_SHA256=${COPILOT_CHAT_VSIX_SHA256}" )
-BAKE_LOG="$(mktemp)"
-cleanup() { rm -f "$BAKE_LOG"; }
-trap cleanup EXIT
-
-run_bake() {
-  env "${BAKE_ENV[@]}" \
-  docker buildx bake \
-    --file "$REPO_ROOT/docker-bake.hcl" \
-    --load
-}
-
-# Run the build.  On failure, check whether the error is the buildx filesystem
-# entitlement check (recognisable by "BUILDX_BAKE_ENTITLEMENTS_FS" in the
-# output — text introduced in buildx v0.32.1).  That check is
-# non-deterministic in some runner environments: the same invocation sometimes
-# fails, sometimes passes.  A plain retry without changes resolves it.
-# set +e is used here so that a failing pipeline does not exit the script
-# before PIPESTATUS[0] (run_bake's exit code) can be captured; set -e is
-# restored immediately after.
-set +e
-run_bake 2>&1 | tee "$BAKE_LOG"
-bake_rc="${PIPESTATUS[0]}"
-set -e
-if [ "$bake_rc" -ne 0 ]; then
-  if grep -qF "BUILDX_BAKE_ENTITLEMENTS_FS" "$BAKE_LOG"; then
-    echo "" >&2
-    echo "Detected a non-deterministic buildx filesystem entitlement check" >&2
-    echo "failure.  Retrying once." >&2
-    run_bake
-  else
-    exit "$bake_rc"
-  fi
-fi
+# BUILDX_BAKE_ENTITLEMENTS_FS=0 bypasses the filesystem entitlement check
+# introduced in buildx v0.32.1 for bake files that reference local filesystem
+# paths as named contexts (i.e. when DOWNLOADS_DIR is set).  The check is
+# non-deterministic — the same invocation passes or fails across runner
+# environments without any code change — so we disable it here to match the
+# behaviour of the build-php-images composite action.
+env "${BAKE_ENV[@]}" \
+BUILDX_BAKE_ENTITLEMENTS_FS=0 \
+docker buildx bake \
+  --file "$REPO_ROOT/docker-bake.hcl" \
+  --load
 
 echo "All Docker builds passed."
 
