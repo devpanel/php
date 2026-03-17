@@ -107,7 +107,7 @@ jobs:
 
       - name: Restore Copilot Chat VSIX from cache
         id: cache-vsix
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/copilot-chat.vsix
           key: copilot-chat-vsix-${{ steps.copilot-version.outputs.version }}
@@ -155,7 +155,7 @@ jobs:
 
       - name: Restore code-server .deb files from cache
         id: cache-debs
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/code-server-debs
           key: code-server-debs-${{ steps.cs-version.outputs.version }}

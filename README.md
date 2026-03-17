@@ -280,8 +280,8 @@ for setup instructions.
   built image and verify PHP, Apache, Composer, and extensions work.
   Run `./test.sh build run --version <v>` to test a single PHP version quickly.
 - Build workflows are `docker-build-on-push.yml` (push-triggered) and
-  `docker-build-all.yml` (manual dispatch).  Both call the reusable workflow
-  `build-php-images.yml` which performs detect → build.
+  `docker-build-all.yml` (manual dispatch).  Both call the
+  `.github/actions/build-php-images` composite action which performs detect → build.
 - The `advance` variant depends on `secure`, which depends on `base`.
   The build chain is enforced via the bake target dependency graph.
 

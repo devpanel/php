@@ -45,10 +45,14 @@ tests/                        # Test and lint scripts
 test.sh                       # Convenience wrapper: runs yaml/shell/dockerfile/build/run suites
 .github/
   workflows/
-    build-php-images.yml      # Reusable build workflow (called by the two below)
     docker-build-on-push.yml  # Triggered on push to main/develop; detects changed versions
     docker-build-all.yml      # Manual full rebuild (workflow_dispatch, no cache)
     ci.yml                    # Linting and tests (push + pull_request)
+  actions/
+    build-php-images/         # Composite action: detect changed versions and run the Docker build
+      action.yml
+    preseed-downloads/        # Composite action: resolve versions, cache/restore downloads
+      action.yml
   copilot-instructions.md     # Points to this file
 ```
 
@@ -109,8 +113,8 @@ Example `TODO.md` structure:
 - If a per-version override Dockerfile in `<version>/base/` also references the tool (e.g. PHP 7.4 pins an older version), update it there too.
 
 ### GitHub Actions Workflows
-- **`build-php-images.yml`** — reusable workflow that runs `docker buildx bake` using `docker-bake.hcl`. Called by the two trigger workflows below.
-- **`docker-build-on-push.yml`** — triggered on pushes to `main` or `develop`; uses `tests/detect-versions.sh` to determine which versions/stages are affected, then calls `build-php-images.yml` with caching enabled.
+- **`.github/actions/build-php-images`** — composite action that detects changed PHP versions and runs `docker buildx bake` using `docker-bake.hcl`. Called directly by the two trigger workflows below.
+- **`docker-build-on-push.yml`** — triggered on pushes to `main` or `develop`; uses `tests/detect-versions.sh` to determine which versions/stages are affected, then calls `.github/actions/build-php-images` with caching enabled.
 - **`docker-build-all.yml`** — manual `workflow_dispatch` trigger to rebuild all images without cache.
 - **`ci.yml`** — runs YAML, shell, and Dockerfile linting plus build/run tests on pushes and pull requests.
 - Production images are tagged without suffix (e.g. `devpanel/php:8.3-base`); `develop` branch builds use the `-rc` suffix.

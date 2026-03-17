@@ -105,14 +105,14 @@ runs:
     # the same cache entry rather than downloading independently.
     - name: Restore code-server debs from cache
       id: cache-cs
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ${{ runner.temp }}/code-server-debs
         key: code-server-debs-${{ steps.resolve.outputs.codeserver_version }}
 
     - name: Restore Copilot Chat VSIX from cache
       id: cache-cc
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ${{ runner.temp }}/copilot-chat.vsix
         key: copilot-chat-vsix-${{ steps.resolve.outputs.copilot_chat_version }}

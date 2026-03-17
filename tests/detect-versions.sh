@@ -3,7 +3,7 @@
 #
 # Single source of truth for version selection, shared by the local test
 # scripts (tests/build-dockerfile.sh, tests/run-dockerfile.sh) and the CI
-# detect job in .github/workflows/build-php-images.yml.
+# detect step in .github/actions/build-php-images/action.yml.
 #
 # Usage:
 #   detect-versions.sh
@@ -46,7 +46,7 @@
 #             built FROM secure FROM base), so those versions are included too.
 #             Mirrors the workflow's 'versions' output.
 #
-# Shared-directory rule (mirrors build-php-images.yml):
+# Shared-directory rule (mirrors .github/actions/build-php-images/action.yml):
 #   Changes to the top-level base/, secure/, or advance/ directories, or to
 #   docker-bake.hcl, are treated as affecting ALL versions because those
 #   sources are shared across every version's build.
@@ -180,7 +180,7 @@ fi
 # ---------------------------------------------------------------------------
 # Detect whether any shared-directory change affects all versions
 # ---------------------------------------------------------------------------
-# Cascade mirrors build-php-images.yml:
+# Cascade mirrors .github/actions/build-php-images/action.yml:
 #   docker-bake.hcl or base/ change → base, secure, and advance all affected
 #   secure/ change                  → secure and advance affected
 #   advance/ change                 → only advance affected
