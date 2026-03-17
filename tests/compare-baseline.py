@@ -13,6 +13,7 @@ resolved), the baseline is considered stale and the script also exits
 non-zero, asking the developer to re-run with --update-baseline.
 
 A missing baseline file is treated as an empty baseline ({}).
+A missing current file is an error (it means the linter did not run).
 """
 
 import json
@@ -20,9 +21,12 @@ import os
 import sys
 
 
-def load(path):
+def load(path, missing_ok=False):
     if not os.path.exists(path):
-        return {}
+        if missing_ok:
+            return {}
+        print(f"Error: file not found: {path}", file=sys.stderr)
+        sys.exit(1)
     with open(path) as fh:
         return json.load(fh)
 
@@ -60,7 +64,7 @@ def main():
               file=sys.stderr)
         sys.exit(2)
 
-    baseline = load(sys.argv[1])
+    baseline = load(sys.argv[1], missing_ok=True)
     current = load(sys.argv[2])
     new_violations, stale_entries = compare(baseline, current)
 
@@ -77,7 +81,7 @@ def main():
     if new_violations or stale_entries:
         sys.exit(1)
 
-    print("No new violations above baseline.")
+    print("Violation counts match baseline exactly.")
     sys.exit(0)
 
 
