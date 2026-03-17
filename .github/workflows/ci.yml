@@ -86,6 +86,7 @@ jobs:
           CODESERVER_DEB_SHA256_ARM64: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64 }}
           COPILOT_CHAT_VERSION:        ${{ steps.preseed.outputs.copilot_chat_version }}
           COPILOT_CHAT_VSIX_SHA256:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256 }}
+          BUILDX_BAKE_ENTITLEMENTS_FS: 0
         run: bash tests/build-dockerfile.sh
 
       - name: Run PHP functional tests
