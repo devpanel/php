@@ -98,22 +98,32 @@ runs:
         echo "copilot_chat_version=${COPILOT_CHAT_VERSION}" >> "$GITHUB_OUTPUT"
         echo "Resolved: code-server=${CODESERVER_VERSION}  VS Code=${VSCODE_VERSION}  copilot-chat=${COPILOT_CHAT_VERSION}"
 
-    - name: Restore pre-seeded downloads from cache
-      id: cache-downloads
+    # Cache code-server .deb files and the Copilot Chat VSIX separately so
+    # that a version bump in one artifact does not invalidate the other's cache.
+    # The key names match those used by the verify-code-server and
+    # verify-extension CI jobs so that every job in the same workflow can share
+    # the same cache entry rather than downloading independently.
+    - name: Restore code-server debs from cache
+      id: cache-cs
       uses: actions/cache@v4
       with:
-        path: ${{ steps.set-dir.outputs.downloads_dir }}
-        key: build-downloads-cs-${{ steps.resolve.outputs.codeserver_version }}-cc-${{ steps.resolve.outputs.copilot_chat_version }}
+        path: ${{ runner.temp }}/code-server-debs
+        key: code-server-debs-${{ steps.resolve.outputs.codeserver_version }}
 
-    - name: Pre-seed downloads (cache miss only)
-      if: steps.cache-downloads.outputs.cache-hit != 'true'
+    - name: Restore Copilot Chat VSIX from cache
+      id: cache-cc
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/copilot-chat.vsix
+        key: copilot-chat-vsix-${{ steps.resolve.outputs.copilot_chat_version }}
+
+    - name: Download code-server debs (cache miss)
+      if: steps.cache-cs.outputs.cache-hit != 'true'
       shell: bash
       run: |
+        set -euo pipefail
         CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
-        COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
-        PRE_DOWNLOADED_DIR="${{ steps.set-dir.outputs.downloads_dir }}/pre-downloaded"
-        mkdir -p "$PRE_DOWNLOADED_DIR"
-
+        mkdir -p "${{ runner.temp }}/code-server-debs"
         # code-server .deb for both architectures (the bake build targets
         # linux/amd64 and linux/arm64; each arch looks up its own .deb).
         for ARCH in amd64 arm64; do
@@ -121,19 +131,41 @@ runs:
           echo "Downloading ${DEB}"
           curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
             "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/${DEB}" \
-            -o "${PRE_DOWNLOADED_DIR}/${DEB}"
+            -o "${{ runner.temp }}/code-server-debs/${DEB}"
         done
 
-        # Copilot Chat VSIX (architecture-independent).
+    - name: Download Copilot Chat VSIX (cache miss)
+      if: steps.cache-cc.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
         VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"
         echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
         curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
-          "${VSIX_URL}" -o "${PRE_DOWNLOADED_DIR}/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
+          "${VSIX_URL}" -o "${{ runner.temp }}/copilot-chat.vsix"
+
+    - name: Assemble pre-downloaded directory
+      id: assemble
+      shell: bash
+      run: |
+        set -euo pipefail
+        CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
+        COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
+        PRE_DOWNLOADED_DIR="${{ steps.set-dir.outputs.downloads_dir }}/pre-downloaded"
+        mkdir -p "$PRE_DOWNLOADED_DIR"
+        for ARCH in amd64 arm64; do
+          cp "${{ runner.temp }}/code-server-debs/code-server_${CODESERVER_VERSION}_${ARCH}.deb" \
+             "$PRE_DOWNLOADED_DIR/"
+        done
+        cp "${{ runner.temp }}/copilot-chat.vsix" \
+           "$PRE_DOWNLOADED_DIR/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
 
     - name: Compute SHA256 of pre-seeded downloads
       id: sha256
       shell: bash
       run: |
+        set -euo pipefail
         CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
         COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
         PRE_DOWNLOADED_DIR="${{ steps.set-dir.outputs.downloads_dir }}/pre-downloaded"
