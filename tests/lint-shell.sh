@@ -106,8 +106,12 @@ if [[ "$UPDATE_BASELINE" == true ]]; then
   if [[ "$count" == "0" ]]; then
     echo "All violations resolved. Baseline written as empty: $BASELINE"
     TODO_ENTRY="- [ ] Remove shellcheck baseline comparison: delete ${BASELINE##"$REPO_ROOT"/} and the baseline comparison logic from tests/lint-shell.sh. After that, any new shellcheck violation will be an immediate CI failure."
-    echo "$TODO_ENTRY" >> "${REPO_ROOT}/TODO.md"
-    echo "TODO entry appended to TODO.md — remove the baseline comparison for this linter entirely."
+    if ! grep -qFe "$TODO_ENTRY" "${REPO_ROOT}/TODO.md" 2>/dev/null; then
+      echo "$TODO_ENTRY" >> "${REPO_ROOT}/TODO.md"
+      echo "TODO entry appended to TODO.md — remove the baseline comparison for this linter entirely."
+    else
+      echo "TODO entry already present in TODO.md."
+    fi
   else
     echo "Baseline updated: $BASELINE"
   fi
