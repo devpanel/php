@@ -101,8 +101,8 @@ runs:
     # Cache code-server .deb files and the Copilot Chat VSIX separately so
     # that a version bump in one artifact does not invalidate the other's cache.
     # The key names match those used by the verify-code-server and
-    # verify-extension CI jobs so that every job in the same workflow can share
-    # the same cache entry rather than downloading independently.
+    # verify-extension CI jobs so that a downstream job (wired via `needs`)
+    # can restore from cache rather than re-downloading across workflow runs.
     - name: Cache code-server debs
       id: cache-cs
       uses: actions/cache@v5
