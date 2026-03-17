@@ -7,6 +7,7 @@
 - [x] Fix all three lint scripts: delete baseline file when `--update-baseline` produces empty results
 - [x] Fix `compare-baseline.py`: handle missing baseline file (treat as empty `{}`)
 - [x] Regenerate all baselines with updated scripts
+- [x] Document baseline lifecycle (zero-violation rule) in `AGENTS.md`
 - [ ] Fix yamllint violations in `.github/actions/build-php-images/action.yml` (colons alignment)
 - [ ] Fix yamllint violation in `.github/actions/preseed-downloads/action.yml` (empty-lines)
 
@@ -16,3 +17,4 @@
 - Baseline files are deleted (not written as `{}`) when violation count reaches zero.
 - All three lint checks pass in CI.
 - Yamllint violations in action files are either fixed or tracked in the baseline.
+- `AGENTS.md` documents the baseline lifecycle convention.

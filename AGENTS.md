@@ -96,6 +96,13 @@ Example `TODO.md` structure:
 ### General
 - All text files must end with a trailing newline. The baseline-generating lint scripts (`tests/lint-dockerfile.sh`, `tests/lint-shell.sh`, `tests/lint-yaml.sh`) enforce this by appending `\n` after every generated JSON baseline.
 
+### Lint Baselines
+Baseline JSON files in `tests/baselines/` track pre-existing lint violations so CI only fails on *new* regressions.
+
+- **Updating**: Run the relevant lint script with `--update-baseline` (e.g. `bash tests/lint-yaml.sh --update-baseline`) after fixing violations or adding new files that introduce violations.
+- **Strict enforcement**: CI fails if the current violation count for any key *differs* from the baseline — both increases (regressions) and decreases (stale baseline) are errors. Always keep the baseline current.
+- **Zero-violation rule**: When all violations tracked in a baseline have been fixed, run `--update-baseline` to delete the baseline file. Once a baseline file no longer exists, **zero violations are permitted** — there is nothing to compare against, so any new violation is immediately a failure. Do not recreate a baseline file for a linter that has reached zero violations; fix the violation instead.
+
 ### Dockerfile Style
 - Section headers use `#==` comments (e.g. `#== Install Composer`).
 - Each logical step is a separate `RUN` instruction to keep layers clear.
