@@ -56,7 +56,8 @@ ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e
 #   4. Update COPILOT_CHAT_VERSION and COPILOT_CHAT_VSIX_SHA256 below.
 ARG COPILOT_CHAT_VERSION=0.26.7
 # SHA256 of the VSIX downloaded from the VS Marketplace vspackage endpoint
-# (architecture-independent).  Integrity check runs when this value is non-empty.
+# (architecture-independent).  CI passes the value computed at download time;
+# standalone builds verify against this pinned value.
 ARG COPILOT_CHAT_VSIX_SHA256=691e80194fdba0399879fd065a76b9b14b32bfd29818292e816a4522eb0330d1
 
 # Install unzip and zip early so they are available for VSIX validation and
@@ -103,15 +104,13 @@ RUN --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sh
   fi; \
   cp "$DEB_CACHE" /tmp/code-server.deb; \
   case "$DEB_ARCH" in \
-    amd64) DEB_SHA256="${CODESERVER_DEB_SHA256_AMD64:-}" ;; \
-    arm64) DEB_SHA256="${CODESERVER_DEB_SHA256_ARM64:-}" ;; \
+    amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
+    arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
   esac; \
-  if [ -n "${DEB_SHA256:-}" ]; then \
-    if ! echo "$DEB_SHA256  /tmp/code-server.deb" | sha256sum -c -; then \
-      rm -f "$DEB_CACHE"; \
-      echo "SHA256 mismatch for code-server — cache cleared, please retry" >&2; \
-      exit 1; \
-    fi; \
+  if ! echo "$DEB_SHA256  /tmp/code-server.deb" | sha256sum -c -; then \
+    rm -f "$DEB_CACHE"; \
+    echo "SHA256 mismatch for code-server — cache cleared, please retry" >&2; \
+    exit 1; \
   fi; \
   \
   # Download GitHub Copilot Chat VSIX (not available in Open VSX marketplace). \
@@ -144,12 +143,10 @@ RUN --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sh
     echo "Using cached Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
   fi; \
   cp "$VSIX_CACHE" /tmp/copilot-chat.vsix; \
-  if [ -n "${COPILOT_CHAT_VSIX_SHA256:-}" ]; then \
-    if ! echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; then \
-      rm -f "$VSIX_CACHE"; \
-      echo "SHA256 mismatch for Copilot Chat VSIX — cache cleared, please retry" >&2; \
-      exit 1; \
-    fi; \
+  if ! echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; then \
+    rm -f "$VSIX_CACHE"; \
+    echo "SHA256 mismatch for Copilot Chat VSIX — cache cleared, please retry" >&2; \
+    exit 1; \
   fi; \
   # Verify the download is a valid ZIP (VSIX is a ZIP archive).
   # A ZIP file starts with the PK magic bytes: 50 4b 03 04 (hex).

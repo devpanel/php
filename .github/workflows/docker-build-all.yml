@@ -9,10 +9,19 @@ concurrency:
 
 jobs:
   build:
-    uses: ./.github/workflows/build-php-images.yml
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    with:
-      cache_from_enabled: false
-    secrets: inherit
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build PHP images
+        uses: ./.github/actions/build-php-images
+        with:
+          cache_from_enabled: 'false'
+          dockerhub_username:  ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:     ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token:        ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token:          ${{ secrets.GHCR_TOKEN }}

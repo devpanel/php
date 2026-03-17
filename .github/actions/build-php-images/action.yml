@@ -1,0 +1,236 @@
+name: Detect versions and build PHP images
+description: >
+  Detects which PHP versions to build (and which platforms to target), then
+  builds and pushes the images to Docker Hub and GHCR.
+
+  When before_sha and after_sha are provided, only the PHP versions whose
+  source files changed between those two commits are built.  Otherwise every
+  versioned directory is built.
+
+  The repository must be checked out by the calling job before this action
+  is invoked.  Pass fetch-depth: 0 when before_sha/after_sha are used so
+  that the git history required by detect-versions.sh is available.
+
+inputs:
+  before_sha:
+    description: >
+      Commit SHA before the push.  When provided together with after_sha,
+      only changed versions are built.
+    default: ''
+  after_sha:
+    description: >
+      Commit SHA after the push.  When provided together with before_sha,
+      only changed versions are built.
+    default: ''
+  cache_from_enabled:
+    description: Whether to read from cache (set to 'false' for a forced full rebuild)
+    default: 'true'
+  platforms_filter:
+    description: >
+      Optional comma-separated list of platforms (e.g. "linux/amd64").
+      When provided, the build is restricted to platforms that appear in
+      both the auto-detected list and this filter.
+    default: 'linux/amd64,linux/arm64'
+  dockerhub_username:
+    description: Docker Hub username for image push authentication.
+    required: true
+  dockerhub_token:
+    description: Docker Hub token for image push authentication.
+    required: true
+  github_token:
+    description: >
+      GITHUB_TOKEN for GHCR login, GHCR write-access check, and download
+      pre-seeding.  Use secrets.GITHUB_TOKEN from the calling workflow.
+    required: true
+  ghcr_token:
+    description: >
+      Optional classic Personal Access Token with the write:packages scope.
+      When provided, this token is used instead of github_token for GHCR
+      login and write-access checks.  Required when the organisation's
+      Actions token policy restricts GITHUB_TOKEN from writing to packages.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # ── Detect versions and platforms ────────────────────────────────────────
+    - name: Detect versions and platforms
+      id: detect
+      shell: bash
+      env:
+        BEFORE_SHA: ${{ inputs.before_sha }}
+        AFTER_SHA:  ${{ inputs.after_sha }}
+        PLATFORMS_FILTER: ${{ inputs.platforms_filter }}
+        REF:        ${{ github.ref }}
+        REF_NAME:   ${{ github.ref_name }}
+      run: |
+        set -euo pipefail
+
+        if [[ "${REF}" == "refs/heads/main" ]]; then
+          TAG_SUFFIX=""
+        elif [[ "${REF}" == "refs/heads/develop" ]]; then
+          TAG_SUFFIX="-rc"
+        else
+          TAG_SUFFIX="-${REF_NAME//\//-}"
+        fi
+
+        # Collect all versioned directories (numeric names), sorted by version.
+        LATEST_PHP_VERSION=""
+        while IFS= read -r VER; do
+          LATEST_PHP_VERSION="$VER"
+        done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*.[0-9]*' \
+                   | sed 's|./||' | sort -V)
+
+        if [[ -n "${BEFORE_SHA}" && -n "${AFTER_SHA}" ]]; then
+          # Delegate version detection to the shared script so that the same
+          # logic is used in CI and in the local test scripts.
+          VERSIONS_OUT=$(bash tests/detect-versions.sh \
+            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" | tr '\n' ' ' | xargs)
+          VERSIONS_BASE_OUT=$(bash tests/detect-versions.sh \
+            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage base | tr '\n' ' ' | xargs)
+          VERSIONS_SECURE_OUT=$(bash tests/detect-versions.sh \
+            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage secure | tr '\n' ' ' | xargs)
+        else
+          VERSIONS_OUT=$(bash tests/detect-versions.sh | tr '\n' ' ' | xargs)
+          # No SHA range — full rebuild: push all stages for all versions.
+          VERSIONS_BASE_OUT="$VERSIONS_OUT"
+          VERSIONS_SECURE_OUT="$VERSIONS_OUT"
+        fi
+
+        echo "tag_suffix=${TAG_SUFFIX}"                     >> "$GITHUB_OUTPUT"
+        echo "latest_php_version=${LATEST_PHP_VERSION}"     >> "$GITHUB_OUTPUT"
+        echo "versions=${VERSIONS_OUT}"                     >> "$GITHUB_OUTPUT"
+        echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
+        echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
+
+        # If no versions were selected for build, skip platform detection/filtering.
+        PLATFORMS_OUT=""
+        if [[ -z "$VERSIONS_OUT" ]]; then
+          echo "No PHP versions selected for build; skipping platform detection and filtering."
+        else
+          # Determine build platforms by inspecting every PHP base image
+          # manifest and keeping only the platforms supported by all versions.
+          PLATFORMS_INTERSECT=""
+          while IFS= read -r VER; do
+            PHP_MANIFEST=$(docker manifest inspect "php:${VER}-apache" 2>/dev/null || echo "")
+            VER_PLATFORMS=""
+            if [[ -n "$PHP_MANIFEST" ]]; then
+              VER_PLATFORMS=$(echo "$PHP_MANIFEST" \
+                | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
+                | sort | tr '\n' ',' | sed 's/,$//')
+            fi
+            # Skip versions whose manifest is unavailable.
+            [[ -z "$VER_PLATFORMS" ]] && continue
+            if [[ -z "$PLATFORMS_INTERSECT" ]]; then
+              PLATFORMS_INTERSECT="$VER_PLATFORMS"
+            else
+              # Keep only platforms present in both sets.
+              PLATFORMS_INTERSECT=$(comm -12 \
+                <(echo "$PLATFORMS_INTERSECT" | tr ',' '\n' | sort) \
+                <(echo "$VER_PLATFORMS"       | tr ',' '\n' | sort) \
+                | tr '\n' ',' | sed 's/,$//')
+            fi
+          done < <(echo "$VERSIONS_OUT" | tr ' ' '\n' | grep -v '^$')
+
+          # If versions were selected but no platforms were detected at all, fail with a clear error.
+          if [[ -z "$PLATFORMS_INTERSECT" ]]; then
+            echo "::error::Failed to detect any platforms for the selected PHP versions. 'docker manifest inspect' did not return a usable manifest for any candidate image."
+            exit 1
+          fi
+
+          PLATFORMS_OUT="$PLATFORMS_INTERSECT"
+
+          # Apply optional platforms_filter: keep detected platforms where the
+          # detected entry equals or starts with a filter entry (e.g. the filter
+          # value "linux/arm64" matches the manifest entry "linux/arm64/v8").
+          if [[ -n "${PLATFORMS_FILTER}" ]]; then
+            FILTERED_LIST=()
+            while IFS= read -r FILTER_PLAT; do
+              while IFS= read -r DETECTED_PLAT; do
+                if [[ "$DETECTED_PLAT" == "$FILTER_PLAT" || "$DETECTED_PLAT" == "$FILTER_PLAT/"* ]]; then
+                  FILTERED_LIST+=("$DETECTED_PLAT")
+                fi
+              done < <(echo "$PLATFORMS_OUT" | tr ',' '\n')
+            done < <(echo "${PLATFORMS_FILTER}" | tr ',' '\n')
+            PLATFORMS_OUT=$(printf '%s\n' "${FILTERED_LIST[@]+"${FILTERED_LIST[@]}"}" \
+              | sort -u | tr '\n' ',' | sed 's/,$//')
+            if [[ -z "$PLATFORMS_OUT" ]]; then
+              echo "::error::No detected platforms matched platforms_filter '${PLATFORMS_FILTER}'. Detected: ${PLATFORMS_INTERSECT}"
+              exit 1
+            fi
+          fi
+        fi
+
+        echo "platforms=${PLATFORMS_OUT}" >> "$GITHUB_OUTPUT"
+
+    # ── Build steps (skipped when no versions were detected) ─────────────────
+    - name: Login to Docker Hub
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      uses: docker/login-action@v4
+      with:
+        username: ${{ inputs.dockerhub_username }}
+        password: ${{ inputs.dockerhub_token }}
+
+    - name: Compute GHCR repository (lowercase)
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      id: ghcr
+      shell: bash
+      env:
+        REPO: ${{ github.repository }}
+      run: echo "repo=ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+    - name: Login to GitHub Container Registry
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.ghcr_token || inputs.github_token }}
+
+    - name: Check GHCR write access
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      id: check-ghcr
+      uses: ./.github/actions/check-ghcr-write
+      with:
+        token: ${{ inputs.ghcr_token || inputs.github_token }}
+        using_ghcr_token: ${{ inputs.ghcr_token != '' }}
+
+    - name: Set up QEMU
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      uses: docker/setup-qemu-action@v4
+
+    - name: Set up Docker Buildx
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      uses: docker/setup-buildx-action@v4
+
+    - name: Pre-seed build downloads
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      id: preseed
+      uses: ./.github/actions/preseed-downloads
+      with:
+        github_token: ${{ inputs.github_token }}
+
+    - name: Build and push images
+      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      uses: docker/bake-action@v6
+      env:
+        TAG_SUFFIX:                  ${{ steps.detect.outputs.tag_suffix }}
+        LATEST_PHP_VERSION:          ${{ steps.detect.outputs.latest_php_version }}
+        VERSIONS:                    ${{ steps.detect.outputs.versions }}
+        VERSIONS_BASE:               ${{ steps.detect.outputs.versions_base }}
+        VERSIONS_SECURE:             ${{ steps.detect.outputs.versions_secure }}
+        PLATFORMS:                   ${{ steps.detect.outputs.platforms }}
+        CACHE_FROM_ENABLED:          ${{ inputs.cache_from_enabled }}
+        GHCR_REPO:                   ${{ steps.ghcr.outputs.repo }}
+        GHCR_WRITABLE:               ${{ steps.check-ghcr.outputs.writable }}
+        GITHUB_TOKEN:                ${{ inputs.github_token }}
+        DOWNLOADS_DIR:               ${{ steps.preseed.outputs.downloads_dir }}
+        CODESERVER_VERSION:          ${{ steps.preseed.outputs.codeserver_version }}
+        CODESERVER_DEB_SHA256_AMD64: ${{ steps.preseed.outputs.codeserver_deb_sha256_amd64 }}
+        CODESERVER_DEB_SHA256_ARM64: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64 }}
+        COPILOT_CHAT_VERSION:        ${{ steps.preseed.outputs.copilot_chat_version }}
+        COPILOT_CHAT_VSIX_SHA256:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256 }}
+      with:
+        source: .
+        files: docker-bake.hcl
+        push:  true
