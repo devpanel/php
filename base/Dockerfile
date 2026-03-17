@@ -104,9 +104,10 @@ RUN --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sh
   fi; \
   cp "$DEB_CACHE" /tmp/code-server.deb; \
   case "$DEB_ARCH" in \
-    amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
-    arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
+    amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64"; SHA_ARG="CODESERVER_DEB_SHA256_AMD64" ;; \
+    arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64"; SHA_ARG="CODESERVER_DEB_SHA256_ARM64" ;; \
   esac; \
+  [ -n "$DEB_SHA256" ] || { echo "${SHA_ARG} is empty — pass a matching hash when overriding CODESERVER_VERSION" >&2; exit 1; }; \
   if ! echo "$DEB_SHA256  /tmp/code-server.deb" | sha256sum -c -; then \
     rm -f "$DEB_CACHE"; \
     echo "SHA256 mismatch for code-server — cache cleared, please retry" >&2; \
@@ -143,6 +144,7 @@ RUN --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sh
     echo "Using cached Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
   fi; \
   cp "$VSIX_CACHE" /tmp/copilot-chat.vsix; \
+  [ -n "$COPILOT_CHAT_VSIX_SHA256" ] || { echo "COPILOT_CHAT_VSIX_SHA256 is empty — pass a matching hash when overriding COPILOT_CHAT_VERSION" >&2; exit 1; }; \
   if ! echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; then \
     rm -f "$VSIX_CACHE"; \
     echo "SHA256 mismatch for Copilot Chat VSIX — cache cleared, please retry" >&2; \
