@@ -103,25 +103,16 @@ runs:
     # The key names match those used by the verify-code-server and
     # verify-extension CI jobs so that every job in the same workflow can share
     # the same cache entry rather than downloading independently.
-    #
-    # Use actions/cache/restore (lookup only) + actions/cache/save so that
-    # cache entries are always written.  On push events the entry is stored
-    # under refs/heads/<branch> and is accessible by all PRs targeting that
-    # branch.  On pull_request events the entry is stored under
-    # refs/pull/N/merge (PR-specific), which at minimum means re-runs of the
-    # same PR skip the download.  GitHub Actions does not allow a PR workflow
-    # to write under refs/heads/<PR-source-branch>, so per-branch sharing
-    # across PRs is only possible via push-event-seeded caches.
-    - name: Restore code-server debs from cache
+    - name: Cache code-server debs
       id: cache-cs
-      uses: actions/cache/restore@v5
+      uses: actions/cache@v5
       with:
         path: ${{ runner.temp }}/code-server-debs
         key: code-server-debs-${{ steps.resolve.outputs.codeserver_version }}
 
-    - name: Restore Copilot Chat VSIX from cache
+    - name: Cache Copilot Chat VSIX
       id: cache-cc
-      uses: actions/cache/restore@v5
+      uses: actions/cache@v5
       with:
         path: ${{ runner.temp }}/copilot-chat.vsix
         key: copilot-chat-vsix-${{ steps.resolve.outputs.copilot_chat_version }}
@@ -147,13 +138,6 @@ runs:
             { echo "ERROR: ${DEB} failed format validation (not a valid .deb archive)" >&2; exit 1; }
         done
 
-    - name: Save code-server debs to cache
-      if: steps.cache-cs.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v5
-      with:
-        path: ${{ runner.temp }}/code-server-debs
-        key: code-server-debs-${{ steps.resolve.outputs.codeserver_version }}
-
     - name: Download Copilot Chat VSIX (cache miss)
       if: steps.cache-cc.outputs.cache-hit != 'true'
       shell: bash
@@ -168,13 +152,6 @@ runs:
         # This catches rate-limit or error HTML responses returned with HTTP 200.
         od -An -N4 -tx1 "${{ runner.temp }}/copilot-chat.vsix" | tr -d ' \n' | grep -q '^504b0304' || \
           { echo "ERROR: Downloaded VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
-
-    - name: Save Copilot Chat VSIX to cache
-      if: steps.cache-cc.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v5
-      with:
-        path: ${{ runner.temp }}/copilot-chat.vsix
-        key: copilot-chat-vsix-${{ steps.resolve.outputs.copilot_chat_version }}
 
     - name: Assemble pre-downloaded directory
       id: assemble
