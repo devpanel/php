@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tests/lint-shell.sh — Run shellcheck (style+) on all shell scripts and
-# compare against the stored baseline.  Only *new* violations cause failure.
+# compare against the stored baseline.  Only *new* violations cause failure;
+# a stale (over-counted) baseline also causes failure to enforce regeneration.
 #
 # Options:
 #   --files <f1> [f2 ...]   Lint specific files instead of all scripts.
