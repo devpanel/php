@@ -110,12 +110,14 @@ fi
 #   GHCR_WRITABLE        false; registry cache write failures are non-fatal
 #                        (ignore-error=true).  GHA cache writes are unconditional
 #                        and unaffected by this flag.
-#   CODESERVER_VERSION   Version passed to the downloader stage.  Defaults to the
-#                        value in docker-bake.hcl when not set.  CI sets this from
-#                        the preseed-downloads composite action output.
-#   COPILOT_CHAT_VERSION Version passed to the downloader stage.  Defaults to the
-#                        value in docker-bake.hcl when not set.  CI sets this from
-#                        the preseed-downloads composite action output.
+#   CODESERVER_VERSION   Version passed to the downloader stage.  When unset, the
+#                        ARG default in base/Dockerfile is used (docker-bake.hcl
+#                        passes no build arg when empty).  CI sets this from the
+#                        preseed-downloads composite action output.
+#   COPILOT_CHAT_VERSION Version passed to the downloader stage.  When unset, the
+#                        ARG default in base/Dockerfile is used (docker-bake.hcl
+#                        passes no build arg when empty).  CI sets this from the
+#                        preseed-downloads composite action output.
 #   DOWNLOADS_DIR        Path to a directory whose pre-downloaded/ subdirectory
 #                        contains pre-seeded artifacts.  When set by CI to a
 #                        runner-local directory populated by actions/cache@v4,
@@ -140,8 +142,8 @@ BAKE_ENV=(
   GHCR_WRITABLE=false
 )
 # Only forward the optional version/download/hash variables when they are set
-# to a non-empty value; passing empty strings would override docker-bake.hcl
-# defaults and cause the build to fail.
+# to a non-empty value; docker-bake.hcl defaults all five to "" and omits them
+# as build args when empty, so the Dockerfile ARG defaults are the fallback.
 [ -n "${CODESERVER_VERSION:-}" ]          && BAKE_ENV+=( "CODESERVER_VERSION=${CODESERVER_VERSION}" )
 [ -n "${COPILOT_CHAT_VERSION:-}" ]        && BAKE_ENV+=( "COPILOT_CHAT_VERSION=${COPILOT_CHAT_VERSION}" )
 [ -n "${DOWNLOADS_DIR:-}" ]               && BAKE_ENV+=( "DOWNLOADS_DIR=${DOWNLOADS_DIR}" )
