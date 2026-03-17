@@ -164,7 +164,7 @@ test_base() {
   # after the extension (github.copilot-chat-<version>).  We list the directory
   # and grep for the extension publisher/name prefix.
   assert_contains "$image" "github\.copilot-chat" "GitHub Copilot Chat extension directory found" \
-    sh -c "ls /var/www/html/.vscode/extensions/ 2>/dev/null"
+    sh -c "ls /var/www/html/.vscode/extensions/"
 }
 
 test_secure() {
