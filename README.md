@@ -289,8 +289,8 @@ for setup instructions.
 
 ## Code-server artifact pinning
 
-`base/Dockerfile` defines `CODESERVER_PINNED_HASH_VERSION` (currently `4.99.4`) and uses it as the default `CODESERVER_VERSION`.
-Checksum verification is applied when `CODESERVER_VERSION` matches `CODESERVER_PINNED_HASH_VERSION`.
+`base/Dockerfile` defines `CODESERVER_VERSION` (currently `4.99.4`) as the default version.
+SHA256 checksum verification is always applied during the build.
 The CI "Verify code-server .deb hashes" job independently downloads both platform packages and confirms they match the hashes stored in the Dockerfile.
 
 For the pinned hash version, keep both hashes in sync:
@@ -312,7 +312,7 @@ for arch in amd64 arm64; do
 done
 ```
 
-Then update `CODESERVER_PINNED_HASH_VERSION`, `CODESERVER_DEB_SHA256_AMD64`, and `CODESERVER_DEB_SHA256_ARM64` in `base/Dockerfile`.
+Then update `CODESERVER_VERSION`, `CODESERVER_DEB_SHA256_AMD64`, and `CODESERVER_DEB_SHA256_ARM64` in `base/Dockerfile`.
 
 ## GitHub Copilot Chat extension pinning
 
@@ -398,7 +398,7 @@ sha256sum "/tmp/copilot-chat-${VERSION}.vsix"
 shasum -a 256 "/tmp/copilot-chat-${VERSION}.vsix"
 ```
 
-Then update `COPILOT_CHAT_PINNED_VERSION` and `COPILOT_CHAT_VSIX_SHA256` in
+Then update `COPILOT_CHAT_VERSION` and `COPILOT_CHAT_VSIX_SHA256` in
 `base/Dockerfile`.  The CI "Verify Copilot Chat VSIX" job independently downloads
 the pinned VSIX from the same URL, validates it is a valid ZIP, and verifies the
 SHA256 on every CI run.
