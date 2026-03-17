@@ -14,8 +14,8 @@
 #   TAG_SUFFIX                    Image tag suffix                             ("" on main, "-rc" on develop)
 #   VERSIONS                      Space-separated PHP version dirs             ("7.4 8.0 8.1 8.2 8.3")
 #   LATEST_PHP_VERSION            Highest PHP version dir in the repo          (8.3)
-#   CODESERVER_VERSION            code-server version to pin ("" = auto)       ("")
-#   COPILOT_CHAT_VERSION          Copilot Chat VSIX version to pin ("" = auto) ("")
+#   CODESERVER_VERSION            code-server version ("" = use Dockerfile default) ("")
+#   COPILOT_CHAT_VERSION          Copilot Chat VSIX version ("" = use Dockerfile default) ("")
 #   CORERULESET_VERSION           ModSecurity CRS version                      (3.3.5)
 #   CACHE_FROM_ENABLED            Read from GHA/GHCR cache ("true"/"false")    ("true")
 #   PLATFORMS                     Comma-separated target platforms             ("linux/amd64,linux/arm64")
@@ -56,11 +56,11 @@ variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "VERSIONS_BASE"                 { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "VERSIONS_SECURE"               { default = "7.4 8.0 8.1 8.2 8.3"    }
 variable "LATEST_PHP_VERSION"            { default = "8.3"                     }
-variable "CODESERVER_VERSION"            { default = "4.99.4"                                           }
-variable "CODESERVER_DEB_SHA256_AMD64"   { default = "74c107b33643ed11223263b86431530fbc9c9f7c8202997579a6f0c41b4cb102" }
-variable "CODESERVER_DEB_SHA256_ARM64"   { default = "ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e5de9d55f1e2077c3" }
-variable "COPILOT_CHAT_VERSION"          { default = "0.26.7"                                            }
-variable "COPILOT_CHAT_VSIX_SHA256"      { default = "691e80194fdba0399879fd065a76b9b14b32bfd29818292e816a4522eb0330d1" }
+variable "CODESERVER_VERSION"            { default = ""                                                     }
+variable "CODESERVER_DEB_SHA256_AMD64"   { default = ""                                                     }
+variable "CODESERVER_DEB_SHA256_ARM64"   { default = ""                                                     }
+variable "COPILOT_CHAT_VERSION"          { default = ""                                                     }
+variable "COPILOT_CHAT_VSIX_SHA256"      { default = ""                                                     }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 # DOWNLOADS_DIR: path to a directory whose pre-downloaded/ subdirectory contains
 # pre-seeded build artifacts (code-server .deb files and Copilot Chat VSIX).
@@ -153,14 +153,14 @@ target "downloader" {
   # 'downloads' stage (FROM alpine:3 with an empty /pre-downloaded dir) is used,
   # causing all downloads to fall through to the normal network path.
   contexts = DOWNLOADS_DIR != "" ? { downloads = DOWNLOADS_DIR } : {}
-  args = {
-    LATEST_PHP_VERSION          = LATEST_PHP_VERSION
-    CODESERVER_VERSION          = CODESERVER_VERSION
-    CODESERVER_DEB_SHA256_AMD64 = CODESERVER_DEB_SHA256_AMD64
-    CODESERVER_DEB_SHA256_ARM64 = CODESERVER_DEB_SHA256_ARM64
-    COPILOT_CHAT_VERSION        = COPILOT_CHAT_VERSION
-    COPILOT_CHAT_VSIX_SHA256    = COPILOT_CHAT_VSIX_SHA256
-  }
+  args = merge(
+    { LATEST_PHP_VERSION = LATEST_PHP_VERSION },
+    CODESERVER_VERSION          != "" ? { CODESERVER_VERSION          = CODESERVER_VERSION          } : {},
+    CODESERVER_DEB_SHA256_AMD64 != "" ? { CODESERVER_DEB_SHA256_AMD64 = CODESERVER_DEB_SHA256_AMD64 } : {},
+    CODESERVER_DEB_SHA256_ARM64 != "" ? { CODESERVER_DEB_SHA256_ARM64 = CODESERVER_DEB_SHA256_ARM64 } : {},
+    COPILOT_CHAT_VERSION        != "" ? { COPILOT_CHAT_VERSION        = COPILOT_CHAT_VERSION        } : {},
+    COPILOT_CHAT_VSIX_SHA256    != "" ? { COPILOT_CHAT_VSIX_SHA256    = COPILOT_CHAT_VSIX_SHA256    } : {}
+  )
   tags       = ["${GHCR_REPO}:downloader${TAG_SUFFIX}"]
   cache-from = cache_from_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}", "downloader")
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}", "downloader")
