@@ -101,7 +101,7 @@ Baseline JSON files in `tests/baselines/` track pre-existing lint violations so 
 
 - **Updating**: Run the relevant lint script with `--update-baseline` (e.g. `bash tests/lint-yaml.sh --update-baseline`) after fixing violations or adding new files that introduce violations.
 - **Strict enforcement**: CI fails if the current violation count for any key *differs* from the baseline — both increases (regressions) and decreases (stale baseline) are errors. Always keep the baseline current.
-- **Zero-violation rule**: When all violations tracked in a baseline have been fixed, run `--update-baseline` to delete the baseline file. Once a baseline file no longer exists, **zero violations are permitted** — there is nothing to compare against, so any new violation is immediately a failure. Do not recreate a baseline file for a linter that has reached zero violations; fix the violation instead.
+- **Zero-violation rule**: When all violations tracked in a baseline have been fixed, run `--update-baseline`. The script writes an empty baseline (`{}`) and prints a TODO notification. **Do not stop there** — add a task to remove the baseline comparison entirely: delete the baseline file *and* remove the baseline comparison logic from the lint script. Once that cleanup is done, zero violations are strictly enforced with no exceptions; any new violation is an immediate CI failure.
 
 ### Dockerfile Style
 - Section headers use `#==` comments (e.g. `#== Install Composer`).

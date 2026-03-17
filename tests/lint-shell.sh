@@ -102,11 +102,15 @@ PYEOF
 # ---------------------------------------------------------------------------
 if [[ "$UPDATE_BASELINE" == true ]]; then
   count=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$TMP_CURRENT")
+  cp "$TMP_CURRENT" "$BASELINE"
   if [[ "$count" == "0" ]]; then
-    rm -f "$BASELINE"
-    echo "No violations found; baseline file removed: $BASELINE"
+    echo "All violations resolved. Baseline written as empty: $BASELINE"
+    echo "TODO: All violations for this linter are now fixed."
+    echo "  Remove the baseline comparison for this linter entirely:"
+    echo "  1. Delete the baseline file: $BASELINE"
+    echo "  2. Remove the baseline comparison logic from tests/lint-shell.sh."
+    echo "  After that, any new violation will be an immediate CI failure with no exceptions."
   else
-    cp "$TMP_CURRENT" "$BASELINE"
     echo "Baseline updated: $BASELINE"
   fi
   exit 0
