@@ -112,6 +112,11 @@ fi
 #                        and unaffected by this flag.
 #   GITHUB_TOKEN         Forwarded so the downloader stage can call the GitHub
 #                        API to resolve CODESERVER_VERSION when not pinned.
+#   DOWNLOADS_DIR        Path to a pre-seeded artifacts directory (optional).
+#                        When set by CI to a runner-local directory populated by
+#                        actions/cache@v4, the downloader stage uses cached files
+#                        instead of re-downloading.  Defaults to
+#                        base/downloads-empty (empty committed placeholder).
 #
 # --load:
 #   Import built images into the local Docker daemon so that run-dockerfile.sh
@@ -127,6 +132,7 @@ PLATFORMS="$PLATFORMS" \
 CACHE_FROM_ENABLED="${CACHE_FROM_ENABLED:-false}" \
 GHCR_WRITABLE=false \
 GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+DOWNLOADS_DIR="${DOWNLOADS_DIR:-base/downloads-empty}" \
 docker buildx bake \
   --file "$REPO_ROOT/docker-bake.hcl" \
   --load

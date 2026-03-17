@@ -59,6 +59,13 @@ variable "LATEST_PHP_VERSION"            { default = "8.3"                     }
 variable "CODESERVER_VERSION"            { default = ""                        }
 variable "COPILOT_CHAT_VERSION"          { default = ""                        }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
+# DOWNLOADS_DIR: path to a directory of pre-seeded build artifacts (code-server
+# .deb files and Copilot Chat VSIX).  When set by CI to a runner-local path
+# pre-populated by actions/cache@v4, the downloader stage bind-mounts it and
+# uses any matching files instead of downloading from the internet.  Defaults
+# to base/downloads-empty (committed empty directory) so standalone builds
+# always have a valid context and simply fall through to the network path.
+variable "DOWNLOADS_DIR"                 { default = "base/downloads-empty"    }
 variable "CACHE_FROM_ENABLED"            { default = "true"                    }
 # GHCR_WRITABLE is set by the "Check GHCR write access" workflow step.
 # "true"  → GHCR cache writes proceed without ignore-error: any failure is a
@@ -136,6 +143,14 @@ target "downloader" {
   context    = "base"
   target     = "downloader"
   platforms  = split(",", PLATFORMS)
+  contexts = {
+    # Named context for pre-seeded artifacts (code-server .deb, Copilot Chat VSIX).
+    # Overridden by CI when DOWNLOADS_DIR points to a runner-local directory
+    # pre-populated by actions/cache@v4.  Defaults to base/downloads-empty (an
+    # empty committed directory) so standalone builds silently fall through to
+    # the normal network download path.
+    downloads = DOWNLOADS_DIR
+  }
   args = {
     LATEST_PHP_VERSION   = LATEST_PHP_VERSION
     CODESERVER_VERSION   = CODESERVER_VERSION

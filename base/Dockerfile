@@ -10,6 +10,17 @@
 # GitHub Actions (type=gha) but never pushed to Docker Hub.
 ARG LATEST_PHP_VERSION=8.3
 ARG PHP_VERSION=8.3
+
+# ─── Pre-downloaded artifacts context ─────────────────────────────────────────
+# Empty placeholder stage used when no pre-seeded downloads directory is
+# supplied.  In Docker Bake builds where DOWNLOADS_DIR is set to a runner-local
+# directory (pre-populated by actions/cache@v4), the 'downloads' named context
+# replaces this scratch stage with those files.  In standalone `docker build`
+# invocations without Bake, this scratch stage remains in effect and the
+# --mount=from=downloads bind-mount in the downloader RUN presents an empty
+# /pre-downloaded directory, so all downloads proceed via the normal network path.
+FROM scratch AS downloads
+
 FROM php:${LATEST_PHP_VERSION}-apache AS downloader
 
 ARG CODESERVER_MAJOR_VERSION=4
@@ -86,6 +97,7 @@ RUN mkdir -p /tmp/libsodium \
 RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN,required=false \
     --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sharing=locked \
     --mount=type=cache,id=copilot-chat-vsix,target=/var/cache/copilot-chat-vsix,sharing=locked \
+    --mount=type=bind,from=downloads,target=/pre-downloaded,readonly \
   set -e; \
   if [ -z "$CODESERVER_VERSION" ]; then \
     if [ -n "${GITHUB_TOKEN:-}" ]; then \
@@ -132,10 +144,16 @@ exit(1); \
   DEB_CACHE="/var/cache/code-server-debs/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
   DEB_CACHE_TMP="${DEB_CACHE}.tmp"; \
   if [ ! -f "$DEB_CACHE" ]; then \
-    echo "Downloading code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; \
-    curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o "$DEB_CACHE_TMP" \
-      && mv "$DEB_CACHE_TMP" "$DEB_CACHE" \
-      || { rm -f "$DEB_CACHE_TMP"; echo "Failed to download code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; exit 1; }; \
+    DEB_PRELOADED="/pre-downloaded/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
+    if [ -f "$DEB_PRELOADED" ]; then \
+      echo "Using pre-seeded code-server ${CODESERVER_VERSION} ${DEB_ARCH} from downloads context" >&2; \
+      cp "$DEB_PRELOADED" "$DEB_CACHE"; \
+    else \
+      echo "Downloading code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; \
+      curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o "$DEB_CACHE_TMP" \
+        && mv "$DEB_CACHE_TMP" "$DEB_CACHE" \
+        || { rm -f "$DEB_CACHE_TMP"; echo "Failed to download code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; exit 1; }; \
+    fi; \
   else \
     echo "Using cached code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; \
   fi; \
@@ -207,10 +225,16 @@ exit(1); \
   VSIX_CACHE="/var/cache/copilot-chat-vsix/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"; \
   VSIX_CACHE_TMP="${VSIX_CACHE}.tmp"; \
   if [ ! -f "$VSIX_CACHE" ]; then \
-    echo "Downloading Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
-    curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o "$VSIX_CACHE_TMP" \
-      && mv "$VSIX_CACHE_TMP" "$VSIX_CACHE" \
-      || { rm -f "$VSIX_CACHE_TMP"; echo "Failed to download Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; exit 1; }; \
+    VSIX_PRELOADED="/pre-downloaded/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"; \
+    if [ -f "$VSIX_PRELOADED" ]; then \
+      echo "Using pre-seeded Copilot Chat VSIX ${COPILOT_CHAT_VERSION} from downloads context" >&2; \
+      cp "$VSIX_PRELOADED" "$VSIX_CACHE"; \
+    else \
+      echo "Downloading Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
+      curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o "$VSIX_CACHE_TMP" \
+        && mv "$VSIX_CACHE_TMP" "$VSIX_CACHE" \
+        || { rm -f "$VSIX_CACHE_TMP"; echo "Failed to download Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; exit 1; }; \
+    fi; \
   else \
     echo "Using cached Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
   fi; \
