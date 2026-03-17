@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/lint-shell.sh — Run shellcheck (style+) on all shell scripts and
-# compare against the stored baseline.  Any change in the number of violations
+# compare against the stored baseline.  Any deviation from the baseline counts
 # (increase or decrease) causes failure — the baseline must match exactly.
 #
 # Options:

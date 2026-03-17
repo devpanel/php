@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/lint-yaml.sh — Run yamllint on all GitHub Actions YAML files
 # (workflows and composite actions) and compare against the stored baseline.
-# Any change in the number of violations (increase or decrease) causes failure —
+# Any deviation from the baseline counts (increase or decrease) causes failure —
 # the baseline must match exactly.
 #
 # Options:

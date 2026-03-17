@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/lint-dockerfile.sh — Run hadolint (all severities) on every Dockerfile
-# and compare against the stored baseline.  Any change in the number of violations
+# and compare against the stored baseline.  Any deviation from the baseline counts
 # (increase or decrease) causes failure — the baseline must match exactly.
 #
 # Requires: Docker (hadolint/hadolint:v2.12.0 is pulled automatically; override via HADOLINT_IMAGE env var)
