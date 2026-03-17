@@ -101,8 +101,10 @@ runs:
     # Cache code-server .deb files and the Copilot Chat VSIX separately so
     # that a version bump in one artifact does not invalidate the other's cache.
     # The key names match those used by the verify-code-server and
-    # verify-extension CI jobs so that a downstream job (wired via `needs`)
-    # can restore from cache rather than re-downloading across workflow runs.
+    # verify-extension CI jobs. Within the same workflow run, a consumer job
+    # must be wired via `needs` to guarantee the cache is fully saved before
+    # it tries to restore. Across workflow runs, any job can restore an
+    # existing cache entry without any `needs` ordering.
     - name: Cache code-server debs
       id: cache-cs
       uses: actions/cache@v5
