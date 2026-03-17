@@ -75,7 +75,7 @@ Before starting any non-trivial task, create or update `TODO.md` at the reposito
    - CI workflows pass on the target branch.
    - Documentation and/or `AGENTS.md` updated if conventions changed.
 3. **Tick items off** as you complete them and keep `TODO.md` committed so progress is visible in the PR.
-4. **Remove or archive** the `TODO.md` file (or clear its contents) once the task is fully done and the PR is merged.
+4. **Clean up task entries** once the task is fully done and the PR is merged: remove the task-specific checklist and Definition of Done you added. Do **not** remove entries that were appended by tooling (e.g. lint scripts append persistent baseline-cleanup items here automatically — leave those in place until they are explicitly resolved).
 
 Example `TODO.md` structure:
 
@@ -95,6 +95,13 @@ Example `TODO.md` structure:
 
 ### General
 - All text files must end with a trailing newline. The baseline-generating lint scripts (`tests/lint-dockerfile.sh`, `tests/lint-shell.sh`, `tests/lint-yaml.sh`) enforce this by appending `\n` after every generated JSON baseline.
+
+### Lint Baselines
+Baseline JSON files in `tests/baselines/` track pre-existing lint violations per `path:RULE` key. CI fails on any deviation from the baseline — both increases (new regressions) and decreases (stale baseline) are errors.
+
+- **Updating**: Run the relevant lint script with `--update-baseline` (e.g. `bash tests/lint-yaml.sh --update-baseline`) after fixing violations or adding new files that introduce violations.
+- **Strict enforcement**: CI fails if the current violation count for any key *differs* from the baseline — both increases (regressions) and decreases (stale baseline) are errors. Always keep the baseline current.
+- **Zero-violation rule**: When all violations tracked in a baseline have been fixed, run `--update-baseline`. The script writes an empty baseline (`{}`) and appends a TODO entry to `TODO.md`. Complete that TODO: delete the baseline file *and* remove the baseline comparison logic from the lint script. Once that cleanup is done, zero violations are strictly enforced with no exceptions; any new violation is an immediate CI failure.
 
 ### Dockerfile Style
 - Section headers use `#==` comments (e.g. `#== Install Composer`).

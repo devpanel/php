@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# tests/lint-yaml.sh — Run yamllint on all GitHub Actions workflow files and
-# compare against the stored baseline.  Only *new* violations cause failure.
+# tests/lint-yaml.sh — Run yamllint on all GitHub Actions YAML files
+# (workflows and composite actions) and compare against the stored baseline.
+# Any deviation from the baseline counts (increase or decrease) causes failure —
+# the baseline must match exactly.
 #
 # Options:
 #   --files <f1> [f2 ...]   Lint specific files instead of all YAML files.
@@ -27,7 +29,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
-  mapfile -t FILES < <(find "$REPO_ROOT/.github/workflows" -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null | sort)
+  mapfile -t FILES < <(find "$REPO_ROOT/.github" -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null | sort)
 fi
 
 # ---------------------------------------------------------------------------
@@ -55,9 +57,9 @@ def rel(path):
     return "./" + r.lstrip("/")
 
 counts = {}
-# parsable format: path:line:col: [level] (rule) message
-# The rule name appears in parentheses immediately after the [level] token.
-PATTERN = re.compile(r"^.+?:\d+:\d+: \[(?:warning|error)\] \((.+?)\)")
+# parsable format: path:line:col: [level] message (rule)
+# The rule name appears in parentheses at the end of each line.
+PATTERN = re.compile(r"^.+?:\d+:\d+: \[(?:warning|error)\] .+\((.+?)\)\s*$")
 
 for f in files:
     result = subprocess.run(
@@ -87,8 +89,21 @@ PYEOF
 # Update baseline if requested
 # ---------------------------------------------------------------------------
 if [[ "$UPDATE_BASELINE" == true ]]; then
+  count=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$TMP_CURRENT")
   cp "$TMP_CURRENT" "$BASELINE"
-  echo "Baseline updated: $BASELINE"
+  if [[ "$count" == "0" ]]; then
+    echo "All violations resolved. Baseline written as empty: $BASELINE"
+    BASELINE_REL="${BASELINE#"${REPO_ROOT}/"}"
+    TODO_ENTRY="- [ ] Remove yamllint baseline comparison: delete ${BASELINE_REL} and the baseline comparison logic from tests/lint-yaml.sh, and update the script to fail when yamllint reports any violations (fail when the generated JSON is non-empty). After that, any new yamllint violation will be an immediate CI failure."
+    if ! grep -qFe "$TODO_ENTRY" "${REPO_ROOT}/TODO.md" 2>/dev/null; then
+      echo "$TODO_ENTRY" >> "${REPO_ROOT}/TODO.md"
+      echo "TODO entry appended to TODO.md — remove the baseline comparison for this linter entirely."
+    else
+      echo "TODO entry already present in TODO.md."
+    fi
+  else
+    echo "Baseline updated: $BASELINE"
+  fi
   exit 0
 fi
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tests/lint-dockerfile.sh — Run hadolint (all severities) on every Dockerfile
-# and compare against the stored baseline.  Only *new* violations cause failure.
+# and compare against the stored baseline.  Any deviation from the baseline counts
+# (increase or decrease) causes failure — the baseline must match exactly.
 #
 # Requires: Docker (hadolint/hadolint:v2.12.0 is pulled automatically; override via HADOLINT_IMAGE env var)
 #
@@ -111,8 +112,21 @@ PYEOF
 # Update baseline if requested
 # ---------------------------------------------------------------------------
 if [[ "$UPDATE_BASELINE" == true ]]; then
+  count=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$TMP_CURRENT")
   cp "$TMP_CURRENT" "$BASELINE"
-  echo "Baseline updated: $BASELINE"
+  if [[ "$count" == "0" ]]; then
+    echo "All violations resolved. Baseline written as empty: $BASELINE"
+    BASELINE_REL="${BASELINE#"${REPO_ROOT}/"}"
+    TODO_ENTRY="- [ ] Remove hadolint baseline comparison: delete ${BASELINE_REL} and the baseline comparison logic from tests/lint-dockerfile.sh, and update the script to fail when hadolint reports any violations (fail when the generated JSON is non-empty). After that, any new hadolint violation will be an immediate CI failure."
+    if ! grep -qFe "$TODO_ENTRY" "${REPO_ROOT}/TODO.md" 2>/dev/null; then
+      echo "$TODO_ENTRY" >> "${REPO_ROOT}/TODO.md"
+      echo "TODO entry appended to TODO.md — remove the baseline comparison for this linter entirely."
+    else
+      echo "TODO entry already present in TODO.md."
+    fi
+  else
+    echo "Baseline updated: $BASELINE"
+  fi
   exit 0
 fi
 
