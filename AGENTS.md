@@ -93,6 +93,9 @@ Example `TODO.md` structure:
 
 ## Conventions
 
+### General
+- All text files must end with a single blank line (a trailing newline). The baseline-generating lint scripts (`tests/lint-dockerfile.sh`, `tests/lint-shell.sh`, `tests/lint-yaml.sh`) enforce this by appending `\n` after every generated JSON baseline.
+
 ### Dockerfile Style
 - Section headers use `#==` comments (e.g. `#== Install Composer`).
 - Each logical step is a separate `RUN` instruction to keep layers clear.
@@ -112,8 +115,13 @@ Example `TODO.md` structure:
 - Update the relevant `ARG <TOOL>_VERSION` value (or the hard-coded version string) in the shared Dockerfile under `base/`, `secure/`, or `advance/`.
 - If a per-version override Dockerfile in `<version>/base/` also references the tool (e.g. PHP 7.4 pins an older version), update it there too.
 
-### GitHub Actions Workflows
-- **`.github/actions/build-php-images`** — composite action that detects changed PHP versions and runs `docker buildx bake` using `docker-bake.hcl`. Called directly by the two trigger workflows below.
+### GitHub Actions
+
+#### Composite Actions
+- **`.github/actions/build-php-images`** — detects changed PHP versions and runs `docker buildx bake` using `docker-bake.hcl`. Called directly by the trigger workflows below.
+- **`.github/actions/preseed-downloads`** — resolves code-server and Copilot Chat versions, restores/downloads artifacts into `$RUNNER_TEMP/build-downloads/pre-downloaded/`, and exposes `DOWNLOADS_DIR` + SHA256 outputs for Docker builds.
+
+#### Workflows
 - **`docker-build-on-push.yml`** — triggered on pushes to `main` or `develop`; uses `tests/detect-versions.sh` to determine which versions/stages are affected, then calls `.github/actions/build-php-images` with caching enabled.
 - **`docker-build-all.yml`** — manual `workflow_dispatch` trigger to rebuild all images without cache.
 - **`ci.yml`** — runs YAML, shell, and Dockerfile linting plus build/run tests on pushes and pull requests.

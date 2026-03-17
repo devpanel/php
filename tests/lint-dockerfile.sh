@@ -101,6 +101,7 @@ for f in files:
 
 with open(current_path, "w") as fh:
     json.dump(counts, fh, indent=2, sort_keys=True)
+    fh.write("\n")
 
 if parse_error:
     sys.exit(1)
