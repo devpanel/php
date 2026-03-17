@@ -127,19 +127,25 @@ fi
 # --load:
 #   Import built images into the local Docker daemon so that run-dockerfile.sh
 #   can run functional tests against them (requires single-platform build).
-VERSIONS="$VERSIONS_LIST" \
-VERSIONS_BASE="$VERSIONS_LIST" \
-VERSIONS_SECURE="$VERSIONS_LIST" \
-REPO="$TEST_REPO" \
-GHCR_REPO="$TEST_REPO" \
-TAG_SUFFIX="" \
-LATEST_PHP_VERSION="$LATEST_PHP_VERSION" \
-PLATFORMS="$PLATFORMS" \
-CACHE_FROM_ENABLED="${CACHE_FROM_ENABLED:-false}" \
-GHCR_WRITABLE=false \
-CODESERVER_VERSION="${CODESERVER_VERSION:-}" \
-COPILOT_CHAT_VERSION="${COPILOT_CHAT_VERSION:-}" \
-DOWNLOADS_DIR="${DOWNLOADS_DIR:-}" \
+BAKE_ENV=(
+  VERSIONS="$VERSIONS_LIST"
+  VERSIONS_BASE="$VERSIONS_LIST"
+  VERSIONS_SECURE="$VERSIONS_LIST"
+  REPO="$TEST_REPO"
+  GHCR_REPO="$TEST_REPO"
+  TAG_SUFFIX=""
+  LATEST_PHP_VERSION="$LATEST_PHP_VERSION"
+  PLATFORMS="$PLATFORMS"
+  "CACHE_FROM_ENABLED=${CACHE_FROM_ENABLED:-false}"
+  GHCR_WRITABLE=false
+)
+# Only forward the optional version/download variables when they are set
+# to a non-empty value; passing empty strings would override docker-bake.hcl
+# defaults and cause the build to fail.
+[ -n "${CODESERVER_VERSION:-}" ]   && BAKE_ENV+=( "CODESERVER_VERSION=${CODESERVER_VERSION}" )
+[ -n "${COPILOT_CHAT_VERSION:-}" ] && BAKE_ENV+=( "COPILOT_CHAT_VERSION=${COPILOT_CHAT_VERSION}" )
+[ -n "${DOWNLOADS_DIR:-}" ]        && BAKE_ENV+=( "DOWNLOADS_DIR=${DOWNLOADS_DIR}" )
+env "${BAKE_ENV[@]}" \
 docker buildx bake \
   --file "$REPO_ROOT/docker-bake.hcl" \
   --load
