@@ -107,7 +107,7 @@ jobs:
 
       - name: Restore Copilot Chat VSIX from cache
         id: cache-vsix
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/copilot-chat.vsix
           key: copilot-chat-vsix-${{ steps.copilot-version.outputs.version }}
@@ -120,6 +120,13 @@ jobs:
           echo "Downloading GitHub.copilot-chat ${VERSION} from VS Marketplace"
           curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
             "${VSIX_URL}" -o "$RUNNER_TEMP/copilot-chat.vsix"
+
+      - name: Save Copilot Chat VSIX to cache
+        if: steps.cache-vsix.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/copilot-chat.vsix
+          key: copilot-chat-vsix-${{ steps.copilot-version.outputs.version }}
 
       - name: Verify Copilot Chat VSIX
         run: |
@@ -155,7 +162,7 @@ jobs:
 
       - name: Restore code-server .deb files from cache
         id: cache-debs
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/code-server-debs
           key: code-server-debs-${{ steps.cs-version.outputs.version }}
@@ -172,6 +179,13 @@ jobs:
             curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
               "${BASE_URL}/${DEB}" -o "$RUNNER_TEMP/code-server-debs/${DEB}"
           done
+
+      - name: Save code-server .deb files to cache
+        if: steps.cache-debs.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/code-server-debs
+          key: code-server-debs-${{ steps.cs-version.outputs.version }}
 
       - name: Verify pinned code-server .deb files
         run: |
