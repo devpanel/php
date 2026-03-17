@@ -139,12 +139,15 @@ BAKE_ENV=(
   "CACHE_FROM_ENABLED=${CACHE_FROM_ENABLED:-false}"
   GHCR_WRITABLE=false
 )
-# Only forward the optional version/download variables when they are set
+# Only forward the optional version/download/hash variables when they are set
 # to a non-empty value; passing empty strings would override docker-bake.hcl
 # defaults and cause the build to fail.
-[ -n "${CODESERVER_VERSION:-}" ]   && BAKE_ENV+=( "CODESERVER_VERSION=${CODESERVER_VERSION}" )
-[ -n "${COPILOT_CHAT_VERSION:-}" ] && BAKE_ENV+=( "COPILOT_CHAT_VERSION=${COPILOT_CHAT_VERSION}" )
-[ -n "${DOWNLOADS_DIR:-}" ]        && BAKE_ENV+=( "DOWNLOADS_DIR=${DOWNLOADS_DIR}" )
+[ -n "${CODESERVER_VERSION:-}" ]          && BAKE_ENV+=( "CODESERVER_VERSION=${CODESERVER_VERSION}" )
+[ -n "${COPILOT_CHAT_VERSION:-}" ]        && BAKE_ENV+=( "COPILOT_CHAT_VERSION=${COPILOT_CHAT_VERSION}" )
+[ -n "${DOWNLOADS_DIR:-}" ]               && BAKE_ENV+=( "DOWNLOADS_DIR=${DOWNLOADS_DIR}" )
+[ -n "${CODESERVER_DEB_SHA256_AMD64:-}" ] && BAKE_ENV+=( "CODESERVER_DEB_SHA256_AMD64=${CODESERVER_DEB_SHA256_AMD64}" )
+[ -n "${CODESERVER_DEB_SHA256_ARM64:-}" ] && BAKE_ENV+=( "CODESERVER_DEB_SHA256_ARM64=${CODESERVER_DEB_SHA256_ARM64}" )
+[ -n "${COPILOT_CHAT_VSIX_SHA256:-}" ]    && BAKE_ENV+=( "COPILOT_CHAT_VSIX_SHA256=${COPILOT_CHAT_VSIX_SHA256}" )
 env "${BAKE_ENV[@]}" \
 docker buildx bake \
   --file "$REPO_ROOT/docker-bake.hcl" \
