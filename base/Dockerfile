@@ -109,8 +109,12 @@ RUN --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sh
   esac; \
   [ -n "$DEB_SHA256" ] || { echo "${SHA_ARG} is empty — pass a matching hash when overriding CODESERVER_VERSION" >&2; exit 1; }; \
   if ! echo "$DEB_SHA256  /tmp/code-server.deb" | sha256sum -c -; then \
+    ACTUAL_SHA="$(sha256sum /tmp/code-server.deb | awk '{print $1}')"; \
     rm -f "$DEB_CACHE"; \
-    echo "SHA256 mismatch for code-server — cache cleared, please retry" >&2; \
+    echo "SHA256 mismatch for code-server ${CODESERVER_VERSION} ${DEB_ARCH}:" >&2; \
+    echo "  expected: ${DEB_SHA256}" >&2; \
+    echo "  actual:   ${ACTUAL_SHA}" >&2; \
+    echo "If you changed CODESERVER_VERSION, also update ${SHA_ARG} to match." >&2; \
     exit 1; \
   fi; \
   \
@@ -146,8 +150,12 @@ RUN --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sh
   cp "$VSIX_CACHE" /tmp/copilot-chat.vsix; \
   [ -n "$COPILOT_CHAT_VSIX_SHA256" ] || { echo "COPILOT_CHAT_VSIX_SHA256 is empty — pass a matching hash when overriding COPILOT_CHAT_VERSION" >&2; exit 1; }; \
   if ! echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; then \
+    ACTUAL_SHA="$(sha256sum /tmp/copilot-chat.vsix | awk '{print $1}')"; \
     rm -f "$VSIX_CACHE"; \
-    echo "SHA256 mismatch for Copilot Chat VSIX — cache cleared, please retry" >&2; \
+    echo "SHA256 mismatch for Copilot Chat VSIX ${COPILOT_CHAT_VERSION}:" >&2; \
+    echo "  expected: ${COPILOT_CHAT_VSIX_SHA256}" >&2; \
+    echo "  actual:   ${ACTUAL_SHA}" >&2; \
+    echo "If you changed COPILOT_CHAT_VERSION, also update COPILOT_CHAT_VSIX_SHA256 to match." >&2; \
     exit 1; \
   fi; \
   # Verify the download is a valid ZIP (VSIX is a ZIP archive).

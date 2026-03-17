@@ -79,7 +79,6 @@ jobs:
 
       - name: Build PHP images
         env:
-          GITHUB_TOKEN:                ${{ secrets.GITHUB_TOKEN }}
           CACHE_FROM_ENABLED:          true
           DOWNLOADS_DIR:               ${{ steps.preseed.outputs.downloads_dir }}
           CODESERVER_VERSION:          ${{ steps.preseed.outputs.codeserver_version }}

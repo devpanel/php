@@ -442,7 +442,6 @@ runs:
         CACHE_FROM_ENABLED:          ${{ inputs.cache_from_enabled }}
         GHCR_REPO:                   ${{ steps.ghcr.outputs.repo }}
         GHCR_WRITABLE:               ${{ steps.check-ghcr.outputs.writable }}
-        GITHUB_TOKEN:                ${{ inputs.github_token }}
         DOWNLOADS_DIR:               ${{ steps.preseed.outputs.downloads_dir }}
         CODESERVER_VERSION:          ${{ steps.preseed.outputs.codeserver_version }}
         CODESERVER_DEB_SHA256_AMD64: ${{ steps.preseed.outputs.codeserver_deb_sha256_amd64 }}
