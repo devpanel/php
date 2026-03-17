@@ -120,7 +120,7 @@ fi
 #                        preseed-downloads composite action output.
 #   DOWNLOADS_DIR        Path to a directory whose pre-downloaded/ subdirectory
 #                        contains pre-seeded artifacts.  When set by CI to a
-#                        runner-local directory populated by actions/cache@v4,
+#                        runner-local directory populated by actions/cache@v5,
 #                        the downloader stage uses cached files instead of
 #                        re-downloading.  When empty (default), the Dockerfile's
 #                        'downloads' stage (FROM alpine:3 with an empty

@@ -14,7 +14,7 @@ ARG PHP_VERSION=8.3
 # ─── Pre-downloaded artifacts context ─────────────────────────────────────────
 # This stage provides an empty /pre-downloaded directory for standalone builds.
 # In Docker Bake CI builds the 'downloads' named context is overridden with a
-# runner-local directory pre-populated by actions/cache@v4 (via DOWNLOADS_DIR),
+# runner-local directory pre-populated by actions/cache@v5 (via DOWNLOADS_DIR),
 # which causes Docker to use those files instead of downloading from the internet.
 # When no named context is provided (local docker build / local testing), this
 # stage's empty /pre-downloaded directory causes all downloads to fall through to
@@ -75,7 +75,7 @@ RUN mkdir -p /tmp/libsodium \
 # Versions are resolved by CI and passed via CODESERVER_VERSION and
 # COPILOT_CHAT_VERSION build args; standalone builds use the Dockerfile defaults.
 # /pre-downloaded (bind-mounted from the 'downloads' named context) holds files
-# pre-seeded by CI via actions/cache@v4 so they are never re-downloaded for the
+# pre-seeded by CI via actions/cache@v5 so they are never re-downloaded for the
 # same version even when Docker layers change.
 RUN --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sharing=locked \
     --mount=type=cache,id=copilot-chat-vsix,target=/var/cache/copilot-chat-vsix,sharing=locked \

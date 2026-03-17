@@ -64,7 +64,7 @@ variable "COPILOT_CHAT_VSIX_SHA256"      { default = ""                         
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 # DOWNLOADS_DIR: path to a directory whose pre-downloaded/ subdirectory contains
 # pre-seeded build artifacts (code-server .deb files and Copilot Chat VSIX).
-# When set by CI to a runner-local path pre-populated by actions/cache@v4, the
+# When set by CI to a runner-local path pre-populated by actions/cache@v5, the
 # downloader stage bind-mounts /pre-downloaded from it instead of downloading.
 # When empty (default), no named context override is provided and the Dockerfile's
 # 'downloads' stage (FROM alpine:3 with an empty /pre-downloaded dir) is used,
