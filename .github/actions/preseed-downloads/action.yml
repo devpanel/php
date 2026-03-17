@@ -132,6 +132,10 @@ runs:
           curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
             "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/${DEB}" \
             -o "${{ runner.temp }}/code-server-debs/${DEB}"
+          # Validate the file is a proper .deb (ar archive with "!<arch>" magic).
+          # This catches cases where the server returned an error body with HTTP 200.
+          head -c 8 "${{ runner.temp }}/code-server-debs/${DEB}" | grep -qF '!<arch>' || \
+            { echo "ERROR: ${DEB} failed format validation (not a valid .deb archive)" >&2; exit 1; }
         done
 
     - name: Download Copilot Chat VSIX (cache miss)
@@ -144,6 +148,10 @@ runs:
         echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
         curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
           "${VSIX_URL}" -o "${{ runner.temp }}/copilot-chat.vsix"
+        # Validate the file is a proper ZIP archive (VSIX is a ZIP; magic bytes: PK 0x03 0x04 = 504b0304).
+        # This catches rate-limit or error HTML responses returned with HTTP 200.
+        od -An -N4 -tx1 "${{ runner.temp }}/copilot-chat.vsix" | tr -d ' \n' | grep -q '^504b0304' || \
+          { echo "ERROR: Downloaded VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
 
     - name: Assemble pre-downloaded directory
       id: assemble
