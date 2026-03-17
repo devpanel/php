@@ -147,11 +147,18 @@ function "cache_to" {
 # handled correctly.  The TAG_SUFFIX is appended once by the detect step, so a
 # plain replace on the tag portion always removes exactly one occurrence.
 
+# Helper: split a "registry/path:tag" ref into its [registry/path, tag] components.
+# Using a dedicated function means the regex pattern is written only once.
+function "_ref_components" {
+  params = [ref]
+  result = regex("^(.+):([^:]+)$", ref)
+}
+
 function "main_cache_ref" {
   params = [ref]
   result = join(":", [
-    regex("^(.+):([^:]+)$", ref)[0],
-    replace(regex("^(.+):([^:]+)$", ref)[1], TAG_SUFFIX, "")
+    _ref_components(ref)[0],
+    replace(_ref_components(ref)[1], TAG_SUFFIX, "")
   ])
 }
 
