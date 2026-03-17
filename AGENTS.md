@@ -75,7 +75,7 @@ Before starting any non-trivial task, create or update `TODO.md` at the reposito
    - CI workflows pass on the target branch.
    - Documentation and/or `AGENTS.md` updated if conventions changed.
 3. **Tick items off** as you complete them and keep `TODO.md` committed so progress is visible in the PR.
-4. **Remove or archive** the `TODO.md` file (or clear its contents) once the task is fully done and the PR is merged.
+4. **Clean up task entries** once the task is fully done and the PR is merged: remove the task-specific checklist and Definition of Done you added. Do **not** remove entries that were appended by tooling (e.g. lint scripts append persistent baseline-cleanup items here automatically — leave those in place until they are explicitly resolved).
 
 Example `TODO.md` structure:
 
