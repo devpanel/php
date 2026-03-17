@@ -71,10 +71,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Pre-seed build downloads
+        id: preseed
+        uses: ./.github/actions/preseed-downloads
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build PHP images
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHE_FROM_ENABLED: true
+          CACHE_FROM_ENABLED:          true
+          DOWNLOADS_DIR:               ${{ steps.preseed.outputs.downloads_dir }}
+          CODESERVER_VERSION:          ${{ steps.preseed.outputs.codeserver_version }}
+          CODESERVER_DEB_SHA256_AMD64: ${{ steps.preseed.outputs.codeserver_deb_sha256_amd64 }}
+          CODESERVER_DEB_SHA256_ARM64: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64 }}
+          COPILOT_CHAT_VERSION:        ${{ steps.preseed.outputs.copilot_chat_version }}
+          COPILOT_CHAT_VSIX_SHA256:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256 }}
         run: bash tests/build-dockerfile.sh
 
       - name: Run PHP functional tests
@@ -91,11 +102,11 @@ jobs:
       - name: Get pinned Copilot Chat version
         id: copilot-version
         run: |
-          echo "version=$(grep -m1 '^ARG COPILOT_CHAT_PINNED_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+          echo "version=$(grep -m1 '^ARG COPILOT_CHAT_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
 
-      - name: Restore Copilot Chat VSIX from cache
+      - name: Cache Copilot Chat VSIX
         id: cache-vsix
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/copilot-chat.vsix
           key: copilot-chat-vsix-${{ steps.copilot-version.outputs.version }}
@@ -139,11 +150,11 @@ jobs:
       - name: Get pinned code-server version
         id: cs-version
         run: |
-          echo "version=$(grep -m1 '^ARG CODESERVER_PINNED_HASH_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+          echo "version=$(grep -m1 '^ARG CODESERVER_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
 
-      - name: Restore code-server .deb files from cache
+      - name: Cache code-server .deb files
         id: cache-debs
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/code-server-debs
           key: code-server-debs-${{ steps.cs-version.outputs.version }}

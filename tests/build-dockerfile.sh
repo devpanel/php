@@ -110,23 +110,59 @@ fi
 #   GHCR_WRITABLE        false; registry cache write failures are non-fatal
 #                        (ignore-error=true).  GHA cache writes are unconditional
 #                        and unaffected by this flag.
-#   GITHUB_TOKEN         Forwarded so the downloader stage can call the GitHub
-#                        API to resolve CODESERVER_VERSION when not pinned.
+#   CODESERVER_VERSION   Version passed to the downloader stage.  When unset, the
+#                        ARG default in base/Dockerfile is used (docker-bake.hcl
+#                        passes no build arg when empty).  CI sets this from the
+#                        preseed-downloads composite action output.
+#   COPILOT_CHAT_VERSION Version passed to the downloader stage.  When unset, the
+#                        ARG default in base/Dockerfile is used (docker-bake.hcl
+#                        passes no build arg when empty).  CI sets this from the
+#                        preseed-downloads composite action output.
+#   DOWNLOADS_DIR        Path to a directory whose pre-downloaded/ subdirectory
+#                        contains pre-seeded artifacts.  When set by CI to a
+#                        runner-local directory populated by actions/cache@v5,
+#                        the downloader stage uses cached files instead of
+#                        re-downloading.  When empty (default), the Dockerfile's
+#                        'downloads' stage (FROM alpine:3 with an empty
+#                        /pre-downloaded dir) is used as the fallback.
+#   CODESERVER_DEB_SHA256_AMD64
+#                        SHA256 of the code-server amd64 .deb for the resolved
+#                        version.  When unset, the ARG default in base/Dockerfile
+#                        is used.  CI sets this from the preseed-downloads action
+#                        output (computed after download or cache restore).
+#   CODESERVER_DEB_SHA256_ARM64
+#                        Same as above for the arm64 .deb.
+#   COPILOT_CHAT_VSIX_SHA256
+#                        SHA256 of the Copilot Chat .vsix for the resolved
+#                        version.  When unset, the ARG default in base/Dockerfile
+#                        is used.  CI sets this from the preseed-downloads action
+#                        output.
 #
 # --load:
 #   Import built images into the local Docker daemon so that run-dockerfile.sh
 #   can run functional tests against them (requires single-platform build).
-VERSIONS="$VERSIONS_LIST" \
-VERSIONS_BASE="$VERSIONS_LIST" \
-VERSIONS_SECURE="$VERSIONS_LIST" \
-REPO="$TEST_REPO" \
-GHCR_REPO="$TEST_REPO" \
-TAG_SUFFIX="" \
-LATEST_PHP_VERSION="$LATEST_PHP_VERSION" \
-PLATFORMS="$PLATFORMS" \
-CACHE_FROM_ENABLED="${CACHE_FROM_ENABLED:-false}" \
-GHCR_WRITABLE=false \
-GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+BAKE_ENV=(
+  VERSIONS="$VERSIONS_LIST"
+  VERSIONS_BASE="$VERSIONS_LIST"
+  VERSIONS_SECURE="$VERSIONS_LIST"
+  REPO="$TEST_REPO"
+  GHCR_REPO="$TEST_REPO"
+  TAG_SUFFIX=""
+  LATEST_PHP_VERSION="$LATEST_PHP_VERSION"
+  PLATFORMS="$PLATFORMS"
+  "CACHE_FROM_ENABLED=${CACHE_FROM_ENABLED:-false}"
+  GHCR_WRITABLE=false
+)
+# Only forward the optional version/download/hash variables when they are set
+# to a non-empty value; docker-bake.hcl defaults all six to "" and omits them
+# as build args when empty, so the Dockerfile ARG defaults are the fallback.
+[ -n "${CODESERVER_VERSION:-}" ]          && BAKE_ENV+=( "CODESERVER_VERSION=${CODESERVER_VERSION}" )
+[ -n "${COPILOT_CHAT_VERSION:-}" ]        && BAKE_ENV+=( "COPILOT_CHAT_VERSION=${COPILOT_CHAT_VERSION}" )
+[ -n "${DOWNLOADS_DIR:-}" ]               && BAKE_ENV+=( "DOWNLOADS_DIR=${DOWNLOADS_DIR}" )
+[ -n "${CODESERVER_DEB_SHA256_AMD64:-}" ] && BAKE_ENV+=( "CODESERVER_DEB_SHA256_AMD64=${CODESERVER_DEB_SHA256_AMD64}" )
+[ -n "${CODESERVER_DEB_SHA256_ARM64:-}" ] && BAKE_ENV+=( "CODESERVER_DEB_SHA256_ARM64=${CODESERVER_DEB_SHA256_ARM64}" )
+[ -n "${COPILOT_CHAT_VSIX_SHA256:-}" ]    && BAKE_ENV+=( "COPILOT_CHAT_VSIX_SHA256=${COPILOT_CHAT_VSIX_SHA256}" )
+env "${BAKE_ENV[@]}" \
 docker buildx bake \
   --file "$REPO_ROOT/docker-bake.hcl" \
   --load

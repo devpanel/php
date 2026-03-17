@@ -10,11 +10,21 @@
 # GitHub Actions (type=gha) but never pushed to Docker Hub.
 ARG LATEST_PHP_VERSION=8.3
 ARG PHP_VERSION=8.3
+
+# ─── Pre-downloaded artifacts context ─────────────────────────────────────────
+# This stage provides an empty /pre-downloaded directory for standalone builds.
+# In Docker Bake CI builds the 'downloads' named context is overridden with a
+# runner-local directory pre-populated by actions/cache@v5 (via DOWNLOADS_DIR),
+# which causes Docker to use those files instead of downloading from the internet.
+# When no named context is provided (local docker build / local testing), this
+# stage's empty /pre-downloaded directory causes all downloads to fall through to
+# the normal network download path.
+FROM alpine:3 AS downloads
+RUN mkdir -p /pre-downloaded
+
 FROM php:${LATEST_PHP_VERSION}-apache AS downloader
 
-ARG CODESERVER_MAJOR_VERSION=4
-ARG CODESERVER_PINNED_HASH_VERSION=4.99.4
-ARG CODESERVER_VERSION=$CODESERVER_PINNED_HASH_VERSION
+ARG CODESERVER_VERSION=4.99.4
 ARG CODESERVER_DEB_SHA256_AMD64=74c107b33643ed11223263b86431530fbc9c9f7c8202997579a6f0c41b4cb102
 ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e5de9d55f1e2077c3
 
@@ -28,44 +38,26 @@ ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e
 #     (e.g. 0.26.7, visible as "0.26.0 … 0.26.7" in the VS Code desktop UI).
 #   • Pre-release builds use a build-date-stamped format: MAJOR.MINOR.YYYYMMDDNN
 #     (e.g. 0.26.2025040204 = series 0.26, released 2025-04-02, build 04).
-# Only stable releases are used (see auto-detect logic below).
-# Production Docker Bake builds pass COPILOT_CHAT_VERSION="" (the default in
-# docker-bake.hcl), which overrides the Dockerfile default and triggers the
-# auto-detection block below.  Auto-detection queries the VS Marketplace API
-# and returns only the latest STABLE release whose engine requirement is
-# satisfied by the bundled VS Code version.
+# Only stable releases are passed by CI (patch ≤ 9 digits excludes date-stamps).
 # code-server 4.X.Y bundles VS Code 1.X.Y (e.g. 4.99.4 → VS Code 1.99.4).
 #
-# Pinned version
-# ──────────────
-# COPILOT_CHAT_PINNED_VERSION is the Dockerfile default: a known-good stable
-# release compatible with code-server 4.99.4 (VS Code 1.99.4).  It is used
-# when COPILOT_CHAT_VERSION is not overridden (e.g. a plain `docker build .`
-# without Bake).  The CI "Verify Copilot Chat VSIX" job downloads the pinned
-# version from the VS Marketplace API, confirms the file is a valid ZIP, and
-# verifies the SHA256.
+# CI resolves the latest compatible stable versions before the build and passes
+# them explicitly via CODESERVER_VERSION and COPILOT_CHAT_VERSION build args.
+# The defaults below are used for standalone `docker build` invocations.
 #
-# To update the pin, download the new VSIX from the VS Marketplace API URL with
-# --compressed so curl decompresses the gzip transfer encoding (required):
-#   curl -fsSL --compressed \
-#     "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/<ver>/vspackage" \
-#     -o copilot-chat-<ver>.vsix
-# Then run one of (use the appropriate command for your platform):
-#   sha256sum copilot-chat-<ver>.vsix          # Linux
-#   shasum -a 256 copilot-chat-<ver>.vsix      # macOS
-# Update COPILOT_CHAT_PINNED_VERSION and COPILOT_CHAT_VSIX_SHA256 below
-# (see README for step-by-step instructions).
-ARG COPILOT_CHAT_PINNED_VERSION=0.26.7
-# COPILOT_CHAT_VERSION: defaults to COPILOT_CHAT_PINNED_VERSION (the same
-# pattern used by CODESERVER_VERSION above).  Docker Bake passes an explicit
-# empty string to trigger auto-detection and use the latest STABLE release
-# compatible with the bundled VS Code version.  Pass an explicit non-empty
-# version to reproduce a specific build with SHA verification.
-ARG COPILOT_CHAT_VERSION=$COPILOT_CHAT_PINNED_VERSION
-# SHA256 of the VSIX downloaded from the VS Marketplace vspackage endpoint for
-# COPILOT_CHAT_PINNED_VERSION (architecture-independent).
-# The integrity check only runs when the downloaded version equals the pinned
-# version AND this value is non-empty.
+# To update the defaults or SHA256 values:
+#   1. Find the latest code-server release at github.com/coder/code-server/releases
+#   2. Download the VSIX with --compressed so curl decompresses transfer encoding:
+#      curl -fsSL --compressed \
+#        "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/<ver>/vspackage" \
+#        -o copilot-chat-<ver>.vsix
+#   3. Run: sha256sum copilot-chat-<ver>.vsix   (Linux) or
+#           shasum -a 256 copilot-chat-<ver>.vsix (macOS)
+#   4. Update COPILOT_CHAT_VERSION and COPILOT_CHAT_VSIX_SHA256 below.
+ARG COPILOT_CHAT_VERSION=0.26.7
+# SHA256 of the VSIX downloaded from the VS Marketplace vspackage endpoint
+# (architecture-independent).  CI passes the value computed at download time;
+# standalone builds verify against this pinned value.
 ARG COPILOT_CHAT_VSIX_SHA256=691e80194fdba0399879fd065a76b9b14b32bfd29818292e816a4522eb0330d1
 
 # Install unzip and zip early so they are available for VSIX validation and
@@ -80,50 +72,15 @@ RUN mkdir -p /tmp/libsodium \
        | tar xzf - -C /tmp/libsodium
 
 # Download code-server deb and GitHub Copilot Chat VSIX.
-# php -r is used for the optional dynamic-version resolution of both.
-# Both downloads are in the same RUN step so that the resolved
-# CODESERVER_VERSION is available when auto-detecting COPILOT_CHAT_VERSION.
-RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN,required=false \
-    --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sharing=locked \
+# Versions are resolved by CI and passed via CODESERVER_VERSION and
+# COPILOT_CHAT_VERSION build args; standalone builds use the Dockerfile defaults.
+# /pre-downloaded (bind-mounted from the 'downloads' named context) holds files
+# pre-seeded by CI via actions/cache@v5 so they are never re-downloaded for the
+# same version even when Docker layers change.
+RUN --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sharing=locked \
     --mount=type=cache,id=copilot-chat-vsix,target=/var/cache/copilot-chat-vsix,sharing=locked \
+    --mount=type=bind,from=downloads,source=/pre-downloaded,target=/pre-downloaded,readonly \
   set -e; \
-  if [ -z "$CODESERVER_VERSION" ]; then \
-    if [ -n "${GITHUB_TOKEN:-}" ]; then \
-      RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
-        -H 'Accept: application/vnd.github+json' \
-        -H 'X-GitHub-Api-Version: 2022-11-28' \
-        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-        https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
-    else \
-      RELEASES_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
-        -H 'Accept: application/vnd.github+json' \
-        -H 'X-GitHub-Api-Version: 2022-11-28' \
-        https://api.github.com/repos/coder/code-server/releases?per_page=100)"; \
-    fi; \
-  CODESERVER_VERSION="$(printf '%s' "$RELEASES_JSON" | php -r ' \
-$major = $argv[1]; \
-$releases = json_decode(stream_get_contents(STDIN), true); \
- \
-if (!is_array($releases)) { \
-  fwrite(STDERR, "Failed to parse releases JSON\n"); \
-  exit(2); \
-} \
- \
-foreach ($releases as $release) { \
-  if (($release["draft"] ?? false) || ($release["prerelease"] ?? false)) { \
-    continue; \
-  } \
- \
-  $tag = $release["tag_name"] ?? ""; \
-  if (preg_match("/^v?" . preg_quote($major, "/") . "\\.[0-9]+\\.[0-9]+(?:[-+].*)?$/", $tag)) { \
-    echo ltrim($tag, "v"); \
-    exit(0); \
-  } \
-} \
- \
-exit(1); \
-' "$CODESERVER_MAJOR_VERSION")" || { echo "Unable to resolve code-server major $CODESERVER_MAJOR_VERSION from GitHub releases" >&2; exit 1; }; \
-  fi; \
   # code-server is required: fail build if version is empty
   [ -n "$CODESERVER_VERSION" ] || { echo "CODESERVER_VERSION is empty" >&2; exit 1; }; \
   DEB_ARCH="$(dpkg --print-architecture)"; \
@@ -132,69 +89,39 @@ exit(1); \
   DEB_CACHE="/var/cache/code-server-debs/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
   DEB_CACHE_TMP="${DEB_CACHE}.tmp"; \
   if [ ! -f "$DEB_CACHE" ]; then \
-    echo "Downloading code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; \
-    curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o "$DEB_CACHE_TMP" \
-      && mv "$DEB_CACHE_TMP" "$DEB_CACHE" \
-      || { rm -f "$DEB_CACHE_TMP"; echo "Failed to download code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; exit 1; }; \
+    DEB_PRELOADED="/pre-downloaded/code-server_${CODESERVER_VERSION}_${DEB_ARCH}.deb"; \
+    if [ -f "$DEB_PRELOADED" ]; then \
+      echo "Using pre-seeded code-server ${CODESERVER_VERSION} ${DEB_ARCH} from downloads context" >&2; \
+      cp "$DEB_PRELOADED" "$DEB_CACHE"; \
+    else \
+      echo "Downloading code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; \
+      curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 "$DEB_URL" -o "$DEB_CACHE_TMP" \
+        && mv "$DEB_CACHE_TMP" "$DEB_CACHE" \
+        || { rm -f "$DEB_CACHE_TMP"; echo "Failed to download code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; exit 1; }; \
+    fi; \
   else \
     echo "Using cached code-server ${CODESERVER_VERSION} ${DEB_ARCH}" >&2; \
   fi; \
   cp "$DEB_CACHE" /tmp/code-server.deb; \
-  if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
-    case "$DEB_ARCH" in \
-      amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
-      arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
-    esac; \
-    if ! echo "$DEB_SHA256  /tmp/code-server.deb" | sha256sum -c -; then \
-      rm -f "$DEB_CACHE"; \
-      echo "SHA256 mismatch for code-server — cache cleared, please retry" >&2; \
-      exit 1; \
-    fi; \
+  case "$DEB_ARCH" in \
+    amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64"; SHA_ARG="CODESERVER_DEB_SHA256_AMD64" ;; \
+    arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64"; SHA_ARG="CODESERVER_DEB_SHA256_ARM64" ;; \
+  esac; \
+  [ -n "$DEB_SHA256" ] || { echo "${SHA_ARG} is empty — pass a matching hash when overriding CODESERVER_VERSION" >&2; exit 1; }; \
+  if ! echo "$DEB_SHA256  /tmp/code-server.deb" | sha256sum -c -; then \
+    ACTUAL_SHA="$(sha256sum /tmp/code-server.deb | awk '{print $1}')"; \
+    rm -f "$DEB_CACHE"; \
+    echo "SHA256 mismatch for code-server ${CODESERVER_VERSION} ${DEB_ARCH}:" >&2; \
+    echo "  expected: ${DEB_SHA256}" >&2; \
+    echo "  actual:   ${ACTUAL_SHA}" >&2; \
+    echo "If you changed CODESERVER_VERSION, also update ${SHA_ARG} to match." >&2; \
+    exit 1; \
   fi; \
   \
   # Download GitHub Copilot Chat VSIX (not available in Open VSX marketplace). \
-  # If COPILOT_CHAT_VERSION is empty, detect the latest stable version compatible \
-  # with the VS Code release bundled in this code-server version. \
-  # code-server 4.X.Y bundles VS Code 1.X.Y (e.g. 4.99.4 → 1.99.4). \
-  # Only stable releases are considered: pre-release builds use a 10-digit \
-  # date-stamped patch component (YYYYMMDDNN, e.g. 2025040204) which is excluded \
-  # by limiting the patch to at most 9 digits (< 10^9, i.e. not a date-stamp). \
-  if [ -z "$COPILOT_CHAT_VERSION" ]; then \
-    VSCODE_VERSION="$(printf '%s' "$CODESERVER_VERSION" | sed 's/^[0-9][0-9]*\./1./')"; \
-    MARKETPLACE_JSON="$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 \
-      -X POST \
-      -H 'Content-Type: application/json' \
-      -H 'Accept: application/json;api-version=3.0-preview.1' \
-      -d '{"filters":[{"criteria":[{"filterType":7,"value":"GitHub.copilot-chat"}],"pageSize":100}],"flags":17}' \
-      'https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery')"; \
-    COPILOT_CHAT_VERSION="$(printf '%s' "$MARKETPLACE_JSON" | php -r ' \
-$vscode_version = $argv[1]; \
-$response = json_decode(stream_get_contents(STDIN), true); \
- \
-if (!is_array($response)) { \
-  fwrite(STDERR, "Failed to parse Marketplace API response\n"); \
-  exit(2); \
-} \
- \
-$versions = $response["results"][0]["extensions"][0]["versions"] ?? []; \
-foreach ($versions as $v) { \
-  $ver = $v["version"] ?? ""; \
-  if (!preg_match("/^\d+\.\d+\.\d{1,9}$/", $ver)) continue; \
-  $engine = ""; \
-  foreach ($v["properties"] ?? [] as $p) { \
-    if ($p["key"] === "Microsoft.VisualStudio.Code.Engine") { \
-      $engine = preg_replace("/^[\\^~>=]+/", "", $p["value"]); \
-      $engine = preg_replace("/-.*$/", "", $engine); \
-      break; \
-    } \
-  } \
-  if (empty($engine)) continue; \
-  if (version_compare($vscode_version, $engine, ">=")) { echo $ver; exit(0); } \
-} \
-fwrite(STDERR, "No compatible copilot-chat version found for VS Code " . $vscode_version . "\n"); \
-exit(1); \
-' "$VSCODE_VERSION")" || { echo "Unable to auto-detect copilot-chat version for VS Code $VSCODE_VERSION (check preceding errors)" >&2; exit 1; }; \
-  fi; \
+  # COPILOT_CHAT_VERSION is always provided — CI resolves it before the build and \
+  # standalone builds fall back to the Dockerfile default. \
+  [ -n "$COPILOT_CHAT_VERSION" ] || { echo "COPILOT_CHAT_VERSION is empty" >&2; exit 1; }; \
   # Validate the version matches semver major.minor.patch with optional pre-release/
   # build metadata using only URL-safe characters. This prevents a malformed URL
   # from being constructed: an empty string, path separator, or other unexpected
@@ -207,20 +134,29 @@ exit(1); \
   VSIX_CACHE="/var/cache/copilot-chat-vsix/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"; \
   VSIX_CACHE_TMP="${VSIX_CACHE}.tmp"; \
   if [ ! -f "$VSIX_CACHE" ]; then \
-    echo "Downloading Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
-    curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o "$VSIX_CACHE_TMP" \
-      && mv "$VSIX_CACHE_TMP" "$VSIX_CACHE" \
-      || { rm -f "$VSIX_CACHE_TMP"; echo "Failed to download Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; exit 1; }; \
+    VSIX_PRELOADED="/pre-downloaded/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"; \
+    if [ -f "$VSIX_PRELOADED" ]; then \
+      echo "Using pre-seeded Copilot Chat VSIX ${COPILOT_CHAT_VERSION} from downloads context" >&2; \
+      cp "$VSIX_PRELOADED" "$VSIX_CACHE"; \
+    else \
+      echo "Downloading Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
+      curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o "$VSIX_CACHE_TMP" \
+        && mv "$VSIX_CACHE_TMP" "$VSIX_CACHE" \
+        || { rm -f "$VSIX_CACHE_TMP"; echo "Failed to download Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; exit 1; }; \
+    fi; \
   else \
     echo "Using cached Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
   fi; \
   cp "$VSIX_CACHE" /tmp/copilot-chat.vsix; \
-  if [ "$COPILOT_CHAT_VERSION" = "$COPILOT_CHAT_PINNED_VERSION" ] && [ -n "$COPILOT_CHAT_VSIX_SHA256" ]; then \
-    if ! echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; then \
-      rm -f "$VSIX_CACHE"; \
-      echo "SHA256 mismatch for Copilot Chat VSIX — cache cleared, please retry" >&2; \
-      exit 1; \
-    fi; \
+  [ -n "$COPILOT_CHAT_VSIX_SHA256" ] || { echo "COPILOT_CHAT_VSIX_SHA256 is empty — pass a matching hash when overriding COPILOT_CHAT_VERSION" >&2; exit 1; }; \
+  if ! echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; then \
+    ACTUAL_SHA="$(sha256sum /tmp/copilot-chat.vsix | awk '{print $1}')"; \
+    rm -f "$VSIX_CACHE"; \
+    echo "SHA256 mismatch for Copilot Chat VSIX ${COPILOT_CHAT_VERSION}:" >&2; \
+    echo "  expected: ${COPILOT_CHAT_VSIX_SHA256}" >&2; \
+    echo "  actual:   ${ACTUAL_SHA}" >&2; \
+    echo "If you changed COPILOT_CHAT_VERSION, also update COPILOT_CHAT_VSIX_SHA256 to match." >&2; \
+    exit 1; \
   fi; \
   # Verify the download is a valid ZIP (VSIX is a ZIP archive).
   # A ZIP file starts with the PK magic bytes: 50 4b 03 04 (hex).
@@ -311,8 +247,8 @@ ENV CODES_ENABLE=yes
 # resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && for i in $(seq 1 3); do \
-      apt-get update && apt-get upgrade -y \
-        && apt-get install -y --no-install-recommends \
+      apt-get update && apt-get upgrade -y --fix-missing \
+        && apt-get install -y --fix-missing --no-install-recommends \
           apt-utils \
           sendmail-bin \
           sendmail \
