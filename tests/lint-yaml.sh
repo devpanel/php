@@ -93,7 +93,7 @@ if [[ "$UPDATE_BASELINE" == true ]]; then
   cp "$TMP_CURRENT" "$BASELINE"
   if [[ "$count" == "0" ]]; then
     echo "All violations resolved. Baseline written as empty: $BASELINE"
-    TODO_ENTRY="- [ ] Remove yamllint baseline comparison: delete ${BASELINE##"$REPO_ROOT"/} and the baseline comparison logic from tests/lint-yaml.sh. After that, any new yamllint violation will be an immediate CI failure."
+    TODO_ENTRY="- [ ] Remove yamllint baseline comparison: delete ${BASELINE##"$REPO_ROOT"/} and the baseline comparison logic from tests/lint-yaml.sh, and update the script to fail when yamllint reports any violations (fail when the generated JSON is non-empty). After that, any new yamllint violation will be an immediate CI failure."
     if ! grep -qFe "$TODO_ENTRY" "${REPO_ROOT}/TODO.md" 2>/dev/null; then
       echo "$TODO_ENTRY" >> "${REPO_ROOT}/TODO.md"
       echo "TODO entry appended to TODO.md — remove the baseline comparison for this linter entirely."
