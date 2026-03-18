@@ -24,9 +24,6 @@ cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
 # Replace // by /.
 sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 
-# install Drush 7, 8, 9, 10, 11.
-[ -f "/home/${SUDO_USER:-$USER}/.bashrc" ] && source "/home/${SUDO_USER:-$USER}/.bashrc"
-
 # Ensure the code-server user-data directory exists and is owned by the target user.
 if [[ ! -d "$CODES_USER_DATA_DIR" ]]; then
   mkdir -p "$CODES_USER_DATA_DIR"
@@ -39,14 +36,14 @@ fi
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
   # Install the GitHub Copilot Chat extension and any user-specified VSCode extensions.
-  sudo -u "${SUDO_USER:-$USER}" -E -- code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir=$CODES_USER_DATA_DIR
+  sudo -u "${SUDO_USER:-$USER}" -E -- code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir="$CODES_USER_DATA_DIR"
   if [ -n "${DP_VSCODE_EXTENSIONS:-}" ]; then
     IFS=',' read -ra _dp_extensions <<< "$DP_VSCODE_EXTENSIONS"
     for value in "${_dp_extensions[@]}"; do
       value="${value#"${value%%[![:space:]]*}"}"
       value="${value%"${value##*[![:space:]]}"}"
       [ -z "$value" ] && continue
-      sudo -u "${SUDO_USER:-$USER}" -E -- code-server --install-extension "$value" --user-data-dir=$CODES_USER_DATA_DIR
+      sudo -u "${SUDO_USER:-$USER}" -E -- code-server --install-extension "$value" --user-data-dir="$CODES_USER_DATA_DIR"
     done
   fi
 
@@ -54,9 +51,9 @@ if [[ "$CODES_ENABLE" == "yes" ]]; then
   apache2-foreground &
   # Start the helper process.
   if [[ "$CODES_AUTH" == "yes" ]]; then
-    sudo -u "${SUDO_USER:-$USER}" -E -- code-server --port $CODES_PORT --host 0.0.0.0 $CODES_WORKING_DIR --user-data-dir=$CODES_USER_DATA_DIR
+    sudo -u "${SUDO_USER:-$USER}" -E -- code-server --port "$CODES_PORT" --host 0.0.0.0 "$CODES_WORKING_DIR" --user-data-dir="$CODES_USER_DATA_DIR"
   else
-    sudo -u "${SUDO_USER:-$USER}" -E -- code-server --auth none --port $CODES_PORT --host 0.0.0.0 $CODES_WORKING_DIR --user-data-dir=$CODES_USER_DATA_DIR
+    sudo -u "${SUDO_USER:-$USER}" -E -- code-server --auth none --port "$CODES_PORT" --host 0.0.0.0 "$CODES_WORKING_DIR" --user-data-dir="$CODES_USER_DATA_DIR"
   fi
   # Now bring it to the foreground.
   fg %1
