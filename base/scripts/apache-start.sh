@@ -28,8 +28,10 @@ sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 [ -f "/home/${SUDO_USER:-$USER}/.bashrc" ] && source "/home/${SUDO_USER:-$USER}/.bashrc"
 
 # Ensure the code-server user-data directory exists and is owned by the target user.
-mkdir -p "$CODES_USER_DATA_DIR"
-chown -R "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR"
+if [[ ! -d "$CODES_USER_DATA_DIR" ]]; then
+  mkdir -p "$CODES_USER_DATA_DIR"
+  chown -R "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR"
+fi
 
 # Install any custom packages.
 [ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] && /bin/bash "$APP_ROOT/.devpanel/custom_package_installer.sh"  >> /tmp/custom_package_installer.log
