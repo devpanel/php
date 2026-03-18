@@ -1,26 +1,36 @@
 #!/bin/bash
 # Turn on bash's job control.
 
+# Escape a value for safe use as a sed replacement string when using | as the delimiter.
+# Escapes backslash, ampersand, and pipe — the characters special in sed replacement with this delimiter.
+_escape_sed() { printf '%s' "$1" | sed 's/[\\&|]/\\&/g'; }
+
 cp /templates/apache2.conf /etc/apache2/apache2.conf
 cp /templates/000-default.conf /etc/apache2/sites-enabled/000-default.conf
 cp /templates/php.ini "${PHP_EXT_DIR}/zz-www.ini"
 
 # Substitute in php.ini values.
-[ ! -z "${PHP_CLEAR_ENV}" ] && sed -i "s|{{PHP_CLEAR_ENV}}|${PHP_CLEAR_ENV}|" "${PHP_EXT_DIR}/zz-www.ini"
-[ ! -z "${PHP_MEMORY_LIMIT}" ] && sed -i "s|{{PHP_MEMORY_LIMIT}}|${PHP_MEMORY_LIMIT}|" "${PHP_EXT_DIR}/zz-www.ini"
-[ ! -z "${PHP_UPLOAD_MAX_FILESIZE}" ] && sed -i "s|{{PHP_UPLOAD_MAX_FILESIZE}}|${PHP_UPLOAD_MAX_FILESIZE}|" "${PHP_EXT_DIR}/zz-www.ini"
-[ ! -z "${PHP_POST_MAX_SIZE}" ] && sed -i "s|{{PHP_POST_MAX_SIZE}}|${PHP_POST_MAX_SIZE}|" "${PHP_EXT_DIR}/zz-www.ini"
-[ ! -z "${PHP_MAX_EXECUTION_TIME}" ] && sed -i "s|{{PHP_MAX_EXECUTION_TIME}}|${PHP_MAX_EXECUTION_TIME}|" "${PHP_EXT_DIR}/zz-www.ini"
-[ ! -z "${PHP_MAX_INPUT_TIME}" ] && sed -i "s|{{PHP_MAX_INPUT_TIME}}|${PHP_MAX_INPUT_TIME}|" "${PHP_EXT_DIR}/zz-www.ini"
-[ ! -z "${PHP_MAX_INPUT_VARS}" ] && sed -i "s|{{PHP_MAX_INPUT_VARS}}|${PHP_MAX_INPUT_VARS}|" "${PHP_EXT_DIR}/zz-www.ini"
+[ -n "${PHP_CLEAR_ENV:-}" ] && sed -i "s|{{PHP_CLEAR_ENV}}|${PHP_CLEAR_ENV}|" "${PHP_EXT_DIR}/zz-www.ini"
+[ -n "${PHP_MEMORY_LIMIT:-}" ] && sed -i "s|{{PHP_MEMORY_LIMIT}}|${PHP_MEMORY_LIMIT}|" "${PHP_EXT_DIR}/zz-www.ini"
+[ -n "${PHP_UPLOAD_MAX_FILESIZE:-}" ] && sed -i "s|{{PHP_UPLOAD_MAX_FILESIZE}}|${PHP_UPLOAD_MAX_FILESIZE}|" "${PHP_EXT_DIR}/zz-www.ini"
+[ -n "${PHP_POST_MAX_SIZE:-}" ] && sed -i "s|{{PHP_POST_MAX_SIZE}}|${PHP_POST_MAX_SIZE}|" "${PHP_EXT_DIR}/zz-www.ini"
+[ -n "${PHP_MAX_EXECUTION_TIME:-}" ] && sed -i "s|{{PHP_MAX_EXECUTION_TIME}}|${PHP_MAX_EXECUTION_TIME}|" "${PHP_EXT_DIR}/zz-www.ini"
+[ -n "${PHP_MAX_INPUT_TIME:-}" ] && sed -i "s|{{PHP_MAX_INPUT_TIME}}|${PHP_MAX_INPUT_TIME}|" "${PHP_EXT_DIR}/zz-www.ini"
+[ -n "${PHP_MAX_INPUT_VARS:-}" ] && sed -i "s|{{PHP_MAX_INPUT_VARS}}|${PHP_MAX_INPUT_VARS}|" "${PHP_EXT_DIR}/zz-www.ini"
 
 # Add custom php.ini if it exists.
 [ -f "$PHP_CUSTOM_INI" ] && cp "$PHP_CUSTOM_INI" "${PHP_EXT_DIR}/zzz-www-custom.ini"
 
 # Custom Environment variables in /etc/apache2/sites-enabled/000-default.conf.
-[ ! -z "$APP_ROOT" ] && sed -i "s|{{APP_ROOT}}|${APP_ROOT}|" /etc/apache2/sites-enabled/000-default.conf
-[ ! -z "$WEB_ROOT" ] && sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|" /etc/apache2/sites-enabled/000-default.conf
-[ ! -z "$SERVER_NAME" ] && sed -i "s|{{SERVER_NAME}}|${SERVER_NAME}|" /etc/apache2/sites-enabled/000-default.conf
+if [ -n "${APP_ROOT:-}" ]; then
+  _v=$(_escape_sed "${APP_ROOT}"); sed -i "s|{{APP_ROOT}}|${_v}|" /etc/apache2/sites-enabled/000-default.conf
+fi
+if [ -n "${WEB_ROOT:-}" ]; then
+  _v=$(_escape_sed "${WEB_ROOT}"); sed -i "s|{{WEB_ROOT}}|${_v}|" /etc/apache2/sites-enabled/000-default.conf
+fi
+if [ -n "${SERVER_NAME:-}" ]; then
+  _v=$(_escape_sed "${SERVER_NAME}"); sed -i "s|{{SERVER_NAME}}|${_v}|" /etc/apache2/sites-enabled/000-default.conf
+fi
 # Replace // by /.
 sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 
