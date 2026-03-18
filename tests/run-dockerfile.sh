@@ -162,7 +162,7 @@ test_base() {
   # GitHub Copilot Chat extension must be installable from the pre-staged VSIX.
   # code-server installs to $HOME/.local/share/code-server/extensions by default.
   assert_contains "$image" "github\.copilot-chat" "GitHub Copilot Chat extension installs and is found" \
-    sh -c "code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix && ls /home/www/.local/share/code-server/extensions/"
+    sh -c "code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir /var/www/html/.vscode && ls /var/www/html/.vscode/extensions/"
 }
 
 test_secure() {
