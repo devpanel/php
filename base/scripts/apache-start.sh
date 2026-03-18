@@ -3,7 +3,7 @@
 
 cp /templates/apache2.conf /etc/apache2/apache2.conf
 cp /templates/000-default.conf /etc/apache2/sites-enabled/000-default.conf
-cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
+cp /templates/php.ini "${PHP_EXT_DIR}/zz-www.ini"
 
 # Substitute in php.ini values.
 [ ! -z "${PHP_CLEAR_ENV}" ] && sed -i "s|{{PHP_CLEAR_ENV}}|${PHP_CLEAR_ENV}|" ${PHP_EXT_DIR}/zz-www.ini
@@ -15,7 +15,7 @@ cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
 [ ! -z "${PHP_MAX_INPUT_VARS}" ] && sed -i "s|{{PHP_MAX_INPUT_VARS}}|${PHP_MAX_INPUT_VARS}|" ${PHP_EXT_DIR}/zz-www.ini
 
 # Add custom php.ini if it exists.
-[ -f "$PHP_CUSTOM_INI" ] && cp $PHP_CUSTOM_INI ${PHP_EXT_DIR}/zzz-www-custom.ini
+[ -f "$PHP_CUSTOM_INI" ] && cp "$PHP_CUSTOM_INI" "${PHP_EXT_DIR}/zzz-www-custom.ini"
 
 # Custom Environment variables in /etc/apache2/sites-enabled/000-default.conf.
 [ ! -z "$APP_ROOT" ] && sed -i "s|{{APP_ROOT}}|${APP_ROOT}|" /etc/apache2/sites-enabled/000-default.conf
@@ -25,10 +25,8 @@ cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
 sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 
 # Ensure the code-server user-data directory exists and is owned by the target user.
-if [[ ! -d "$CODES_USER_DATA_DIR" ]]; then
-  mkdir -p "$CODES_USER_DATA_DIR"
-  chown -R "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR"
-fi
+mkdir -p "$CODES_USER_DATA_DIR"
+chown "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR"
 
 # Install any custom packages.
 [ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] && /bin/bash "$APP_ROOT/.devpanel/custom_package_installer.sh"  >> /tmp/custom_package_installer.log
@@ -36,14 +34,19 @@ fi
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
   # Install the GitHub Copilot Chat extension and any user-specified VSCode extensions.
-  sudo -u "${SUDO_USER:-$USER}" -E -- code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir="$CODES_USER_DATA_DIR"
+  if [ -z "$(find "$CODES_USER_DATA_DIR/extensions/" -maxdepth 1 -iname 'github.copilot-chat-*' -type d 2>/dev/null)" ]; then
+    sudo -u "${SUDO_USER:-$USER}" -E -- code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir="$CODES_USER_DATA_DIR"
+  fi
   if [ -n "${DP_VSCODE_EXTENSIONS:-}" ]; then
     IFS=',' read -ra _dp_extensions <<< "$DP_VSCODE_EXTENSIONS"
     for value in "${_dp_extensions[@]}"; do
       value="${value#"${value%%[![:space:]]*}"}"
       value="${value%"${value##*[![:space:]]}"}"
       [ -z "$value" ] && continue
-      sudo -u "${SUDO_USER:-$USER}" -E -- code-server --install-extension "$value" --user-data-dir="$CODES_USER_DATA_DIR"
+      _ext_id="${value%%@*}"
+      if [ -z "$(find "$CODES_USER_DATA_DIR/extensions/" -maxdepth 1 -iname "${_ext_id}-*" -type d 2>/dev/null)" ]; then
+        sudo -u "${SUDO_USER:-$USER}" -E -- code-server --install-extension "$value" --user-data-dir="$CODES_USER_DATA_DIR"
+      fi
     done
   fi
 
