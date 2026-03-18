@@ -34,7 +34,7 @@ set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
   # Ensure the code-server user-data directory exists and is owned by the target user.
   mkdir -p "$CODES_USER_DATA_DIR"
-  chown "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR"
+  chown -R "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR"
   # Install the GitHub Copilot Chat extension and any user-specified VSCode extensions.
   sudo -u "${SUDO_USER:-$USER}" -E -- code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir=$CODES_USER_DATA_DIR
   if [ -n "${DP_VSCODE_EXTENSIONS:-}" ]; then
