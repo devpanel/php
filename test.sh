@@ -56,7 +56,7 @@ run_suite() {
   local name="$1"
   local script="$2"
   shift 2
-  info "Running $name…"
+  info "Running ${name}…"
   if bash "$script" "$@"; then
     pass "$name passed"
   else

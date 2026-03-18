@@ -22,7 +22,11 @@ TAG_PREFIX="devpanel-php-test"
 if [[ $# -gt 0 ]]; then
   images=("$@")
 else
-  mapfile -t images < <(docker images --format '{{.Repository}}:{{.Tag}}' \
+  # macOS ships Bash 3.2, which does not provide mapfile.
+  images=()
+  while IFS= read -r image; do
+    images+=("$image")
+  done < <(docker images --format '{{.Repository}}:{{.Tag}}' \
     | grep "^${TAG_PREFIX}:" || true)
 fi
 

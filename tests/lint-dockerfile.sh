@@ -30,7 +30,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
-  mapfile -t FILES < <(find "$REPO_ROOT" -name "Dockerfile" -not -path "*/.git/*" | sort)
+  # macOS ships Bash 3.2, which does not provide mapfile.
+  while IFS= read -r file; do
+    FILES+=("$file")
+  done < <(find "$REPO_ROOT" -name "Dockerfile" -not -path "*/.git/*" | sort)
 fi
 
 # ---------------------------------------------------------------------------

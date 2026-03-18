@@ -195,7 +195,11 @@ test_advance() {
 # Run tests per version
 # ---------------------------------------------------------------------------
 OVERALL_FAIL=0
-mapfile -t SORTED_VERSIONS < <(printf '%s\n' "${!TEST_VERSIONS[@]}" | sort -V)
+# macOS ships Bash 3.2, which does not provide mapfile.
+SORTED_VERSIONS=()
+while IFS= read -r version; do
+  SORTED_VERSIONS+=("$version")
+done < <(printf '%s\n' "${!TEST_VERSIONS[@]}" | sort -V)
 
 echo "Running functional tests for PHP version(s): ${SORTED_VERSIONS[*]}"
 echo

@@ -165,7 +165,10 @@ if [[ -n "$BEFORE" && -n "$AFTER" ]]; then
       exit 1
     }
     if [[ -n "$_diff_out" ]]; then
-      mapfile -t _diff_arr <<< "$_diff_out"
+      _diff_arr=()
+      while IFS= read -r file; do
+        _diff_arr+=("$file")
+      done <<< "$_diff_out"
       CHANGED_FILES+=("${_diff_arr[@]}")
     fi
   fi

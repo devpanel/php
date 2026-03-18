@@ -14,23 +14,36 @@ TESTS_DIR="${REPO_ROOT}/tests"
 # Input lines from git: "<local_ref> <local_sha> <remote_ref> <remote_sha>"
 CHANGED_FILES=()
 while read -r _local_ref local_sha _remote_ref remote_sha; do
+  batch=()
   if [[ "$remote_sha" == "0000000000000000000000000000000000000000" ]]; then
     # New branch — find the merge base with the remote default branch.
     default_remote_ref="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo 'origin/main')"
     merge_base="$(git merge-base HEAD "$default_remote_ref" 2>/dev/null || true)"
     if [[ -n "$merge_base" ]]; then
-      mapfile -t batch < <(git diff --name-only "$merge_base" "$local_sha" 2>/dev/null || true)
+      while IFS= read -r file; do
+        batch+=("$file")
+      done < <(git diff --name-only "$merge_base" "$local_sha" 2>/dev/null || true)
     else
-      mapfile -t batch < <(git diff --name-only HEAD~1 "$local_sha" 2>/dev/null || true)
+      while IFS= read -r file; do
+        batch+=("$file")
+      done < <(git diff --name-only HEAD~1 "$local_sha" 2>/dev/null || true)
     fi
   else
-    mapfile -t batch < <(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null || true)
+    while IFS= read -r file; do
+      batch+=("$file")
+    done < <(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null || true)
   fi
   CHANGED_FILES+=("${batch[@]}")
 done
 
 # Deduplicate.
-mapfile -t CHANGED_FILES < <(printf '%s\n' "${CHANGED_FILES[@]}" | sort -u)
+if [[ ${#CHANGED_FILES[@]} -gt 0 ]]; then
+  deduped=()
+  while IFS= read -r file; do
+    deduped+=("$file")
+  done < <(printf '%s\n' "${CHANGED_FILES[@]}" | sort -u)
+  CHANGED_FILES=("${deduped[@]}")
+fi
 
 if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
   exit 0
@@ -49,7 +62,10 @@ for f in "${CHANGED_FILES[@]}"; do
     */Dockerfile)      DOCKER_FILES+=("$full") ;;
     .github/workflows/*.yml | .github/workflows/*.yaml) YAML_FILES+=("$full") ;;
     .yamllint.yml)
-      mapfile -t _wf < <(find "${REPO_ROOT}/.github/workflows" -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null)
+      _wf=()
+      while IFS= read -r file; do
+        _wf+=("$file")
+      done < <(find "${REPO_ROOT}/.github/workflows" -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null)
       YAML_FILES+=("${_wf[@]+"${_wf[@]}"}")
       ;;
   esac
@@ -76,7 +92,10 @@ run_if_nonempty "YAML"       "${TESTS_DIR}/lint-yaml.sh"       "${YAML_FILES[@]+
 # this handles docker-bake.hcl and shared base/secure/advance/ changes in
 # addition to per-version Dockerfile changes.
 if [[ "${DEVPANEL_BUILD_ON_PUSH:-0}" == "1" ]]; then
-  mapfile -t _affected < <(
+  _affected=()
+  while IFS= read -r version; do
+    _affected+=("$version")
+  done < <(
     bash "${TESTS_DIR}/detect-versions.sh" --files "${CHANGED_FILES[@]}"
   )
   if [[ ${#_affected[@]} -gt 0 ]]; then

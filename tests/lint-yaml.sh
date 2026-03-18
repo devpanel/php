@@ -29,7 +29,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
-  mapfile -t FILES < <(find "$REPO_ROOT/.github" -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null | sort)
+  # macOS ships Bash 3.2, which does not provide mapfile.
+  while IFS= read -r file; do
+    FILES+=("$file")
+  done < <(find "$REPO_ROOT/.github" -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null | sort)
 fi
 
 # ---------------------------------------------------------------------------

@@ -27,7 +27,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
-  mapfile -t FILES < <(
+  # macOS ships Bash 3.2, which does not provide mapfile.
+  while IFS= read -r file; do
+    FILES+=("$file")
+  done < <(
     {
       find "$REPO_ROOT" -name "*.sh" -not -path "*/.git/*"
       find "$REPO_ROOT/.githooks" -type f -not -path "*/.git/*" 2>/dev/null || true
