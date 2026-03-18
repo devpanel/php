@@ -343,6 +343,8 @@ RUN chmod +x /usr/local/bin/devpanel && devpanel version
 COPY --from=common templates /templates
 COPY --from=common scripts   /scripts
 COPY --from=common drush     /drush
+COPY --from=common config/drush.yml /etc/drush/drush.yml
+COPY --from=common config/mariadb-client.cnf /etc/mysql/conf.d/drupalforge.cnf
 
 # Install BEE CLI (identical across all PHP versions)
 RUN mkdir /bee && git clone https://github.com/backdrop-contrib/bee.git /bee \
