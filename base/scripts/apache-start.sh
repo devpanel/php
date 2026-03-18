@@ -25,13 +25,16 @@ cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
 sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 
 # install Drush 7, 8, 9, 10, 11.
-source ~/.bashrc
+[ -f "/home/${SUDO_USER:-$USER}/.bashrc" ] && source "/home/${SUDO_USER:-$USER}/.bashrc"
 
 # Install any custom packages.
 [ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] && /bin/bash "$APP_ROOT/.devpanel/custom_package_installer.sh"  >> /tmp/custom_package_installer.log
 
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
+  # Ensure the code-server user-data directory exists and is owned by the target user.
+  mkdir -p "$CODES_USER_DATA_DIR"
+  chown "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR"
   # Install the GitHub Copilot Chat extension and any user-specified VSCode extensions.
   sudo -u "${SUDO_USER:-$USER}" -E -- code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir=$CODES_USER_DATA_DIR
   if [ -n "${DP_VSCODE_EXTENSIONS:-}" ]; then
