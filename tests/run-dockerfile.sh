@@ -164,7 +164,7 @@ test_base() {
   # running the install command (as the www user does at container startup) and
   # then listing the directory to confirm the extension landed there.
   assert_contains "$image" "github\.copilot-chat" "GitHub Copilot Chat extension installs and is found" \
-    sh -c "code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir=/var/www/html/.vscode && ls /var/www/html/.vscode/extensions/"
+    sh -c "code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix && ls /var/www/html/.vscode/extensions/"
 }
 
 test_secure() {
