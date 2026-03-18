@@ -211,7 +211,7 @@ ENV USER=www
 ENV GROUP=www
 ENV UID=1000
 ENV GID=1000
-ENV HOME=/home/www
+ENV HOME=/home/$USER
 ENV SHELL=/bin/bash
 
 #== Default Environments
@@ -330,7 +330,7 @@ RUN groupadd -g ${GID} ${GROUP} \
                --create-home --home-dir /home/${USER} ${USER} \
     && adduser ${USER} www-data \
     && usermod -aG sudo ${USER} \
-    && echo "www    ALL=(ALL:ALL) NOPASSWD:ALL" >> /etc/sudoers
+    && echo "$USER    ALL=(ALL:ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 RUN mkdir -p ${APP_ROOT} && chown -R ${UID}:${GID} ${APP_ROOT}
 
