@@ -211,7 +211,7 @@ ENV USER=www
 ENV GROUP=www
 ENV UID=1000
 ENV GID=1000
-ENV HOME=/home/www
+ENV HOME=/home/${USER}
 ENV SHELL=/bin/bash
 
 #== Default Environments
@@ -330,7 +330,7 @@ RUN groupadd -g ${GID} ${GROUP} \
                --create-home --home-dir /home/${USER} ${USER} \
     && adduser ${USER} www-data \
     && usermod -aG sudo ${USER} \
-    && echo "www    ALL=(ALL:ALL) NOPASSWD:ALL" >> /etc/sudoers
+    && echo "$USER    ALL=(ALL:ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 RUN mkdir -p ${APP_ROOT} && chown -R ${UID}:${GID} ${APP_ROOT}
 
@@ -358,9 +358,10 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm /tmp/code-server.deb \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
-# Pre-stage the GitHub Copilot Chat VSIX (repacked with standard Deflate above)
-# so it is available after the USER switch for code-server to install below.
-COPY --from=common-downloader /tmp/copilot-chat.vsix /tmp/copilot-chat.vsix
+# Store the GitHub Copilot Chat VSIX (repacked with standard Deflate above) at
+# a persistent path outside APP_ROOT (which is a mounted volume) so it is
+# available at container startup for apache-start.sh to install.
+COPY --from=common-downloader /tmp/copilot-chat.vsix /usr/local/share/devpanel/copilot-chat.vsix
 
 # Install Composer 2.x (default 2.3.10; PHP 8.3 overrides to 2.7.7 via self-update)
 # and legacy Composer 1.x for projects that require it.
@@ -385,18 +386,6 @@ USER ${USER}
 WORKDIR ${APP_ROOT}
 
 RUN touch /home/${USER}/.config/code-server/config.yaml
-
-# Create the base directory for code-server extensions.
-# This must be done as USER ${USER} so that code-server (which runs as the
-# same user) can write into it when installing extensions.
-RUN mkdir -p $CODES_USER_DATA_DIR/extensions
-
-# Install GitHub Copilot Chat extension (not available in Open VSX marketplace).
-# The VSIX was repacked above to use standard Deflate so code-server's bundled
-# yauzl can extract it.  Installs into $CODES_USER_DATA_DIR/extensions so the
-# extension is found with the existing --user-data-dir=$CODES_USER_DATA_DIR flag.
-RUN code-server --extensions-dir $CODES_USER_DATA_DIR/extensions --install-extension /tmp/copilot-chat.vsix \
-    && sudo rm /tmp/copilot-chat.vsix
 
 # Bash alias for Composer 2.  The binary is installed as root above;
 # the alias is set here (as the app user) to keep it in ~/.bashrc.
