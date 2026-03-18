@@ -159,12 +159,12 @@ test_base() {
   assert_contains "$image" "mbstring" "mbstring extension loaded" \
     php -m
 
-  # GitHub Copilot Chat extension must be installed in the extensions directory.
-  # code-server --install-extension unpacks the VSIX into a subdirectory named
-  # after the extension (github.copilot-chat-<version>).  We list the directory
-  # and grep for the extension publisher/name prefix.
-  assert_contains "$image" "github\.copilot-chat" "GitHub Copilot Chat extension directory found" \
-    sh -c "ls /var/www/html/.vscode/extensions/"
+  # GitHub Copilot Chat extension must be installable from the pre-staged VSIX
+  # and visible in the extensions directory.  We simulate the startup path by
+  # running the install command (as the www user does at container startup) and
+  # then listing the directory to confirm the extension landed there.
+  assert_contains "$image" "github\.copilot-chat" "GitHub Copilot Chat extension installs and is found" \
+    sh -c "code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir=/var/www/html/.vscode && ls /var/www/html/.vscode/extensions/"
 }
 
 test_secure() {
