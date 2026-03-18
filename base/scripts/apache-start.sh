@@ -28,9 +28,20 @@ sudo sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 /bin/bash source ~/.bashrc
 
 # Configure code server
-if [[ ! -d "$CODES_USER_DATA_DIR" ]]; then
-  mkdir -p $CODES_USER_DATA_DIR
-  sudo chown -R www:www $CODES_USER_DATA_DIR
+if [[ ! -d "$CODES_USER_DATA_DIR/extensions" ]]; then
+  mkdir -p "$CODES_USER_DATA_DIR/extensions"
+  sudo chown -R www:www "$CODES_USER_DATA_DIR"
+fi
+
+# Install VSCode Extensions
+if [ -n "${DP_VSCODE_EXTENSIONS:-}" ]; then
+  sudo chown -R www:www "$CODES_USER_DATA_DIR/extensions"
+  (
+    IFS=','
+    for value in $DP_VSCODE_EXTENSIONS; do
+      code-server --install-extension "$value" --user-data-dir="$CODES_USER_DATA_DIR"
+    done
+  )
 fi
 
 set -m
