@@ -1,4 +1,3 @@
 {
-  "./base/scripts/apache-start.sh:SC2086": 7,
   "./base/scripts/apache-start.sh:SC2236": 10
 }
