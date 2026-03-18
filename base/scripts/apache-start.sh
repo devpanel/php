@@ -28,7 +28,7 @@ sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 /bin/bash source ~/.bashrc
 
 # Install any custom packages.
-[ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] && /bin/bash $APP_ROOT/.devpanel/custom_package_installer.sh  >> /tmp/custom_package_installer.log
+[ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] && /bin/bash "$APP_ROOT/.devpanel/custom_package_installer.sh"  >> /tmp/custom_package_installer.log
 
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
@@ -37,6 +37,9 @@ if [[ "$CODES_ENABLE" == "yes" ]]; then
   if [ -n "${DP_VSCODE_EXTENSIONS:-}" ]; then
     IFS=',' read -ra _dp_extensions <<< "$DP_VSCODE_EXTENSIONS"
     for value in "${_dp_extensions[@]}"; do
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
+      [ -z "$value" ] && continue
       sudo -u "$USER" -E -- code-server --install-extension "$value"
     done
   fi
