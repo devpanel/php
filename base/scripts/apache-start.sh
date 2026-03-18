@@ -33,11 +33,11 @@ sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
   # Install the GitHub Copilot Chat extension and any user-specified VSCode extensions.
-  sudo -u www -E -- code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir="$CODES_USER_DATA_DIR"
+  sudo -u $USER -E -- code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir="$CODES_USER_DATA_DIR"
   if [ -n "${DP_VSCODE_EXTENSIONS:-}" ]; then
     IFS=',' read -ra _dp_extensions <<< "$DP_VSCODE_EXTENSIONS"
     for value in "${_dp_extensions[@]}"; do
-      sudo -u www -E -- code-server --install-extension "$value" --user-data-dir="$CODES_USER_DATA_DIR"
+      sudo -u $USER -E -- code-server --install-extension "$value" --user-data-dir="$CODES_USER_DATA_DIR"
     done
   fi
 
@@ -45,9 +45,9 @@ if [[ "$CODES_ENABLE" == "yes" ]]; then
   apache2-foreground &
   # Start the helper process.
   if [[ "$CODES_AUTH" == "yes" ]]; then
-    sudo -u www -E -- code-server --port $CODES_PORT --host 0.0.0.0 $CODES_WORKING_DIR --user-data-dir="$CODES_USER_DATA_DIR"
+    sudo -u $USER -E -- code-server --port $CODES_PORT --host 0.0.0.0 $CODES_WORKING_DIR --user-data-dir="$CODES_USER_DATA_DIR"
   else
-    sudo -u www -E -- code-server --auth none --port $CODES_PORT --host 0.0.0.0 $CODES_WORKING_DIR --user-data-dir="$CODES_USER_DATA_DIR"
+    sudo -u $USER -E -- code-server --auth none --port $CODES_PORT --host 0.0.0.0 $CODES_WORKING_DIR --user-data-dir="$CODES_USER_DATA_DIR"
   fi
   # Now bring it to the foreground.
   fg %1
