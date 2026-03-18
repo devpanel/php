@@ -28,20 +28,9 @@ sudo sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 /bin/bash source ~/.bashrc
 
 # Configure code server
-if [[ ! -d "$CODES_USER_DATA_DIR/extensions" ]]; then
-  mkdir -p "$CODES_USER_DATA_DIR/extensions"
+if [[ ! -d "$CODES_USER_DATA_DIR" ]]; then
+  mkdir -p "$CODES_USER_DATA_DIR"
   sudo chown -R www:www "$CODES_USER_DATA_DIR"
-fi
-
-# Install VSCode Extensions
-if [ -n "${DP_VSCODE_EXTENSIONS:-}" ]; then
-  sudo chown -R www:www "$CODES_USER_DATA_DIR/extensions"
-  (
-    IFS=','
-    for value in $DP_VSCODE_EXTENSIONS; do
-      code-server --install-extension "$value" --user-data-dir="$CODES_USER_DATA_DIR"
-    done
-  )
 fi
 
 set -m
@@ -59,6 +48,18 @@ fg %1
 else
 # Start the primary process and put it in the background
 sudo -E apache2-foreground
+fi
+
+# Install GitHub Copilot Chat extension and any user-specified VSCode extensions
+code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir="$CODES_USER_DATA_DIR"
+if [ -n "${DP_VSCODE_EXTENSIONS:-}" ]; then
+  sudo chown -R www:www "$CODES_USER_DATA_DIR/extensions"
+  (
+    IFS=','
+    for value in $DP_VSCODE_EXTENSIONS; do
+      code-server --install-extension "$value" --user-data-dir="$CODES_USER_DATA_DIR"
+    done
+  )
 fi
 
 # Install custom packages if have
