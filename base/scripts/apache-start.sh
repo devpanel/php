@@ -22,7 +22,7 @@ cp /templates/php.ini ${PHP_EXT_DIR}/zz-www.ini
 [ ! -z "$WEB_ROOT" ] && sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|" /etc/apache2/sites-enabled/000-default.conf
 [ ! -z "$SERVER_NAME" ] && sed -i "s|{{SERVER_NAME}}|${SERVER_NAME}|" /etc/apache2/sites-enabled/000-default.conf
 # Replace // by /
-ed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
+sed -i "s/\/\//\//g" /etc/apache2/sites-enabled/000-default.conf
 
 # install Drush 7, 8, 9, 10, 11
 /bin/bash source ~/.bashrc
