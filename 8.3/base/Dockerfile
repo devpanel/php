@@ -40,8 +40,10 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && pecl install -o -f \
         igbinary \
         xdebug \
-    && curl -L -o /tmp/imagick.tar.gz \
+    && curl -fsSL -o /tmp/imagick.tar.gz \
         https://github.com/Imagick/imagick/archive/7088edc353f53c4bc644573a79cdcd67a726ae16.tar.gz \
+    && echo "77e1e85b1d2d77b19efa0662cb385306d881e6c12d1bb1f3f7633c14d90b9bb3  /tmp/imagick.tar.gz" \
+        | sha256sum -c - \
     && mkdir -p /tmp/imagick-src \
     && tar --strip-components=1 -xf /tmp/imagick.tar.gz -C /tmp/imagick-src \
     && ( cd /tmp/imagick-src && phpize && ./configure && make && make install ) \
