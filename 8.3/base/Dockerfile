@@ -52,14 +52,14 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && docker-php-ext-enable gd igbinary xdebug \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs apt-mark manual \
-    && find /usr/local/lib/php/extensions -name '*.so' \
-        -exec ldd '{}' ';' 2>/dev/null \
-        | awk '/=>/ { print $(NF-1) }' \
-        | sort -u \
-        | xargs -r dpkg-query --search 2>/dev/null \
-        | cut -d: -f1 \
-        | sort -u \
-        | xargs -r apt-mark manual \
+    && { find /usr/local/lib/php/extensions -name '*.so' \
+            -exec ldd '{}' ';' 2>/dev/null \
+            | awk '/=>/ { print $(NF-1) }' \
+            | sort -u \
+            | xargs -r dpkg-query --search 2>/dev/null \
+            | cut -d: -f1 \
+            | sort -u \
+            | xargs -r apt-mark manual; } || true \
     && apt-get purge -y --auto-remove \
         -o APT::AutoRemove::RecommendsImportant=false \
     && rm -rf /var/lib/apt/lists/* \
