@@ -291,8 +291,6 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
 # NOTE: gd is NOT built here — its configure flags differ by PHP version
 # (avif support for 8.1+ vs no avif for 7.4/8.0). Each version's Dockerfile
 # runs docker-php-ext-configure gd and docker-php-ext-install gd separately.
-# NOTE: imagick-3.8.0 IS built here — 3.8.0 supports PHP 7.4–8.3 with no
-# version-specific configure flags, so it is installed in the common stage.
 # NOTE: libsodium sources are mounted directly from the 'common-downloader'
 # stage via --mount=type=bind so they are never committed as an image layer.
 RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/libsodium \
@@ -328,7 +326,7 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
         redis-5.3.7 \
         yaml-2.2.2 \
         memcached-3.2.0 \
-        imagick-3.8.0 \
+        imagick-3.8.1 \
     && rm -f /usr/local/etc/php/conf.d/*sodium.ini \
     && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
     && apt-get remove libsodium* -y \
