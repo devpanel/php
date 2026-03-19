@@ -2,9 +2,9 @@
 # ─── PHP 7.4 base final image ─────────────────────────────────────────────────
 # Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
 # PHP_VERSION=7.4. Contains ONLY PHP 7.4 specific differences:
-#   - libpcre3/libpcre3-dev (no libavif-dev) + gd/imagick build libs: installed, used, removed
+#   - libpcre3/libpcre3-dev (no libavif-dev) + gd build libs: installed, used, removed
 #   - gd configure flags (no avif)
-#   - PECL: igbinary 3.2.12, imagick via pecl, oauth extension
+#   - PECL: igbinary 3.2.12, oauth extension
 #   - WP-CLI 2.4.0 override (common installs 2.9.0)
 #   - drush7 (PHP 7.4 only)
 #   - apache-start.sh override (extra WEB_ROOT substitution)
@@ -14,8 +14,8 @@ FROM common-php-ext AS final
 ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
-# Install dev libraries needed to build gd and imagick for PHP 7.4, build the
-# extensions, then remove the dev libraries and their automatically-added
+# Install dev libraries needed to build gd for PHP 7.4, build the
+# extension, then remove the dev libraries and their automatically-added
 # dependencies that are not needed at runtime.
 # libpcre3-dev provides PCRE headers; libpcre3 is the runtime library and is
 # kept (it is a shared-library dependency of the compiled extensions).
@@ -29,8 +29,6 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
           libpng-dev \
           libwebp-dev \
           libfreetype6-dev \
-          libmagickwand-dev \
-          libmagickcore-dev \
           libpcre3 \
           libpcre3-dev \
         && break \
@@ -40,9 +38,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && docker-php-ext-install -j$(nproc) gd \
     && pecl install -o -f \
         igbinary-3.2.12 \
-        imagick-3.7.0 \
         oauth-2.0.7 \
-    && docker-php-ext-enable gd igbinary imagick oauth \
+    && docker-php-ext-enable gd igbinary oauth \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \
     && { find /usr/local/lib/php/extensions -name '*.so' \

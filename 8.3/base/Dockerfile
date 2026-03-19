@@ -2,9 +2,9 @@
 # ─── PHP 8.3 base final image ─────────────────────────────────────────────────
 # Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
 # PHP_VERSION=8.3. Contains ONLY PHP 8.3 specific differences:
-#   - libavif-dev + libpcre2-dev (+ gd/imagick build libs) installed, used, removed
+#   - libavif-dev + libpcre2-dev (+ gd build libs) installed, used, removed
 #   - gd configure flags (with avif)
-#   - PECL: igbinary latest (no version pin), imagick 3.8.0, xdebug
+#   - PECL: igbinary latest (no version pin), xdebug
 #   - Composer 2.7.7 override (common installs 2.3.10)
 FROM common-php-ext AS final
 
@@ -12,8 +12,8 @@ FROM common-php-ext AS final
 ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
-# Install dev libraries needed to build gd and imagick for PHP 8.3, build the
-# extensions, then remove the dev libraries and their automatically-added
+# Install dev libraries needed to build gd for PHP 8.3, build the
+# extension, then remove the dev libraries and their automatically-added
 # dependencies that are not needed at runtime.
 # libavif-dev enables AVIF image support in gd (PHP 8.1+).
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
@@ -26,8 +26,6 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
           libpng-dev \
           libwebp-dev \
           libfreetype6-dev \
-          libmagickwand-dev \
-          libmagickcore-dev \
           libavif-dev \
           libpcre2-dev \
         && break \
@@ -37,9 +35,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && docker-php-ext-install -j$(nproc) gd \
     && pecl install -o -f \
         igbinary \
-        imagick-3.8.0 \
         xdebug \
-    && docker-php-ext-enable gd igbinary imagick xdebug \
+    && docker-php-ext-enable gd igbinary xdebug \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \
     && { find /usr/local/lib/php/extensions -name '*.so' \
