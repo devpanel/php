@@ -292,9 +292,10 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
 # NOTE: gd is NOT built here — its configure flags differ by PHP version
 # (avif support for 8.1+ vs no avif for 7.4/8.0). Each version's Dockerfile
 # runs docker-php-ext-configure gd and docker-php-ext-install gd separately.
-# NOTE: libsodium sources are mounted directly from the 'common-downloader'
-# stage via --mount=type=bind so they are never committed as an image layer.
-RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/libsodium \
+# NOTE: libsodium sources are mounted read-write from the 'common-downloader'
+# stage via --mount=type=bind,rw so ./configure and make can write build
+# artifacts into the mount without polluting the final image layer.
+RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/libsodium,rw \
     echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
     && for i in $(seq 1 3); do \
@@ -340,8 +341,9 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
     && { find /usr/local/lib/php/extensions -name '*.so' \
             -exec ldd '{}' ';' 2>/dev/null \
             | awk '/=>/ { print $(NF-1) }' \
+            | grep '^/' \
             | sort -u \
-            | xargs -r dpkg-query --search 2>/dev/null \
+            | while IFS= read -r lib; do dpkg-query --search "$lib" 2>/dev/null; done \
             | cut -d: -f1 \
             | sort -u \
             | xargs -r apt-mark manual; } || true \
