@@ -42,8 +42,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && { find /usr/local/lib/php/extensions -name '*.so' \
             -exec ldd '{}' ';' 2>/dev/null \
             | awk '/=>/ { print $(NF-1) }' \
+            | grep '^/' \
             | sort -u \
-            | xargs -r dpkg-query --search 2>/dev/null \
+            | while IFS= read -r lib; do dpkg-query --search "$lib" 2>/dev/null; done \
             | cut -d: -f1 \
             | sort -u \
             | xargs -r apt-mark manual; } || true \
