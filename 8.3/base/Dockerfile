@@ -4,8 +4,7 @@
 # PHP_VERSION=8.3. Contains ONLY PHP 8.3 specific differences:
 #   - libavif-dev + libpcre2-dev (+ gd/imagick build libs) installed, used, removed
 #   - gd configure flags (with avif)
-#   - PECL: igbinary latest (no version pin), xdebug
-#   - imagick built from source (pecl not compatible with 8.3)
+#   - PECL: igbinary latest (no version pin), imagick 3.8.0, xdebug
 #   - Composer 2.7.7 override (common installs 2.3.10)
 FROM common-php-ext AS final
 
@@ -17,7 +16,6 @@ USER root
 # extensions, then remove the dev libraries and their automatically-added
 # dependencies that are not needed at runtime.
 # libavif-dev enables AVIF image support in gd (PHP 8.1+).
-# imagick is built from source because the PECL package is not compatible with PHP 8.3.
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
@@ -39,15 +37,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && docker-php-ext-install -j$(nproc) gd \
     && pecl install -o -f \
         igbinary \
+        imagick-3.8.0 \
         xdebug \
-    && curl -fsSL -o /tmp/imagick.tar.gz \
-        https://github.com/Imagick/imagick/archive/7088edc353f53c4bc644573a79cdcd67a726ae16.tar.gz \
-    && echo "77e1e85b1d2d77b19efa0662cb385306d881e6c12d1bb1f3f7633c14d90b9bb3  /tmp/imagick.tar.gz" \
-        | sha256sum -c - \
-    && mkdir -p /tmp/imagick-src \
-    && tar --strip-components=1 -xf /tmp/imagick.tar.gz -C /tmp/imagick-src \
-    && ( cd /tmp/imagick-src && phpize && ./configure && make && make install ) \
-    && rm -rf /tmp/imagick.tar.gz /tmp/imagick-src \
     && docker-php-ext-enable gd igbinary imagick xdebug \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \
