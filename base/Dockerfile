@@ -301,10 +301,8 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
       apt-get update \
         && apt-get install -y --no-install-recommends \
           libbz2-dev \
-          libgeoip-dev \
           libgmp-dev \
           libicu-dev \
-          libldap2-dev \
           libmagickwand-dev \
           libmagickcore-dev \
           libpspell-dev \
