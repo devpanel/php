@@ -159,6 +159,9 @@ test_base() {
   assert_contains "$image" "mbstring" "mbstring extension loaded" \
     php -m
 
+  assert_contains "$image" "imagick" "imagick extension loaded" \
+    php -m
+
   # GitHub Copilot Chat extension must be installed in the extensions directory.
   # code-server --install-extension unpacks the VSIX into a subdirectory named
   # after the extension (e.g. GitHub.copilot-chat-<version>).  Use find with

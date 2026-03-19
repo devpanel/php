@@ -235,9 +235,13 @@ ENV CODES_WORKING_DIR=$APP_ROOT
 ENV CODES_USER_DATA_DIR=$APP_ROOT/.vscode
 ENV CODES_ENABLE=yes
 
-# Install packages common to all PHP versions.
-# NOTE: libavif-dev (8.1+), libpcre2-dev (8.0+), and libpcre3/libpcre3-dev (7.4)
-# are version-specific and therefore NOT included here.
+# Install runtime packages common to all PHP versions.
+# NOTE: libavif-dev (8.1+), libpcre2-dev (8.0+), libpcre3/libpcre3-dev (7.4),
+# and the gd build libraries (libjpeg62-turbo-dev, libpng-dev, libwebp-dev,
+# libfreetype6-dev) are NOT included here — they are dev-only and are
+# installed, used, and removed inside the per-version Dockerfiles where gd is
+# built (gd configure flags differ by PHP version). libmagickwand-dev and
+# libmagickcore-dev ARE installed in the common build stage below.
 # Dpkg::Use-Pty "0" is the log-friendly dpkg configuration: it disables the
 # PTY-based progress reporting that produces "(Reading database ... N%)" noise,
 # while leaving all real dpkg output (package names, errors, warnings) intact.
@@ -257,26 +261,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
           sendmail-bin \
           sendmail \
           sudo \
-          libbz2-dev \
-          libjpeg62-turbo-dev \
-          libpng-dev \
-          libwebp-dev \
-          libfreetype6-dev \
-          libgeoip-dev \
           wget \
-          libgmp-dev \
-          libmagickwand-dev \
-          libmagickcore-dev \
-          libicu-dev \
-          libldap2-dev \
-          libpspell-dev \
-          libtidy-dev \
-          libxslt1-dev \
-          libyaml-dev \
-          libzip-dev \
-          libmemcached-dev \
-          libssl-dev \
-          zlib1g-dev \
           zip unzip \
           git \
           rsync \
@@ -288,41 +273,82 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
-# Configure opcache (same for all versions)
-RUN docker-php-ext-configure opcache --enable-opcache
-
-# Install PHP extensions common to all versions.
-# NOTE: gd is NOT here — its configure flags differ by version (avif support
-# for 8.1+ vs no avif for 7.4/8.0).  Each version's Dockerfile
+# Install development libraries, build all common PHP and PECL extensions,
+# build libsodium from source, then remove the dev libraries and their
+# automatically-added dependencies that are not needed at runtime.
+#
+# Strategy (mirrors the official PHP Docker images):
+#   1. Record pre-build manually-installed packages (savedAptMark).
+#   2. Install dev packages — apt marks these and their auto-deps as needed.
+#   3. Build all extensions.
+#   4. Mark ALL packages as auto (apt-mark auto '.*').
+#   5. Re-mark the pre-build set as manual (restores runtime packages).
+#   6. Scan every built .so with ldd; mark their shared-library packages as
+#      manual so they are not removed even though they were auto-installed
+#      as dependencies of dev packages.
+#   7. apt-get purge --auto-remove removes the now-unmarked dev packages
+#      and any of their dependencies that are no longer referenced.
+#
+# NOTE: gd is NOT built here — its configure flags differ by PHP version
+# (avif support for 8.1+ vs no avif for 7.4/8.0). Each version's Dockerfile
 # runs docker-php-ext-configure gd and docker-php-ext-install gd separately.
-RUN docker-php-ext-install -j$(nproc) \
-      bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
-      pdo_mysql pspell shmop soap sockets sysvmsg sysvsem sysvshm \
-      tidy xsl zip pcntl
-
-# Install PECL extensions common to all versions (same version pins for all)
-RUN pecl install -o -f \
-      redis-5.3.7 \
-      yaml-2.2.2 \
-      memcached-3.2.0
-
-# Install libsodium (source pre-downloaded in the 'downloader' stage)
-COPY --from=common-downloader /tmp/libsodium /tmp/libsodium
-RUN rm -f /usr/local/etc/php/conf.d/*sodium.ini \
+# NOTE: libsodium sources are mounted directly from the 'common-downloader'
+# stage via --mount=type=bind so they are never committed as an image layer.
+RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/libsodium \
+    echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
+    && savedAptMark="$(apt-mark showmanual)" \
+    && for i in $(seq 1 3); do \
+      apt-get update \
+        && apt-get install -y --no-install-recommends \
+          libbz2-dev \
+          libgmp-dev \
+          libicu-dev \
+          libmagickwand-dev \
+          libmagickcore-dev \
+          libpspell-dev \
+          libtidy-dev \
+          libxslt1-dev \
+          libyaml-dev \
+          libzip-dev \
+          libmemcached-dev \
+          libssl-dev \
+          zlib1g-dev \
+        && break \
+      || { [ "$i" -lt 3 ] && sleep 5; }; \
+    done \
+    && docker-php-ext-configure opcache --enable-opcache \
+    && docker-php-ext-install -j$(nproc) \
+        bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
+        pdo_mysql pspell shmop soap sockets sysvmsg sysvsem sysvshm \
+        tidy xsl zip pcntl \
+    && pecl install -o -f \
+        redis-5.3.7 \
+        yaml-2.2.2 \
+        memcached-3.2.0 \
+        imagick-3.8.1 \
+    && rm -f /usr/local/etc/php/conf.d/*sodium.ini \
     && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
     && apt-get remove libsodium* -y \
-    && cd /tmp/libsodium/libsodium-1.0.18-RELEASE/ \
-    && ./configure && make && make check && make install \
-    && cd / && rm -rf /tmp/libsodium \
-    && pecl install -o -f libsodium
-
-# Enable all common extensions.
-# NOTE: gd, igbinary, imagick (and optionally xdebug, oauth) are enabled in
-# the per-version Dockerfile after their version-specific build.
-RUN docker-php-ext-enable \
-      bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
-      pdo_mysql pspell redis shmop soap sockets sodium sysvmsg \
-      sysvsem sysvshm tidy xsl yaml zip pcntl memcached
+    && ( cd /tmp/libsodium/libsodium-1.0.18-RELEASE/ && ./configure && make && make check && make install ) \
+    && pecl install -o -f libsodium \
+    && docker-php-ext-enable \
+        bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
+        pdo_mysql pspell redis shmop soap sockets sodium sysvmsg \
+        sysvsem sysvshm tidy xsl yaml zip pcntl memcached imagick \
+    && apt-mark auto '.*' > /dev/null \
+    && echo "$savedAptMark" | xargs -r apt-mark manual \
+    && { find /usr/local/lib/php/extensions -name '*.so' \
+            -exec ldd '{}' ';' 2>/dev/null \
+            | awk '/=>/ { print $(NF-1) }' \
+            | sort -u \
+            | xargs -r dpkg-query --search 2>/dev/null \
+            | cut -d: -f1 \
+            | sort -u \
+            | xargs -r apt-mark manual; } || true \
+    && apt-get purge -y --auto-remove \
+        -o APT::AutoRemove::RecommendsImportant=false \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
 # Create the www user and configure sudo (root ops must happen before USER switch)
 RUN groupadd -g ${GID} ${GROUP} \

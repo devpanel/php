@@ -2,41 +2,53 @@
 # ─── PHP 8.2 base final image ─────────────────────────────────────────────────
 # Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
 # PHP_VERSION=8.2. Contains ONLY PHP 8.2 specific differences:
-#   - libavif-dev + libpcre2-dev
+#   - libavif-dev + libpcre2-dev (+ gd build libs): installed, used, removed
 #   - gd configure flags (with avif)
-#   - PECL: igbinary 3.2.12, imagick via pecl
+#   - PECL: igbinary 3.2.12
 FROM common-php-ext AS final
 
 # Switch to root for version-specific installation
 ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
-# PHP 8.2 specific packages: libavif-dev (avif gd support) and libpcre2-dev
-# Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
-# resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
+# Install dev libraries needed to build gd for PHP 8.2, build the
+# extension, then remove the dev libraries and their automatically-added
+# dependencies that are not needed at runtime.
+# libavif-dev enables AVIF image support in gd (PHP 8.1+).
+# See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
+    && savedAptMark="$(apt-mark showmanual)" \
     && for i in $(seq 1 3); do \
       apt-get update \
         && apt-get install -y --no-install-recommends \
+          libjpeg62-turbo-dev \
+          libpng-dev \
+          libwebp-dev \
+          libfreetype6-dev \
           libavif-dev \
           libpcre2-dev \
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
+    && docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp \
+    && docker-php-ext-install -j$(nproc) gd \
+    && pecl install -o -f \
+        igbinary-3.2.12 \
+    && docker-php-ext-enable gd igbinary \
+    && apt-mark auto '.*' > /dev/null \
+    && echo "$savedAptMark" | xargs -r apt-mark manual \
+    && { find /usr/local/lib/php/extensions -name '*.so' \
+            -exec ldd '{}' ';' 2>/dev/null \
+            | awk '/=>/ { print $(NF-1) }' \
+            | sort -u \
+            | xargs -r dpkg-query --search 2>/dev/null \
+            | cut -d: -f1 \
+            | sort -u \
+            | xargs -r apt-mark manual; } || true \
+    && apt-get purge -y --auto-remove \
+        -o APT::AutoRemove::RecommendsImportant=false \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
-
-# Configure gd with avif support (PHP 8.1+)
-RUN docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp
-
-RUN docker-php-ext-install -j$(nproc) gd
-
-# PHP 8.2 PECL: igbinary 3.2.12, imagick via pecl (no oauth, no xdebug)
-RUN pecl install -o -f \
-      igbinary-3.2.12 \
-      imagick-3.7.0
-
-RUN docker-php-ext-enable gd igbinary imagick
 
 USER ${USER}
 
