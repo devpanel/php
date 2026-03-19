@@ -38,7 +38,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
         imagick-3.7.0 \
     && docker-php-ext-enable gd igbinary imagick \
     && apt-mark auto '.*' > /dev/null \
-    && echo "$savedAptMark" | xargs apt-mark manual \
+    && echo "$savedAptMark" | xargs -r apt-mark manual \
     && { find /usr/local/lib/php/extensions -name '*.so' \
             -exec ldd '{}' ';' 2>/dev/null \
             | awk '/=>/ { print $(NF-1) }' \

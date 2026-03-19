@@ -44,7 +44,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
         oauth-2.0.7 \
     && docker-php-ext-enable gd igbinary imagick oauth \
     && apt-mark auto '.*' > /dev/null \
-    && echo "$savedAptMark" | xargs apt-mark manual \
+    && echo "$savedAptMark" | xargs -r apt-mark manual \
     && { find /usr/local/lib/php/extensions -name '*.so' \
             -exec ldd '{}' ';' 2>/dev/null \
             | awk '/=>/ { print $(NF-1) }' \

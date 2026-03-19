@@ -42,16 +42,14 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
         xdebug \
     && curl -L -o /tmp/imagick.tar.gz \
         https://github.com/Imagick/imagick/archive/7088edc353f53c4bc644573a79cdcd67a726ae16.tar.gz \
-    && tar --strip-components=1 -xf /tmp/imagick.tar.gz \
-    && phpize \
-    && ./configure \
-    && make \
-    && make install \
+    && mkdir -p /tmp/imagick-src \
+    && tar --strip-components=1 -xf /tmp/imagick.tar.gz -C /tmp/imagick-src \
+    && ( cd /tmp/imagick-src && phpize && ./configure && make && make install ) \
     && echo "extension=imagick.so" > /usr/local/etc/php/conf.d/ext-imagick.ini \
-    && rm -rf /tmp/* \
+    && rm -rf /tmp/imagick.tar.gz /tmp/imagick-src \
     && docker-php-ext-enable gd igbinary xdebug \
     && apt-mark auto '.*' > /dev/null \
-    && echo "$savedAptMark" | xargs apt-mark manual \
+    && echo "$savedAptMark" | xargs -r apt-mark manual \
     && { find /usr/local/lib/php/extensions -name '*.so' \
             -exec ldd '{}' ';' 2>/dev/null \
             | awk '/=>/ { print $(NF-1) }' \

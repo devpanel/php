@@ -20,6 +20,7 @@
   "./8.2/base/Dockerfile:DL3008": 1,
   "./8.2/base/Dockerfile:DL4006": 1,
   "./8.2/base/Dockerfile:SC2046": 1,
+  "./8.3/base/Dockerfile:DL3003": 1,
   "./8.3/base/Dockerfile:DL3006": 1,
   "./8.3/base/Dockerfile:DL3008": 1,
   "./8.3/base/Dockerfile:DL4006": 1,

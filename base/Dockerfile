@@ -338,7 +338,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
         pdo_mysql pspell redis shmop soap sockets sodium sysvmsg \
         sysvsem sysvshm tidy xsl yaml zip pcntl memcached \
     && apt-mark auto '.*' > /dev/null \
-    && echo "$savedAptMark" | xargs apt-mark manual \
+    && echo "$savedAptMark" | xargs -r apt-mark manual \
     && { find /usr/local/lib/php/extensions -name '*.so' \
             -exec ldd '{}' ';' 2>/dev/null \
             | awk '/=>/ { print $(NF-1) }' \
