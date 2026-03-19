@@ -31,7 +31,7 @@
   "./advance/Dockerfile:DL4006": 2,
   "./base/Dockerfile:DL3003": 2,
   "./base/Dockerfile:DL3008": 3,
-  "./base/Dockerfile:DL3022": 9,
+  "./base/Dockerfile:DL3022": 8,
   "./base/Dockerfile:DL3047": 1,
   "./base/Dockerfile:DL4001": 1,
   "./base/Dockerfile:DL4006": 4,

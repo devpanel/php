@@ -272,10 +272,6 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
-# Install libsodium source (pre-downloaded in the 'downloader' stage).
-# Placed here so the combined dev-build layer below can use it.
-COPY --from=common-downloader /tmp/libsodium /tmp/libsodium
-
 # Install development libraries, build all common PHP and PECL extensions,
 # build libsodium from source, then remove the dev libraries and their
 # automatically-added dependencies that are not needed at runtime.
@@ -295,8 +291,10 @@ COPY --from=common-downloader /tmp/libsodium /tmp/libsodium
 # NOTE: gd is NOT built here — its configure flags differ by PHP version
 # (avif support for 8.1+ vs no avif for 7.4/8.0). Each version's Dockerfile
 # runs docker-php-ext-configure gd and docker-php-ext-install gd separately.
-# The gd and imagick dev libraries are also installed and cleaned up there.
-RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
+# NOTE: libsodium sources are mounted directly from the 'common-downloader'
+# stage via --mount=type=bind so they are never committed as an image layer.
+RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/libsodium \
+    echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
     && for i in $(seq 1 3); do \
       apt-get update \
@@ -329,9 +327,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -f /usr/local/etc/php/conf.d/*sodium.ini \
     && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
     && apt-get remove libsodium* -y \
-    && cd /tmp/libsodium/libsodium-1.0.18-RELEASE/ \
-    && ./configure && make && make check && make install \
-    && cd / && rm -rf /tmp/libsodium \
+    && ( cd /tmp/libsodium/libsodium-1.0.18-RELEASE/ && ./configure && make && make check && make install ) \
     && pecl install -o -f libsodium \
     && docker-php-ext-enable \
         bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
