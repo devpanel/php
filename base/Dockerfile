@@ -294,7 +294,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
 # runs docker-php-ext-configure gd and docker-php-ext-install gd separately.
 # NOTE: libsodium sources are mounted directly from the 'common-downloader'
 # stage via --mount=type=bind so they are never committed as an image layer.
-RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/libsodium,rw \
+RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/libsodium \
     echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
     && for i in $(seq 1 3); do \
