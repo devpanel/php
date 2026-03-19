@@ -2,7 +2,7 @@
 # ─── PHP 8.3 base final image ─────────────────────────────────────────────────
 # Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
 # PHP_VERSION=8.3. Contains ONLY PHP 8.3 specific differences:
-#   - libavif-dev + libpcre2-dev
+#   - libavif-dev + libpcre2-dev (+ gd/imagick build libs) installed, used, removed
 #   - gd configure flags (with avif)
 #   - PECL: igbinary latest (no version pin), xdebug
 #   - imagick built from source (pecl not compatible with 8.3)
@@ -13,44 +13,57 @@ FROM common-php-ext AS final
 ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
-# PHP 8.3 specific packages: libavif-dev (avif gd support) and libpcre2-dev
-# Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
-# resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.
+# Install dev libraries needed to build gd and imagick for PHP 8.3, build the
+# extensions, then remove the dev libraries and their automatically-added
+# dependencies that are not needed at runtime.
+# libavif-dev enables AVIF image support in gd (PHP 8.1+).
+# imagick is built from source because the PECL package is not compatible with PHP 8.3.
+# See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
+    && savedAptMark="$(apt-mark showmanual)" \
     && for i in $(seq 1 3); do \
       apt-get update \
         && apt-get install -y --no-install-recommends \
+          libjpeg62-turbo-dev \
+          libpng-dev \
+          libwebp-dev \
+          libfreetype6-dev \
+          libmagickwand-dev \
+          libmagickcore-dev \
           libavif-dev \
           libpcre2-dev \
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
-
-# Configure gd with avif support (PHP 8.1+)
-RUN docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp
-
-RUN docker-php-ext-install -j$(nproc) gd
-
-# PHP 8.3 PECL: igbinary latest (no version pin); xdebug added.
-# imagick is NOT installed via pecl for 8.3 — built from source below.
-RUN pecl install -o -f \
-      igbinary \
-      xdebug
-
-# Build imagick from source (pecl package not compatible with PHP 8.3)
-RUN curl -L -o /tmp/imagick.tar.gz \
-      https://github.com/Imagick/imagick/archive/7088edc353f53c4bc644573a79cdcd67a726ae16.tar.gz \
+    && docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp \
+    && docker-php-ext-install -j$(nproc) gd \
+    && pecl install -o -f \
+        igbinary \
+        xdebug \
+    && curl -L -o /tmp/imagick.tar.gz \
+        https://github.com/Imagick/imagick/archive/7088edc353f53c4bc644573a79cdcd67a726ae16.tar.gz \
     && tar --strip-components=1 -xf /tmp/imagick.tar.gz \
     && phpize \
     && ./configure \
     && make \
     && make install \
     && echo "extension=imagick.so" > /usr/local/etc/php/conf.d/ext-imagick.ini \
-    && rm -rf /tmp/*
-
-RUN docker-php-ext-enable gd igbinary xdebug
+    && rm -rf /tmp/* \
+    && docker-php-ext-enable gd igbinary xdebug \
+    && apt-mark auto '.*' > /dev/null \
+    && echo "$savedAptMark" | xargs apt-mark manual \
+    && find /usr/local/lib/php/extensions -name '*.so' \
+        -exec ldd '{}' ';' 2>/dev/null \
+        | awk '/=>/ { print $(NF-1) }' \
+        | sort -u \
+        | xargs -r dpkg-query --search 2>/dev/null \
+        | cut -d: -f1 \
+        | sort -u \
+        | xargs -r apt-mark manual \
+    && apt-get purge -y --auto-remove \
+        -o APT::AutoRemove::RecommendsImportant=false \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
 # Override Composer with PHP 8.3 version (2.7.7) using self-update
 RUN composer self-update 2.7.7
