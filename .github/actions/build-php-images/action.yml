@@ -431,7 +431,7 @@ runs:
 
     - name: Build and push images
       if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
-      uses: docker/bake-action@v6
+      uses: docker/bake-action@v7
       env:
         TAG_SUFFIX:                  ${{ steps.detect.outputs.tag_suffix }}
         LATEST_PHP_VERSION:          ${{ steps.detect.outputs.latest_php_version }}
