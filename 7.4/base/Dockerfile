@@ -47,7 +47,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
             | awk '/=>/ { print $(NF-1) }' \
             | grep '^/' \
             | sort -u \
-            | while IFS= read -r lib; do dpkg-query --search "$lib" 2>/dev/null; done \
+            | while IFS= read -r lib; do dpkg-query --search "$(realpath "$lib" 2>/dev/null || echo "$lib")" 2>/dev/null; done \
             | cut -d: -f1 \
             | sort -u \
             | xargs -r apt-mark manual; } || true \
