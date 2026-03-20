@@ -115,6 +115,22 @@ assert_contains() {
   fi
 }
 
+# assert_empty <image> <description> <cmd...>
+# Run cmd in the image; fail if output is non-empty (unexpected content found).
+assert_empty() {
+  local image="$1" desc="$2"; shift 2
+  local output
+  if output="$(run_in "$image" "$@" 2>&1)"; then
+    if [[ -z "$output" ]]; then
+      ok "$desc"
+    else
+      err "$desc — unexpected output: $output"
+    fi
+  else
+    err "$desc — command failed: $output"
+  fi
+}
+
 # assert_file_exists <image> <path> <description>
 assert_file_exists() {
   local image="$1" path="$2" desc="$3"
@@ -161,6 +177,16 @@ test_base() {
 
   assert_contains "$image" "imagick" "imagick extension loaded" \
     php -m
+
+  # Verify no PHP extension .so has unresolved shared-library dependencies.
+  # A "not found" line from ldd means a runtime library was removed along with
+  # the dev packages — the failure mode caused by the usrmerge path mismatch
+  # in the dpkg-query scan that runs before apt-get purge --auto-remove.
+  # This catches the regression even when the Docker layer cache masks it for
+  # the per-extension php -m checks above.
+  # shellcheck disable=SC2016
+  assert_empty "$image" "no unresolved .so deps in PHP extensions" \
+    sh -c 'ext=$(php -r "echo PHP_EXTENSION_DIR;") && find "$ext" -name "*.so" -exec ldd {} + 2>/dev/null | grep "not found" || true'
 
   # GitHub Copilot Chat extension must be installed in the extensions directory.
   # code-server --install-extension unpacks the VSIX into a subdirectory named
