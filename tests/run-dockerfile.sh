@@ -120,11 +120,14 @@ assert_contains() {
 assert_empty() {
   local image="$1" desc="$2"; shift 2
   local output
-  output="$(run_in "$image" "$@" 2>&1)" || true
-  if [[ -z "$output" ]]; then
-    ok "$desc"
+  if output="$(run_in "$image" "$@" 2>&1)"; then
+    if [[ -z "$output" ]]; then
+      ok "$desc"
+    else
+      err "$desc — unexpected output: $output"
+    fi
   else
-    err "$desc — unexpected output: $output"
+    err "$desc — command failed: $output"
   fi
 }
 
