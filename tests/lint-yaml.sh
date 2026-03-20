@@ -20,13 +20,19 @@ trap 'rm -f "$TMP_CURRENT"' EXIT
 # ---------------------------------------------------------------------------
 UPDATE_BASELINE=false
 FILES=()
+FILES_SPECIFIED=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --update-baseline) UPDATE_BASELINE=true; shift ;;
-    --files) shift; while [[ $# -gt 0 && "$1" != --* ]]; do FILES+=("$1"); shift; done ;;
+    --files) FILES_SPECIFIED=true; shift; while [[ $# -gt 0 && "$1" != --* ]]; do FILES+=("$1"); shift; done ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
+
+if [[ "$UPDATE_BASELINE" == true && "$FILES_SPECIFIED" == true ]]; then
+  echo "ERROR: --update-baseline cannot be combined with --files. Regenerate baselines with a full lint run." >&2
+  exit 1
+fi
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
   # macOS ships Bash 3.2, which does not provide mapfile.
@@ -113,4 +119,8 @@ fi
 # ---------------------------------------------------------------------------
 # Compare against baseline
 # ---------------------------------------------------------------------------
-python3 "${REPO_ROOT}/tests/compare-baseline.py" "$BASELINE" "$TMP_CURRENT"
+if [[ "$FILES_SPECIFIED" == true ]]; then
+  python3 "${REPO_ROOT}/tests/compare-baseline.py" "$BASELINE" "$TMP_CURRENT" --repo-root "$REPO_ROOT" --files "${FILES[@]}"
+else
+  python3 "${REPO_ROOT}/tests/compare-baseline.py" "$BASELINE" "$TMP_CURRENT"
+fi
