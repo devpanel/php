@@ -16,9 +16,35 @@ CHANGED_FILES=()
 while read -r _local_ref local_sha _remote_ref remote_sha; do
   batch=()
   if [[ "$remote_sha" == "0000000000000000000000000000000000000000" ]]; then
-    # New branch — find the merge base with the remote default branch.
-    default_remote_ref="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo 'origin/main')"
-    merge_base="$(git merge-base HEAD "$default_remote_ref" 2>/dev/null || true)"
+    # New branch — choose the closest reachable ancestor among likely base
+    # branches so we diff against where the branch was actually forked.
+    default_remote_ref="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || true)"
+    candidate_refs=()
+    if [[ -n "$default_remote_ref" ]]; then
+      candidate_refs+=("$default_remote_ref")
+    fi
+    if git show-ref --verify --quiet refs/remotes/origin/develop; then
+      candidate_refs+=("origin/develop")
+    fi
+    if git show-ref --verify --quiet refs/remotes/origin/main; then
+      candidate_refs+=("origin/main")
+    fi
+
+    merge_base=""
+    best_ahead=""
+    for candidate_ref in "${candidate_refs[@]+"${candidate_refs[@]}"}"; do
+      candidate_base="$(git merge-base "$local_sha" "$candidate_ref" 2>/dev/null || true)"
+      [[ -n "$candidate_base" ]] || continue
+
+      ahead_count="$(git rev-list --count "${candidate_base}..${local_sha}" 2>/dev/null || true)"
+      [[ "$ahead_count" =~ ^[0-9]+$ ]] || continue
+
+      if [[ -z "$best_ahead" || "$ahead_count" -lt "$best_ahead" ]]; then
+        best_ahead="$ahead_count"
+        merge_base="$candidate_base"
+      fi
+    done
+
     if [[ -n "$merge_base" ]]; then
       while IFS= read -r file; do
         batch+=("$file")
