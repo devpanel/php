@@ -31,10 +31,11 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Make `pspell` installation conditional for PHP < 8.4 in `base/Dockerfile`
 - [x] Remove `pspell` from the common `docker-php-ext-enable` list (handled in the conditional step)
 - [x] Add `pdo_mysql` extension check to `tests/run-dockerfile.sh`
+- [x] Move `pspell` fully to per-version Dockerfiles (7.4–8.3); remove all pspell logic from `base/Dockerfile` common stage
 - [x] Verify all lint checks pass
 
 ## Definition of Done
 - `pdo_mysql` is correctly installed and enabled for all PHP versions (7.4–8.5)
-- `pspell` is installed only for PHP 7.4–8.3 (where the extension source exists)
+- `pspell` is installed only in per-version Dockerfiles for PHP 7.4–8.3 (where the extension source exists); `base/Dockerfile` common stage has no pspell references
 - `tests/run-dockerfile.sh` explicitly asserts `pdo_mysql` extension is loaded
 - All Dockerfile and shell lint checks pass with no new violations
