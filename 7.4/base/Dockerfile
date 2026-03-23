@@ -7,7 +7,6 @@
 #   - libpspell-dev for pspell: installed, used, removed
 #   - gd configure flags (no avif)
 #   - PECL: igbinary 3.2.12, imagick 3.8.1, oauth extension
-#   - pspell extension (removed in PHP 8.4+)
 #   - WP-CLI 2.4.0 override (common installs 2.9.0)
 #   - drush7 (PHP 7.4 only)
 #   - apache-start.sh override (extra WEB_ROOT substitution)
@@ -17,13 +16,12 @@ FROM common-php-ext AS final
 ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
-# Install dev libraries needed to build gd, imagick, and pspell for PHP 7.4,
+# Install dev libraries needed to build gd and imagick for PHP 7.4,
 # build the extensions, then remove the dev libraries and their
 # automatically-added dependencies that are not needed at runtime.
 # libpcre3-dev provides PCRE headers; libpcre3 is the runtime library and is
 # kept (it is a shared-library dependency of the compiled extensions).
 # libmagickwand-dev and libmagickcore-dev are required to build imagick.
-# libpspell-dev is required to build pspell (removed from PHP 8.4+).
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
