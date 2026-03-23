@@ -299,6 +299,10 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
 # NOTE: libsodium sources are mounted read-write from the 'common-downloader'
 # stage via --mount=type=bind,rw so ./configure and make can write build
 # artifacts into the mount without polluting the final image layer.
+# NOTE: --no-triggers defers dpkg trigger processing (e.g. ldconfig) so that
+# 'apt-get purge' succeeds even when ldconfig crashes under QEMU arm64
+# emulation (Debian 11 / PHP 7.4 and 8.0, exit 139). 'dpkg --triggers-only'
+# then processes any deferred triggers; errors are suppressed with || true.
 RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/libsodium,rw \
     echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
@@ -350,6 +354,8 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
             | xargs -r apt-mark manual; } || true \
     && apt-get purge -y --auto-remove \
         -o APT::AutoRemove::RecommendsImportant=false \
+        -o DPkg::Options::="--no-triggers" \
+    && (dpkg --triggers-only -a 2>/dev/null || true) \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 

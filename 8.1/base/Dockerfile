@@ -53,6 +53,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
             | xargs -r apt-mark manual; } || true \
     && apt-get purge -y --auto-remove \
         -o APT::AutoRemove::RecommendsImportant=false \
+        -o DPkg::Options::="--no-triggers" \
+    && (dpkg --triggers-only -a 2>/dev/null || true) \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
