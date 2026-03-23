@@ -296,6 +296,10 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
 # NOTE: imagick is NOT built here — it uses different version pins across PHP
 # versions (3.8.1 for 7.4–8.2; no pin for 8.3+). Each version's Dockerfile
 # installs imagick, libmagickwand-dev, and libmagickcore-dev separately.
+# NOTE: pspell was removed from PHP 8.4 and is installed here only when
+# PHP_VERSION < 8.4.  The libpspell-dev apt package is installed
+# unconditionally but is automatically removed for PHP 8.4+ during the
+# apt-get purge --auto-remove cleanup step at the end of this RUN instruction.
 # NOTE: libsodium sources are mounted read-write from the 'common-downloader'
 # stage via --mount=type=bind,rw so ./configure and make can write build
 # artifacts into the mount without polluting the final image layer.
@@ -322,8 +326,11 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
     && docker-php-ext-configure opcache --enable-opcache \
     && docker-php-ext-install -j$(nproc) \
         bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
-        pdo_mysql pspell shmop soap sockets sysvmsg sysvsem sysvshm \
+        pdo_mysql shmop soap sockets sysvmsg sysvsem sysvshm \
         tidy xsl zip pcntl \
+    && if php -r 'exit(version_compare(PHP_VERSION, "8.4.0", "<") ? 0 : 1);'; then \
+           docker-php-ext-install pspell; \
+       fi \
     && pecl install -o -f \
         redis-5.3.7 \
         yaml-2.2.2 \
@@ -335,7 +342,7 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
     && pecl install -o -f libsodium \
     && docker-php-ext-enable \
         bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
-        pdo_mysql pspell redis shmop soap sockets sodium sysvmsg \
+        pdo_mysql redis shmop soap sockets sodium sysvmsg \
         sysvsem sysvshm tidy xsl yaml zip pcntl memcached \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \

@@ -23,3 +23,18 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - `base/Dockerfile` common stage does not install imagick or its build deps
 - CI functional tests for all PHP versions pass (`imagick extension loaded` ✔)
 - All lint checks pass with no new violations
+
+# Task: Fix missing pdo_mysql in PHP 8.5
+
+## Steps
+- [x] Identify root cause: `pspell` was removed from PHP 8.4+, causing the common `docker-php-ext-install` command to fail, which left `pdo_mysql` uninstalled for PHP 8.5
+- [x] Make `pspell` installation conditional for PHP < 8.4 in `base/Dockerfile`
+- [x] Remove `pspell` from the common `docker-php-ext-enable` list (handled in the conditional step)
+- [x] Add `pdo_mysql` extension check to `tests/run-dockerfile.sh`
+- [x] Verify all lint checks pass
+
+## Definition of Done
+- `pdo_mysql` is correctly installed and enabled for all PHP versions (7.4–8.5)
+- `pspell` is installed only for PHP 7.4–8.3 (where the extension source exists)
+- `tests/run-dockerfile.sh` explicitly asserts `pdo_mysql` extension is loaded
+- All Dockerfile and shell lint checks pass with no new violations
