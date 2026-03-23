@@ -4,7 +4,7 @@
 # PHP_VERSION=8.4. Contains ONLY PHP 8.4 specific differences:
 #   - libavif-dev + libpcre2-dev (+ gd build libs) installed, used, removed
 #   - gd configure flags (with avif)
-#   - PECL: igbinary latest (no version pin), xdebug
+#   - PECL: igbinary latest (no version pin), imagick latest, xdebug
 #   - Composer override (common installs 2.3.10)
 FROM common-php-ext AS final
 
@@ -16,6 +16,10 @@ USER root
 # extension, then remove the dev libraries and their automatically-added
 # dependencies that are not needed at runtime.
 # libavif-dev enables AVIF image support in gd (PHP 8.1+).
+# libmagickwand-dev and libmagickcore-dev are required to build imagick.
+# imagick is installed here (in addition to the common stage) to ensure it
+# loads correctly in PHP 8.4, where common-stage PECL installs may not
+# produce loadable extensions due to PHP 8.4 API differences.
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
@@ -28,6 +32,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
           libfreetype6-dev \
           libavif-dev \
           libpcre2-dev \
+          libmagickwand-dev \
+          libmagickcore-dev \
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
@@ -35,8 +41,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && docker-php-ext-install -j$(nproc) gd \
     && pecl install -o -f \
         igbinary \
+        imagick \
         xdebug \
-    && docker-php-ext-enable gd igbinary xdebug \
+    && docker-php-ext-enable gd igbinary imagick xdebug \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \
     && { find /usr/local/lib/php/extensions -name '*.so' \
