@@ -3,18 +3,20 @@
 # Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
 # PHP_VERSION=8.2. Contains ONLY PHP 8.2 specific differences:
 #   - libavif-dev + libpcre2-dev (+ gd build libs): installed, used, removed
+#   - libmagickwand-dev + libmagickcore-dev for imagick: installed, used, removed
 #   - gd configure flags (with avif)
-#   - PECL: igbinary 3.2.12
+#   - PECL: igbinary 3.2.12, imagick 3.8.1
 FROM common-php-ext AS final
 
 # Switch to root for version-specific installation
 ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
-# Install dev libraries needed to build gd for PHP 8.2, build the
-# extension, then remove the dev libraries and their automatically-added
+# Install dev libraries needed to build gd and imagick for PHP 8.2, build the
+# extensions, then remove the dev libraries and their automatically-added
 # dependencies that are not needed at runtime.
 # libavif-dev enables AVIF image support in gd (PHP 8.1+).
+# libmagickwand-dev and libmagickcore-dev are required to build imagick.
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
@@ -27,6 +29,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
           libfreetype6-dev \
           libavif-dev \
           libpcre2-dev \
+          libmagickwand-dev \
+          libmagickcore-dev \
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
@@ -34,7 +38,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && docker-php-ext-install -j$(nproc) gd \
     && pecl install -o -f \
         igbinary-3.2.12 \
-    && docker-php-ext-enable gd igbinary \
+        imagick-3.8.1 \
+    && docker-php-ext-enable gd igbinary imagick \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \
     && { find /usr/local/lib/php/extensions -name '*.so' \

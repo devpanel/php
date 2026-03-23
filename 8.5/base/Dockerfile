@@ -12,14 +12,13 @@ FROM common-php-ext AS final
 ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
-# Install dev libraries needed to build gd for PHP 8.5, build the
-# extension, then remove the dev libraries and their automatically-added
+# Install dev libraries needed to build gd and imagick for PHP 8.5, build the
+# extensions, then remove the dev libraries and their automatically-added
 # dependencies that are not needed at runtime.
 # libavif-dev enables AVIF image support in gd (PHP 8.1+).
 # libmagickwand-dev and libmagickcore-dev are required to build imagick.
-# imagick is installed here (in addition to the common stage) to ensure it
-# loads correctly in PHP 8.5, where common-stage PECL installs may not
-# produce loadable extensions due to PHP 8.5 API differences.
+# imagick is installed without a version pin to pick up the latest release with
+# PHP 8.5 API support (imagick 3.8.x does not support PHP 8.4+).
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
