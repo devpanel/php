@@ -16,7 +16,7 @@ FROM common-php-ext AS final
 ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
-# Install dev libraries needed to build gd and imagick for PHP 7.4,
+# Install dev libraries needed to build gd, imagick, and pspell for PHP 7.4,
 # build the extensions, then remove the dev libraries and their
 # automatically-added dependencies that are not needed at runtime.
 # libpcre3-dev provides PCRE headers; libpcre3 is the runtime library and is
