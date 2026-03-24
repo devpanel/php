@@ -3,6 +3,6 @@
   "./.github/actions/merge-manifests/action.yml:colons": 5,
   "./.github/actions/preseed-downloads/action.yml:empty-lines": 1,
   "./.github/workflows/ci.yml:colons": 5,
-  "./.github/workflows/docker-build-all.yml:colons": 18,
-  "./.github/workflows/docker-build-on-push.yml:colons": 19
+  "./.github/workflows/docker-build-all.yml:colons": 19,
+  "./.github/workflows/docker-build-on-push.yml:colons": 20
 }

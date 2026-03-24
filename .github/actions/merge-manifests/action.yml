@@ -1,12 +1,14 @@
 name: Merge per-platform manifests into multi-arch images
 description: >
-  After per-platform builds have pushed platform-specific images (e.g.
-  8.3-base-amd64, 8.3-base-arm64), this action combines them into the final
-  multi-architecture Docker Hub manifests (e.g. 8.3-base) using
+  After per-platform builds have completed, this action combines the amd64
+  image (already live on Docker Hub under the final tag) with the arm64 image
+  (staged in GHCR) into a single multi-architecture Docker Hub manifest using
   docker buildx imagetools create.
 
-  The action must be called from a job that has already authenticated to
-  Docker Hub via docker/login-action.
+  The amd64 image is read directly from the Docker Hub final tag that the
+  amd64 build job pushed.  The arm64 image is read from GHCR where the arm64
+  build job staged it under "<version>-<stage><tag_suffix>-arm64-stage" tags.
+  The resulting multi-arch manifest overwrites the Docker Hub final tag.
 
 inputs:
   versions:
@@ -28,11 +30,6 @@ inputs:
       Tag suffix that was applied during the build (e.g. "" for main or "-rc"
       for the develop branch).
     required: true
-  platform_tag_suffixes:
-    description: >
-      Space-separated list of the per-platform tag suffixes that were used
-      during the build (e.g. "-amd64 -arm64").
-    default: '-amd64 -arm64'
   repo:
     description: Docker Hub repository (e.g. "devpanel/php").
     default: 'devpanel/php'
@@ -42,6 +39,18 @@ inputs:
   dockerhub_token:
     description: Docker Hub token for image push authentication.
     required: true
+  github_token:
+    description: >
+      GITHUB_TOKEN for GHCR login to read arm64 staging images.
+      Use secrets.GITHUB_TOKEN from the calling workflow.
+    required: true
+  ghcr_token:
+    description: >
+      Optional classic Personal Access Token with the read:packages scope.
+      When provided, this token is used instead of github_token for GHCR
+      login.  Required when the organisation's Actions token policy restricts
+      GITHUB_TOKEN from reading packages.
+    default: ''
 
 runs:
   using: composite
@@ -55,15 +64,29 @@ runs:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
 
+    - name: Compute GHCR repository (lowercase)
+      id: ghcr
+      shell: bash
+      env:
+        REPO: ${{ github.repository }}
+      run: echo "repo=ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.ghcr_token || inputs.github_token }}
+
     - name: Merge per-platform manifests
       shell: bash
       env:
-        VERSIONS:          ${{ inputs.versions }}
-        VERSIONS_BASE:     ${{ inputs.versions_base }}
-        VERSIONS_SECURE:   ${{ inputs.versions_secure }}
-        TAG_SUFFIX:        ${{ inputs.tag_suffix }}
-        PLATFORM_SUFFIXES: ${{ inputs.platform_tag_suffixes }}
-        REPO:              ${{ inputs.repo }}
+        VERSIONS:        ${{ inputs.versions }}
+        VERSIONS_BASE:   ${{ inputs.versions_base }}
+        VERSIONS_SECURE: ${{ inputs.versions_secure }}
+        TAG_SUFFIX:      ${{ inputs.tag_suffix }}
+        REPO:            ${{ inputs.repo }}
+        GHCR_REPO:       ${{ steps.ghcr.outputs.repo }}
       run: |
         set -euo pipefail
 
@@ -76,14 +99,18 @@ runs:
             if [[ "$stage" == "base"   ]] && ! in_list "$version" "$VERSIONS_BASE";   then continue; fi
             if [[ "$stage" == "secure" ]] && ! in_list "$version" "$VERSIONS_SECURE"; then continue; fi
 
-            SOURCES=()
-            for suffix in $PLATFORM_SUFFIXES; do
-              SOURCES+=("${REPO}:${version}-${stage}${TAG_SUFFIX}${suffix}")
-            done
-
             FINAL_TAG="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+            ARM64_STAGE="${GHCR_REPO}:${version}-${stage}${TAG_SUFFIX}-arm64-stage"
+
             echo "Creating multi-arch manifest: ${FINAL_TAG}"
-            echo "  Sources: ${SOURCES[*]}"
-            docker buildx imagetools create -t "${FINAL_TAG}" "${SOURCES[@]}"
+            echo "  amd64 source: ${FINAL_TAG} (existing Docker Hub image)"
+            echo "  arm64 source: ${ARM64_STAGE} (GHCR staging image)"
+            # Rebuild the final tag as a manifest list combining the existing
+            # amd64 image (at the final tag) and the arm64 staging image from
+            # GHCR.  imagetools create accepts single-arch sources and creates
+            # the manifest list automatically.
+            docker buildx imagetools create -t "${FINAL_TAG}" \
+              "${FINAL_TAG}" \
+              "${ARM64_STAGE}"
           done
         done

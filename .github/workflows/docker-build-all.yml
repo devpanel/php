@@ -15,6 +15,9 @@ jobs:
       packages: write
     strategy:
       matrix:
+        # amd64: pushes final images directly to Docker Hub under the final tag.
+        # arm64: pushes final images to GHCR staging; the merge job then adds
+        #        arm64 to the Docker Hub final tag created by the amd64 build.
         platform: [linux/amd64, linux/arm64]
     # All matrix instances detect the same versions (full-rebuild = all dirs),
     # so last-writer-wins for matrix job outputs is safe: every instance sets
@@ -29,20 +32,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Compute platform tag suffix
-        id: plat
-        run: |
-          # Convert "linux/amd64" → "-amd64", "linux/arm64" → "-arm64", etc.
-          suffix="-$(echo '${{ matrix.platform }}' | sed 's|linux/||;s|/|-|g')"
-          echo "tag_suffix=${suffix}" >> "$GITHUB_OUTPUT"
-
       - name: Build PHP images
         id: build_action
         uses: ./.github/actions/build-php-images
         with:
           cache_from_enabled:  'false'
           platforms_filter:    ${{ matrix.platform }}
-          platform_tag_suffix: ${{ steps.plat.outputs.tag_suffix }}
+          # amd64 pushes final images to Docker Hub; arm64 stages them in GHCR.
+          arm64_staging:       ${{ (matrix.platform == 'linux/arm64') && 'true' || 'false' }}
           dockerhub_username:  ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token:     ${{ secrets.DOCKERHUB_TOKEN }}
           github_token:        ${{ secrets.GITHUB_TOKEN }}
@@ -54,6 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -61,12 +59,11 @@ jobs:
       - name: Merge per-platform manifests
         uses: ./.github/actions/merge-manifests
         with:
-          versions:               ${{ needs.build.outputs.versions }}
-          versions_base:          ${{ needs.build.outputs.versions_base }}
-          versions_secure:        ${{ needs.build.outputs.versions_secure }}
-          tag_suffix:             ${{ needs.build.outputs.tag_suffix }}
-          # Derive the platform tag suffixes from the matrix definition so that
-          # any future addition to the matrix is automatically reflected here.
-          platform_tag_suffixes:  -amd64 -arm64
-          dockerhub_username:     ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token:        ${{ secrets.DOCKERHUB_TOKEN }}
+          versions:           ${{ needs.build.outputs.versions }}
+          versions_base:      ${{ needs.build.outputs.versions_base }}
+          versions_secure:    ${{ needs.build.outputs.versions_secure }}
+          tag_suffix:         ${{ needs.build.outputs.tag_suffix }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token:       ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token:         ${{ secrets.GHCR_TOKEN }}
