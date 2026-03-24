@@ -19,16 +19,17 @@
 #   CORERULESET_VERSION           ModSecurity CRS version                      (3.3.5)
 #   CACHE_FROM_ENABLED            Read from GHA/GHCR cache ("true"/"false")    ("true")
 #   PLATFORMS                     Comma-separated target platforms             ("linux/amd64,linux/arm64")
-#   ARM64_STAGING                 When "true", push final images to GHCR      ("false")
-#                                 staging instead of Docker Hub (arm64 build)
+#   PUSH_BY_DIGEST                When "true", push final images by digest     ("false")
+#                                 without tags (used for per-platform CI jobs)
 #   VERSIONS_NEEDING_MULTIPART_FIX  Versions running Debian 11 / modsec 2.9.3  ("7.4 8.0")
 #
 # Intermediate targets pushed to GHCR (never pushed to Docker Hub):
 #   downloader, phpX_Y-php-ext, phpX_Y-secure-int
 # These are permanently stored in the GitHub Container Registry and use
 # type=registry cache (mode=max) for efficient incremental rebuilds.
-# When ARM64_STAGING=true, final images are also staged in GHCR under
-# "<version>-<stage><TAG_SUFFIX>-arm64-stage" tags (not visible on Docker Hub).
+# When PUSH_BY_DIGEST=true, final images are pushed to Docker Hub by content
+# digest without tags.  The merge-manifests action combines the per-platform
+# digests into the final multi-arch manifest tag.
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
@@ -84,14 +85,13 @@ variable "CACHE_FROM_ENABLED"            { default = "true"                    }
 # never abort due to a GHCR write failure.
 variable "GHCR_WRITABLE"                { default = "false"                   }
 variable "PLATFORMS"                     { default = "linux/amd64,linux/arm64" }
-# ARM64_STAGING: when "true", final images (base/secure/advance) are pushed to
-# GHCR with an "-arm64-stage" tag suffix instead of to Docker Hub.  The
-# merge-manifests action then creates the final Docker Hub multi-arch manifest
-# by combining the existing amd64 Docker Hub image with the GHCR arm64 staging
-# image.  This allows the amd64 image to be live on Docker Hub immediately
-# while arm64 is still building, without ever creating platform-specific
-# Docker Hub tags visible to end users.
-variable "ARM64_STAGING"                 { default = "false"                   }
+# PUSH_BY_DIGEST: when "true", final images (base/secure/advance) are pushed
+# to Docker Hub by content digest without creating any tags.  The
+# merge-manifests action then creates the final multi-arch manifest tag by
+# combining the per-platform digests received from both build jobs.  Used by
+# CI per-platform builds (one job per platform) so the final tag is assembled
+# from all digests without ever creating platform-specific tags.
+variable "PUSH_BY_DIGEST"               { default = "false"                   }
 # Versions using Debian 11 / mod_security 2.9.3 that require the
 # REQUEST-922-MULTIPART-ATTACK rule to be removed.
 variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
@@ -269,7 +269,8 @@ target "php-base" {
     common-downloader = "target:downloader"
     common            = "./base"
   }
-  tags       = should_push(VERSIONS_BASE, version) ? (ARM64_STAGING == "true" ? ["${GHCR_REPO}:${version}-base${TAG_SUFFIX}-arm64-stage"] : ["${REPO}:${version}-base${TAG_SUFFIX}"]) : []
+  tags       = PUSH_BY_DIGEST == "true" ? [] : (should_push(VERSIONS_BASE, version) ? ["${REPO}:${version}-base${TAG_SUFFIX}"] : [])
+  output     = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_BASE, version) ? ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"] : []
   cache-from = cache_from("php${ver_key(version)}-base")
   cache-to   = cache_to("php${ver_key(version)}-base")
 }
@@ -321,7 +322,8 @@ target "php-secure" {
   dockerfile = "Dockerfile"
   context    = contains(split(" ", VERSIONS_NEEDING_MULTIPART_FIX), version) ? "${version}/secure" : "secure"
   contexts   = { secure-intermediate = "target:php${ver_key(version)}-secure-int" }
-  tags       = should_push(VERSIONS_SECURE, version) ? (ARM64_STAGING == "true" ? ["${GHCR_REPO}:${version}-secure${TAG_SUFFIX}-arm64-stage"] : ["${REPO}:${version}-secure${TAG_SUFFIX}"]) : []
+  tags       = PUSH_BY_DIGEST == "true" ? [] : (should_push(VERSIONS_SECURE, version) ? ["${REPO}:${version}-secure${TAG_SUFFIX}"] : [])
+  output     = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_SECURE, version) ? ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"] : []
   cache-from = cache_from("php${ver_key(version)}-secure")
   cache-to   = cache_to("php${ver_key(version)}-secure")
 }
@@ -343,7 +345,8 @@ target "php-advance" {
   name     = "php${ver_key(version)}-advance"
   inherits = ["_advance-common"]
   contexts = { base-image = "target:php${ver_key(version)}-secure" }
-  tags     = ARM64_STAGING == "true" ? ["${GHCR_REPO}:${version}-advance${TAG_SUFFIX}-arm64-stage"] : ["${REPO}:${version}-advance${TAG_SUFFIX}"]
+  tags     = PUSH_BY_DIGEST == "true" ? [] : ["${REPO}:${version}-advance${TAG_SUFFIX}"]
+  output   = PUSH_BY_DIGEST == "true" ? ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"] : []
   cache-from = cache_from("php${ver_key(version)}-advance")
   cache-to   = cache_to("php${ver_key(version)}-advance")
 }

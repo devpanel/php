@@ -49,14 +49,14 @@ inputs:
       login and write-access checks.  Required when the organisation's
       Actions token policy restricts GITHUB_TOKEN from writing to packages.
     default: ''
-  arm64_staging:
+  push_by_digest:
     description: >
-      When 'true', final images (base/secure/advance) are pushed to GHCR as
-      arm64 staging images instead of to Docker Hub.  The merge-manifests
-      action then creates the final Docker Hub multi-arch manifest by
-      combining the existing amd64 Docker Hub image with the GHCR arm64
-      staging image.  Set to 'true' for the arm64 matrix job; leave empty
-      or 'false' for the amd64 job and for combined (non-matrix) builds.
+      When 'true', final images (base/secure/advance) are pushed to Docker Hub
+      by content digest without creating any tags.  The merge-manifests action
+      then creates the final multi-arch manifest tag by combining the per-platform
+      digests received from both build jobs.  Set to 'true' for all per-platform
+      CI builds; leave 'false' for a combined multi-platform local build that
+      pushes the final tags directly.
     default: 'false'
 
 outputs:
@@ -79,6 +79,12 @@ outputs:
   latest_php_version:
     description: The highest PHP version directory present in the repository.
     value: ${{ steps.detect.outputs.latest_php_version }}
+  digests:
+    description: >
+      JSON object mapping "{version}-{stage}" to content digest when
+      push_by_digest is 'true' (e.g. {"8.3-base":"sha256:abc...","8.3-secure":"sha256:def..."}).
+      Empty string when push_by_digest is 'false'.
+    value: ${{ steps.digests.outputs.digests }}
 
 runs:
   using: composite
@@ -461,6 +467,7 @@ runs:
 
     - name: Build and push images
       if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+      id: bake
       uses: docker/bake-action@v7
       env:
         TAG_SUFFIX:                  ${{ steps.detect.outputs.tag_suffix }}
@@ -478,9 +485,45 @@ runs:
         CODESERVER_DEB_SHA256_ARM64: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64 }}
         COPILOT_CHAT_VERSION:        ${{ steps.preseed.outputs.copilot_chat_version }}
         COPILOT_CHAT_VSIX_SHA256:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256 }}
-        ARM64_STAGING:               ${{ inputs.arm64_staging }}
+        PUSH_BY_DIGEST:              ${{ inputs.push_by_digest }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
       with:
         source: .
         files: docker-bake.hcl
         push:  true
+
+    - name: Extract image digests
+      if: >-
+        inputs.push_by_digest == 'true' &&
+        steps.detect.outputs.versions != '' &&
+        steps.detect.outputs.latest_php_version != ''
+      id: digests
+      shell: bash
+      env:
+        METADATA: ${{ steps.bake.outputs.metadata }}
+      run: |
+        set -euo pipefail
+        # Convert bake target names (e.g. php8_3-base) to version-stage keys
+        # (e.g. 8.3-base) and build a JSON map of key → digest.
+        # Only include targets that have a non-empty containerimage.digest
+        # (i.e. targets that actually pushed an image by digest).
+        DIGESTS=$(printf '%s' "${METADATA}" | jq -c '
+          to_entries
+          | map(
+              select(
+                (.key | test("^php[0-9_]+-(base|secure|advance)$")) and
+                (.value["containerimage.digest"] != null) and
+                (.value["containerimage.digest"] != "")
+              )
+              | {
+                  key: (
+                    .key
+                    | ltrimstr("php")
+                    | gsub("(?<major>[0-9]+)_(?<minor>[0-9]+)-"; "\(.major).\(.minor)-")
+                  ),
+                  value: .value["containerimage.digest"]
+                }
+            )
+          | from_entries
+        ')
+        echo "digests=${DIGESTS}" >> "$GITHUB_OUTPUT"

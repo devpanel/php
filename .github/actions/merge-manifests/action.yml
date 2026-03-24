@@ -1,14 +1,12 @@
-name: Merge per-platform manifests into multi-arch images
+name: Merge per-platform digests into multi-arch manifest tags
 description: >
-  After per-platform builds have completed, this action combines the amd64
-  image (already live on Docker Hub under the final tag) with the arm64 image
-  (staged in GHCR) into a single multi-architecture Docker Hub manifest using
-  docker buildx imagetools create.
+  After per-platform builds have pushed their images to Docker Hub by content
+  digest (no tags), this action creates the final multi-architecture Docker Hub
+  manifest tags using docker buildx imagetools create.
 
-  The amd64 image is read directly from the Docker Hub final tag that the
-  amd64 build job pushed.  The arm64 image is read from GHCR where the arm64
-  build job staged it under "<version>-<stage><tag_suffix>-arm64-stage" tags.
-  The resulting multi-arch manifest overwrites the Docker Hub final tag.
+  Each build job passes a JSON map of "{version}-{stage}" to digest.  This
+  action combines the amd64 and arm64 digests for each version/stage and creates
+  the final manifest tag on Docker Hub.
 
 inputs:
   versions:
@@ -30,6 +28,18 @@ inputs:
       Tag suffix that was applied during the build (e.g. "" for main or "-rc"
       for the develop branch).
     required: true
+  amd64_digests:
+    description: >
+      JSON object mapping "{version}-{stage}" to amd64 image digest, as
+      produced by build-php-images with push_by_digest=true.
+      Example: {"8.3-base":"sha256:abc...","8.3-secure":"sha256:def..."}.
+    required: true
+  arm64_digests:
+    description: >
+      JSON object mapping "{version}-{stage}" to arm64 image digest, as
+      produced by build-php-images with push_by_digest=true.
+      Example: {"8.3-base":"sha256:uvw...","8.3-secure":"sha256:xyz..."}.
+    required: true
   repo:
     description: Docker Hub repository (e.g. "devpanel/php").
     default: 'devpanel/php'
@@ -39,18 +49,6 @@ inputs:
   dockerhub_token:
     description: Docker Hub token for image push authentication.
     required: true
-  github_token:
-    description: >
-      GITHUB_TOKEN for GHCR login to read arm64 staging images.
-      Use secrets.GITHUB_TOKEN from the calling workflow.
-    required: true
-  ghcr_token:
-    description: >
-      Optional classic Personal Access Token with the read:packages scope.
-      When provided, this token is used instead of github_token for GHCR
-      login.  Required when the organisation's Actions token policy restricts
-      GITHUB_TOKEN from reading packages.
-    default: ''
 
 runs:
   using: composite
@@ -64,34 +62,28 @@ runs:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
 
-    - name: Compute GHCR repository (lowercase)
-      id: ghcr
-      shell: bash
-      env:
-        REPO: ${{ github.repository }}
-      run: echo "repo=ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
-    - name: Login to GitHub Container Registry
-      uses: docker/login-action@v4
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ inputs.ghcr_token || inputs.github_token }}
-
-    - name: Merge per-platform manifests
+    - name: Create multi-arch manifest tags from per-platform digests
       shell: bash
       env:
         VERSIONS:        ${{ inputs.versions }}
         VERSIONS_BASE:   ${{ inputs.versions_base }}
         VERSIONS_SECURE: ${{ inputs.versions_secure }}
         TAG_SUFFIX:      ${{ inputs.tag_suffix }}
+        AMD64_DIGESTS:   ${{ inputs.amd64_digests }}
+        ARM64_DIGESTS:   ${{ inputs.arm64_digests }}
         REPO:            ${{ inputs.repo }}
-        GHCR_REPO:       ${{ steps.ghcr.outputs.repo }}
       run: |
         set -euo pipefail
 
         # Returns 0 if $1 appears as a whole word in the space-separated list $2.
         in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+        # Look up the digest for a given version-stage key from a JSON map.
+        # Prints the digest, or empty string if not found.
+        get_digest() {
+          local json="$1" key="$2"
+          printf '%s' "${json}" | jq -r --arg k "${key}" '.[$k] // empty'
+        }
 
         for version in $VERSIONS; do
           for stage in base secure advance; do
@@ -99,18 +91,22 @@ runs:
             if [[ "$stage" == "base"   ]] && ! in_list "$version" "$VERSIONS_BASE";   then continue; fi
             if [[ "$stage" == "secure" ]] && ! in_list "$version" "$VERSIONS_SECURE"; then continue; fi
 
-            FINAL_TAG="${REPO}:${version}-${stage}${TAG_SUFFIX}"
-            ARM64_STAGE="${GHCR_REPO}:${version}-${stage}${TAG_SUFFIX}-arm64-stage"
+            KEY="${version}-${stage}"
+            AMD64=$(get_digest "${AMD64_DIGESTS}" "${KEY}")
+            ARM64=$(get_digest "${ARM64_DIGESTS}" "${KEY}")
 
-            echo "Creating multi-arch manifest: ${FINAL_TAG}"
-            echo "  amd64 source: ${FINAL_TAG} (existing Docker Hub image)"
-            echo "  arm64 source: ${ARM64_STAGE} (GHCR staging image)"
-            # Rebuild the final tag as a manifest list combining the existing
-            # amd64 image (at the final tag) and the arm64 staging image from
-            # GHCR.  imagetools create accepts single-arch sources and creates
-            # the manifest list automatically.
-            docker buildx imagetools create -t "${FINAL_TAG}" \
-              "${FINAL_TAG}" \
-              "${ARM64_STAGE}"
+            if [[ -z "$AMD64" && -z "$ARM64" ]]; then
+              echo "Skipping ${KEY}: no digests available for either platform."
+              continue
+            fi
+
+            FINAL_TAG="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+            SOURCES=()
+            [[ -n "$AMD64" ]] && SOURCES+=("${REPO}@${AMD64}")
+            [[ -n "$ARM64" ]] && SOURCES+=("${REPO}@${ARM64}")
+
+            echo "Creating manifest: ${FINAL_TAG}"
+            printf '  source: %s\n' "${SOURCES[@]}"
+            docker buildx imagetools create -t "${FINAL_TAG}" "${SOURCES[@]}"
           done
         done

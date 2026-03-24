@@ -78,27 +78,22 @@ jobs:
 
           echo "before_sha=$BEFORE_SHA" >> "$GITHUB_OUTPUT"
 
-  build:
+  # Each platform builds independently and pushes its images to Docker Hub by
+  # content digest (no tags created).  The merge job then creates the final
+  # multi-arch manifest tags from the collected digests.
+  build-amd64:
     needs: prepare
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        # amd64: pushes final images directly to Docker Hub under the final tag.
-        # arm64: pushes final images to GHCR staging; the merge job then adds
-        #        arm64 to the Docker Hub final tag created by the amd64 build.
-        platform: [linux/amd64, linux/arm64]
-    # All matrix instances detect the same versions from the same git diff, so
-    # the last-writer-wins behaviour for matrix job outputs is safe here: every
-    # instance sets identical values for tag_suffix, versions, etc.
     outputs:
-      tag_suffix:          ${{ steps.build_action.outputs.tag_suffix }}
-      versions:            ${{ steps.build_action.outputs.versions }}
-      versions_base:       ${{ steps.build_action.outputs.versions_base }}
-      versions_secure:     ${{ steps.build_action.outputs.versions_secure }}
-      latest_php_version:  ${{ steps.build_action.outputs.latest_php_version }}
+      tag_suffix:         ${{ steps.build.outputs.tag_suffix }}
+      versions:           ${{ steps.build.outputs.versions }}
+      versions_base:      ${{ steps.build.outputs.versions_base }}
+      versions_secure:    ${{ steps.build.outputs.versions_secure }}
+      latest_php_version: ${{ steps.build.outputs.latest_php_version }}
+      digests:            ${{ steps.build.outputs.digests }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -107,39 +102,64 @@ jobs:
           # that git diff can compare before_sha..after_sha.
           fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
 
-      - name: Build PHP images
-        id: build_action
+      - name: Build PHP images (amd64)
+        id: build
         uses: ./.github/actions/build-php-images
         with:
-          before_sha:          ${{ needs.prepare.outputs.before_sha }}
-          after_sha:           ${{ github.sha }}
-          platforms_filter:    ${{ matrix.platform }}
-          # amd64 pushes final images to Docker Hub; arm64 stages them in GHCR.
-          arm64_staging:       ${{ (matrix.platform == 'linux/arm64') && 'true' || 'false' }}
-          dockerhub_username:  ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token:     ${{ secrets.DOCKERHUB_TOKEN }}
-          github_token:        ${{ secrets.GITHUB_TOKEN }}
-          ghcr_token:          ${{ secrets.GHCR_TOKEN }}
-
-  merge:
-    needs: [prepare, build]
-    if: needs.build.outputs.versions != '' && needs.build.outputs.latest_php_version != ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Merge per-platform manifests
-        uses: ./.github/actions/merge-manifests
-        with:
-          versions:           ${{ needs.build.outputs.versions }}
-          versions_base:      ${{ needs.build.outputs.versions_base }}
-          versions_secure:    ${{ needs.build.outputs.versions_secure }}
-          tag_suffix:         ${{ needs.build.outputs.tag_suffix }}
+          before_sha:         ${{ needs.prepare.outputs.before_sha }}
+          after_sha:          ${{ github.sha }}
+          platforms_filter:   linux/amd64
+          push_by_digest:     'true'
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
           github_token:       ${{ secrets.GITHUB_TOKEN }}
           ghcr_token:         ${{ secrets.GHCR_TOKEN }}
+
+  build-arm64:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digests: ${{ steps.build.outputs.digests }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
+
+      - name: Build PHP images (arm64)
+        id: build
+        uses: ./.github/actions/build-php-images
+        with:
+          before_sha:         ${{ needs.prepare.outputs.before_sha }}
+          after_sha:          ${{ github.sha }}
+          platforms_filter:   linux/arm64
+          push_by_digest:     'true'
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token:       ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token:         ${{ secrets.GHCR_TOKEN }}
+
+  merge:
+    needs: [build-amd64, build-arm64]
+    if: needs.build-amd64.outputs.versions != '' && needs.build-amd64.outputs.latest_php_version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Create multi-arch manifest tags
+        uses: ./.github/actions/merge-manifests
+        with:
+          versions:           ${{ needs.build-amd64.outputs.versions }}
+          versions_base:      ${{ needs.build-amd64.outputs.versions_base }}
+          versions_secure:    ${{ needs.build-amd64.outputs.versions_secure }}
+          tag_suffix:         ${{ needs.build-amd64.outputs.tag_suffix }}
+          amd64_digests:      ${{ needs.build-amd64.outputs.digests }}
+          arm64_digests:      ${{ needs.build-arm64.outputs.digests }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
