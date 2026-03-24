@@ -1,0 +1,89 @@
+name: Merge per-platform manifests into multi-arch images
+description: >
+  After per-platform builds have pushed platform-specific images (e.g.
+  8.3-base-amd64, 8.3-base-arm64), this action combines them into the final
+  multi-architecture Docker Hub manifests (e.g. 8.3-base) using
+  docker buildx imagetools create.
+
+  The action must be called from a job that has already authenticated to
+  Docker Hub via docker/login-action.
+
+inputs:
+  versions:
+    description: >
+      Space-separated list of PHP versions to merge (e.g. "7.4 8.0 8.1 8.2 8.3").
+    required: true
+  versions_base:
+    description: >
+      Space-separated list of PHP versions for which base-stage images were
+      pushed and should be merged.
+    required: true
+  versions_secure:
+    description: >
+      Space-separated list of PHP versions for which secure-stage images were
+      pushed and should be merged.
+    required: true
+  tag_suffix:
+    description: >
+      Tag suffix that was applied during the build (e.g. "" for main or "-rc"
+      for the develop branch).
+    required: true
+  platform_tag_suffixes:
+    description: >
+      Space-separated list of the per-platform tag suffixes that were used
+      during the build (e.g. "-amd64 -arm64").
+    default: '-amd64 -arm64'
+  repo:
+    description: Docker Hub repository (e.g. "devpanel/php").
+    default: 'devpanel/php'
+  dockerhub_username:
+    description: Docker Hub username for image push authentication.
+    required: true
+  dockerhub_token:
+    description: Docker Hub token for image push authentication.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ inputs.dockerhub_username }}
+        password: ${{ inputs.dockerhub_token }}
+
+    - name: Merge per-platform manifests
+      shell: bash
+      env:
+        VERSIONS:          ${{ inputs.versions }}
+        VERSIONS_BASE:     ${{ inputs.versions_base }}
+        VERSIONS_SECURE:   ${{ inputs.versions_secure }}
+        TAG_SUFFIX:        ${{ inputs.tag_suffix }}
+        PLATFORM_SUFFIXES: ${{ inputs.platform_tag_suffixes }}
+        REPO:              ${{ inputs.repo }}
+      run: |
+        set -euo pipefail
+
+        # Returns 0 if $1 appears as a whole word in the space-separated list $2.
+        in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+        for version in $VERSIONS; do
+          for stage in base secure advance; do
+            # Skip base/secure stages not present in the respective push lists.
+            if [[ "$stage" == "base"   ]] && ! in_list "$version" "$VERSIONS_BASE";   then continue; fi
+            if [[ "$stage" == "secure" ]] && ! in_list "$version" "$VERSIONS_SECURE"; then continue; fi
+
+            SOURCES=()
+            for suffix in $PLATFORM_SUFFIXES; do
+              SOURCES+=("${REPO}:${version}-${stage}${TAG_SUFFIX}${suffix}")
+            done
+
+            FINAL_TAG="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+            echo "Creating multi-arch manifest: ${FINAL_TAG}"
+            echo "  Sources: ${SOURCES[*]}"
+            docker buildx imagetools create -t "${FINAL_TAG}" "${SOURCES[@]}"
+          done
+        done

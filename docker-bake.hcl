@@ -80,6 +80,13 @@ variable "CACHE_FROM_ENABLED"            { default = "true"                    }
 # never abort due to a GHCR write failure.
 variable "GHCR_WRITABLE"                { default = "false"                   }
 variable "PLATFORMS"                     { default = "linux/amd64,linux/arm64" }
+# PLATFORM_TAG_SUFFIX: appended to Docker Hub final image tags when building a
+# single platform so that per-platform images can coexist in the registry
+# without overwriting each other (e.g. "-amd64" or "-arm64").
+# Empty by default (combined multi-platform build uses no suffix).
+# The merge-manifests action creates the final suffixless multi-arch manifests
+# by combining the per-platform images after both builds complete.
+variable "PLATFORM_TAG_SUFFIX"           { default = ""                        }
 # Versions using Debian 11 / mod_security 2.9.3 that require the
 # REQUEST-922-MULTIPART-ATTACK rule to be removed.
 variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
@@ -257,7 +264,7 @@ target "php-base" {
     common-downloader = "target:downloader"
     common            = "./base"
   }
-  tags       = should_push(VERSIONS_BASE, version) ? ["${REPO}:${version}-base${TAG_SUFFIX}"] : []
+  tags       = should_push(VERSIONS_BASE, version) ? ["${REPO}:${version}-base${TAG_SUFFIX}${PLATFORM_TAG_SUFFIX}"] : []
   cache-from = cache_from("php${ver_key(version)}-base")
   cache-to   = cache_to("php${ver_key(version)}-base")
 }
@@ -309,7 +316,7 @@ target "php-secure" {
   dockerfile = "Dockerfile"
   context    = contains(split(" ", VERSIONS_NEEDING_MULTIPART_FIX), version) ? "${version}/secure" : "secure"
   contexts   = { secure-intermediate = "target:php${ver_key(version)}-secure-int" }
-  tags       = should_push(VERSIONS_SECURE, version) ? ["${REPO}:${version}-secure${TAG_SUFFIX}"] : []
+  tags       = should_push(VERSIONS_SECURE, version) ? ["${REPO}:${version}-secure${TAG_SUFFIX}${PLATFORM_TAG_SUFFIX}"] : []
   cache-from = cache_from("php${ver_key(version)}-secure")
   cache-to   = cache_to("php${ver_key(version)}-secure")
 }
@@ -331,7 +338,7 @@ target "php-advance" {
   name     = "php${ver_key(version)}-advance"
   inherits = ["_advance-common"]
   contexts = { base-image = "target:php${ver_key(version)}-secure" }
-  tags     = ["${REPO}:${version}-advance${TAG_SUFFIX}"]
+  tags     = ["${REPO}:${version}-advance${TAG_SUFFIX}${PLATFORM_TAG_SUFFIX}"]
   cache-from = cache_from("php${ver_key(version)}-advance")
   cache-to   = cache_to("php${ver_key(version)}-advance")
 }

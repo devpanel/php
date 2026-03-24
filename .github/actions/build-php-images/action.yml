@@ -49,6 +49,35 @@ inputs:
       login and write-access checks.  Required when the organisation's
       Actions token policy restricts GITHUB_TOKEN from writing to packages.
     default: ''
+  platform_tag_suffix:
+    description: >
+      Per-platform tag suffix appended to Docker Hub final image tags when
+      building a single platform (e.g. "-amd64" or "-arm64").  Leave empty
+      when building all platforms together in one combined run.  The
+      merge-manifests action is then used to combine the per-platform images
+      into a final multi-arch manifest.
+    default: ''
+
+outputs:
+  tag_suffix:
+    description: The computed tag suffix used for image tags (e.g. "" or "-rc").
+    value: ${{ steps.detect.outputs.tag_suffix }}
+  versions:
+    description: Space-separated list of PHP versions that were built.
+    value: ${{ steps.detect.outputs.versions }}
+  versions_base:
+    description: >
+      Space-separated list of PHP versions for which base-stage images were
+      tagged and pushed to Docker Hub.
+    value: ${{ steps.detect.outputs.versions_base }}
+  versions_secure:
+    description: >
+      Space-separated list of PHP versions for which secure-stage images were
+      tagged and pushed to Docker Hub.
+    value: ${{ steps.detect.outputs.versions_secure }}
+  latest_php_version:
+    description: The highest PHP version directory present in the repository.
+    value: ${{ steps.detect.outputs.latest_php_version }}
 
 runs:
   using: composite
@@ -448,6 +477,7 @@ runs:
         CODESERVER_DEB_SHA256_ARM64: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64 }}
         COPILOT_CHAT_VERSION:        ${{ steps.preseed.outputs.copilot_chat_version }}
         COPILOT_CHAT_VSIX_SHA256:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256 }}
+        PLATFORM_TAG_SUFFIX:         ${{ inputs.platform_tag_suffix }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
       with:
         source: .

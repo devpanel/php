@@ -84,6 +84,18 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    # All matrix instances detect the same versions from the same git diff, so
+    # the last-writer-wins behaviour for matrix job outputs is safe here: every
+    # instance sets identical values for tag_suffix, versions, etc.
+    outputs:
+      tag_suffix:          ${{ steps.build_action.outputs.tag_suffix }}
+      versions:            ${{ steps.build_action.outputs.versions }}
+      versions_base:       ${{ steps.build_action.outputs.versions_base }}
+      versions_secure:     ${{ steps.build_action.outputs.versions_secure }}
+      latest_php_version:  ${{ steps.build_action.outputs.latest_php_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -92,12 +104,45 @@ jobs:
           # that git diff can compare before_sha..after_sha.
           fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
 
+      - name: Compute platform tag suffix
+        id: plat
+        run: |
+          # Convert "linux/amd64" → "-amd64", "linux/arm64" → "-arm64", etc.
+          suffix="-$(echo '${{ matrix.platform }}' | sed 's|linux/||;s|/|-|g')"
+          echo "tag_suffix=${suffix}" >> "$GITHUB_OUTPUT"
+
       - name: Build PHP images
+        id: build_action
         uses: ./.github/actions/build-php-images
         with:
           before_sha:          ${{ needs.prepare.outputs.before_sha }}
           after_sha:           ${{ github.sha }}
+          platforms_filter:    ${{ matrix.platform }}
+          platform_tag_suffix: ${{ steps.plat.outputs.tag_suffix }}
           dockerhub_username:  ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token:     ${{ secrets.DOCKERHUB_TOKEN }}
           github_token:        ${{ secrets.GITHUB_TOKEN }}
           ghcr_token:          ${{ secrets.GHCR_TOKEN }}
+
+  merge:
+    needs: [prepare, build]
+    if: needs.build.outputs.versions != '' && needs.build.outputs.latest_php_version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Merge per-platform manifests
+        uses: ./.github/actions/merge-manifests
+        with:
+          versions:               ${{ needs.build.outputs.versions }}
+          versions_base:          ${{ needs.build.outputs.versions_base }}
+          versions_secure:        ${{ needs.build.outputs.versions_secure }}
+          tag_suffix:             ${{ needs.build.outputs.tag_suffix }}
+          # Derive the platform tag suffixes from the matrix definition so that
+          # any future addition to the matrix is automatically reflected here.
+          platform_tag_suffixes:  -amd64 -arm64
+          dockerhub_username:     ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:        ${{ secrets.DOCKERHUB_TOKEN }}
