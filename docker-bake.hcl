@@ -88,7 +88,7 @@ variable "PLATFORMS"                     { default = "linux/amd64,linux/arm64" }
 # PUSH_BY_DIGEST: when "true", final images (base/secure/advance) are pushed
 # to Docker Hub by content digest without creating any tags.  The
 # merge-manifests action then creates the final multi-arch manifest tag by
-# combining the per-platform digests received from both build jobs.  Used by
+# combining the per-platform digests received from all build jobs.  Used by
 # CI per-platform builds (one job per platform) so the final tag is assembled
 # from all digests without ever creating platform-specific tags.
 variable "PUSH_BY_DIGEST"               { default = "false"                   }

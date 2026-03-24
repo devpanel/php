@@ -1,8 +1,8 @@
 {
-  "./.github/actions/build-php-images/action.yml:colons": 18,
+  "./.github/actions/build-php-images/action.yml:colons": 22,
   "./.github/actions/merge-manifests/action.yml:colons": 6,
   "./.github/actions/preseed-downloads/action.yml:empty-lines": 1,
   "./.github/workflows/ci.yml:colons": 5,
-  "./.github/workflows/docker-build-all.yml:colons": 28,
-  "./.github/workflows/docker-build-on-push.yml:colons": 32
+  "./.github/workflows/docker-build-all.yml:colons": 14,
+  "./.github/workflows/docker-build-on-push.yml:colons": 17
 }

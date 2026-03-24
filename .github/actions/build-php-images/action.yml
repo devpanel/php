@@ -527,3 +527,31 @@ runs:
           | from_entries
         ')
         echo "digests=${DIGESTS}" >> "$GITHUB_OUTPUT"
+
+    - name: Write digests to file for artifact upload
+      if: >-
+        steps.digests.outputs.digests != '' &&
+        steps.digests.outputs.digests != '{}'
+      id: digest-file
+      shell: bash
+      env:
+        DIGESTS:          ${{ steps.digests.outputs.digests }}
+        PLATFORMS_FILTER: ${{ inputs.platforms_filter }}
+      run: |
+        set -euo pipefail
+        # Derive a safe artifact name from the platforms_filter value.
+        # e.g. "linux/amd64" → "linux-amd64"
+        SLUG=$(printf '%s' "${PLATFORMS_FILTER}" | sed 's|[/,]|-|g; s|--*|-|g')
+        DEST="${RUNNER_TEMP}/digests-${SLUG}.json"
+        printf '%s' "${DIGESTS}" > "${DEST}"
+        echo "artifact_name=digests-${SLUG}" >> "$GITHUB_OUTPUT"
+        echo "artifact_file=${DEST}"         >> "$GITHUB_OUTPUT"
+
+    - name: Upload digest artifact
+      if: steps.digest-file.outputs.artifact_name != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name:              ${{ steps.digest-file.outputs.artifact_name }}
+        path:              ${{ steps.digest-file.outputs.artifact_file }}
+        if-no-files-found: error
+        retention-days:    1
