@@ -308,7 +308,6 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
           libbz2-dev \
           libgmp-dev \
           libicu-dev \
-          libpspell-dev \
           libtidy-dev \
           libxslt1-dev \
           libyaml-dev \
@@ -319,10 +318,9 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
-    && docker-php-ext-configure opcache --enable-opcache \
     && docker-php-ext-install -j$(nproc) \
-        bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
-        pdo_mysql pspell shmop soap sockets sysvmsg sysvsem sysvshm \
+        bcmath bz2 calendar exif gettext gmp intl mysqli \
+        pdo_mysql shmop soap sockets sysvmsg sysvsem sysvshm \
         tidy xsl zip pcntl \
     && pecl install -o -f \
         redis-5.3.7 \
@@ -335,7 +333,7 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
     && pecl install -o -f libsodium \
     && docker-php-ext-enable \
         bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
-        pdo_mysql pspell redis shmop soap sockets sodium sysvmsg \
+        pdo_mysql redis shmop soap sockets sodium sysvmsg \
         sysvsem sysvshm tidy xsl yaml zip pcntl memcached \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \

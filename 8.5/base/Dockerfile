@@ -12,9 +12,9 @@ FROM common-php-ext AS final
 ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
-# Install dev libraries needed to build gd and imagick for PHP 8.5, build the
-# extensions, then remove the dev libraries and their automatically-added
-# dependencies that are not needed at runtime.
+# Install dev libraries needed to build gd and imagick for PHP 8.5,
+# build the extensions, then remove the dev libraries and their
+# automatically-added dependencies that are not needed at runtime.
 # libavif-dev enables AVIF image support in gd (PHP 8.1+).
 # libmagickwand-dev and libmagickcore-dev are required to build imagick.
 # imagick is installed without a version pin to pick up the latest release with
