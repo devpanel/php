@@ -33,13 +33,15 @@ inputs:
       JSON object mapping "{version}-{stage}" to amd64 image digest, as
       produced by build-php-images with push_by_digest=true.
       Example: {"8.3-base":"sha256:abc...","8.3-secure":"sha256:def..."}.
-    required: true
+      Omit (or pass '{}') when the amd64 build has not yet completed.
+    default: '{}'
   arm64_digests:
     description: >
       JSON object mapping "{version}-{stage}" to arm64 image digest, as
       produced by build-php-images with push_by_digest=true.
       Example: {"8.3-base":"sha256:uvw...","8.3-secure":"sha256:xyz..."}.
-    required: true
+      Omit (or pass '{}') when the arm64 build has not yet completed.
+    default: '{}'
   repo:
     description: Docker Hub repository (e.g. "devpanel/php").
     default: 'devpanel/php'

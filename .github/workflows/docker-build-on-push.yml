@@ -79,8 +79,10 @@ jobs:
           echo "before_sha=$BEFORE_SHA" >> "$GITHUB_OUTPUT"
 
   # Each platform builds independently and pushes its images to Docker Hub by
-  # content digest (no tags created).  The merge job then creates the final
-  # multi-arch manifest tags from the collected digests.
+  # content digest (no tags created).  A merge job fires after each platform
+  # finishes and creates/updates the manifest tag with all digests available so
+  # far (merge-after-amd64 uses only the amd64 digest; merge-after-arm64 uses
+  # both digests and overwrites the tag with the final multi-arch manifest).
   build-amd64:
     needs: prepare
     runs-on: ubuntu-latest
@@ -142,7 +144,32 @@ jobs:
           github_token:       ${{ secrets.GITHUB_TOKEN }}
           ghcr_token:         ${{ secrets.GHCR_TOKEN }}
 
-  merge:
+  # Runs immediately after the amd64 build.  Creates the manifest tag(s) using
+  # only the amd64 digest(s) so the tag is available on Docker Hub right away.
+  merge-after-amd64:
+    needs: [build-amd64]
+    if: needs.build-amd64.outputs.versions != '' && needs.build-amd64.outputs.latest_php_version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Create manifest tags (amd64 only)
+        uses: ./.github/actions/merge-manifests
+        with:
+          versions:           ${{ needs.build-amd64.outputs.versions }}
+          versions_base:      ${{ needs.build-amd64.outputs.versions_base }}
+          versions_secure:    ${{ needs.build-amd64.outputs.versions_secure }}
+          tag_suffix:         ${{ needs.build-amd64.outputs.tag_suffix }}
+          amd64_digests:      ${{ needs.build-amd64.outputs.digests }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
+
+  # Runs after both builds complete.  Overwrites the manifest tag(s) with the
+  # full multi-arch manifest combining both amd64 and arm64 digests.
+  merge-after-arm64:
     needs: [build-amd64, build-arm64]
     if: needs.build-amd64.outputs.versions != '' && needs.build-amd64.outputs.latest_php_version != ''
     runs-on: ubuntu-latest
@@ -152,7 +179,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Create multi-arch manifest tags
+      - name: Create manifest tags (amd64 + arm64)
         uses: ./.github/actions/merge-manifests
         with:
           versions:           ${{ needs.build-amd64.outputs.versions }}
