@@ -17,7 +17,6 @@ jobs:
       actions: read
     outputs:
       before_sha: ${{ steps.effective_sha.outputs.before_sha }}
-      platforms:  ${{ steps.platforms.outputs.platforms }}
     steps:
       - name: Compute effective before_sha
         id: effective_sha
@@ -79,28 +78,23 @@ jobs:
 
           echo "before_sha=$BEFORE_SHA" >> "$GITHUB_OUTPUT"
 
-      # The platforms list is the single source of truth for which architectures
-      # are built.  Add an entry here to get a new build job AND a new merge job
-      # automatically — no other workflow changes are required.
-      - name: Set build platforms
-        id: platforms
-        run: echo 'platforms=["linux/amd64","linux/arm64"]' >> "$GITHUB_OUTPUT"
+  # Each platform builds independently, pushes images by content digest (no
+  # tags), and uploads a digest artifact.  As soon as a platform build
+  # completes its corresponding merge job fires (see below) and creates or
+  # updates the manifest tag using all digest artifacts available at that
+  # moment — so the tag is published immediately after the first platform
+  # finishes and progressively updated as each subsequent platform completes.
+  #
+  # To add a new platform, copy one build+merge job pair, change the
+  # platforms_filter, and update the job names.  No other changes are needed.
 
-  # One build job per platform.  Each instance pushes its images to Docker Hub
-  # by content digest (no tags created) and uploads a digest artifact so the
-  # merge jobs can assemble the final multi-arch manifest tags.
-  build:
+  build-linux-amd64:
     needs: [prepare]
-    strategy:
-      matrix:
-        platform: ${{ fromJson(needs.prepare.outputs.platforms) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     outputs:
-      # All matrix instances detect identical values from the same git diff;
-      # last-writer-wins on matrix outputs is safe here.
       tag_suffix:         ${{ steps.build.outputs.tag_suffix }}
       versions:           ${{ steps.build.outputs.versions }}
       versions_base:      ${{ steps.build.outputs.versions_base }}
@@ -114,30 +108,63 @@ jobs:
           # that git diff can compare before_sha..after_sha.
           fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
 
-      - name: Build PHP images (${{ matrix.platform }})
+      - name: Build PHP images (linux/amd64)
         id: build
         uses: ./.github/actions/build-php-images
         with:
           before_sha:         ${{ needs.prepare.outputs.before_sha }}
           after_sha:          ${{ github.sha }}
-          platforms_filter:   ${{ matrix.platform }}
+          platforms_filter:   linux/amd64
           push_by_digest:     'true'
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
           github_token:       ${{ secrets.GITHUB_TOKEN }}
           ghcr_token:         ${{ secrets.GHCR_TOKEN }}
 
-  # One merge job per platform.  All instances run after every build completes
-  # so that each merge job has access to all platform digest artifacts and can
-  # create the complete multi-arch manifest in one shot.  If a build fails for
-  # one platform its digest will simply be absent and the manifest is created
-  # from whatever platforms succeeded.
-  merge:
-    needs: [prepare, build]
-    if: needs.build.outputs.versions != '' && needs.build.outputs.latest_php_version != ''
-    strategy:
-      matrix:
-        platform: ${{ fromJson(needs.prepare.outputs.platforms) }}
+  build-linux-arm64:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag_suffix:         ${{ steps.build.outputs.tag_suffix }}
+      versions:           ${{ steps.build.outputs.versions }}
+      versions_base:      ${{ steps.build.outputs.versions_base }}
+      versions_secure:    ${{ steps.build.outputs.versions_secure }}
+      latest_php_version: ${{ steps.build.outputs.latest_php_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
+
+      - name: Build PHP images (linux/arm64)
+        id: build
+        uses: ./.github/actions/build-php-images
+        with:
+          before_sha:         ${{ needs.prepare.outputs.before_sha }}
+          after_sha:          ${{ github.sha }}
+          platforms_filter:   linux/arm64
+          push_by_digest:     'true'
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token:       ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token:         ${{ secrets.GHCR_TOKEN }}
+
+  # Each merge job depends only on its own platform's build job so it fires as
+  # soon as that platform finishes.  It downloads all digest artifacts that are
+  # available at that moment (other platforms may still be building) and creates
+  # or overwrites the manifest tag with whatever digests are present.  When the
+  # next platform finishes its own merge job runs and overwrites the tag again
+  # with the enlarged set of digests.  The final merge job to complete leaves
+  # the tag pointing at the full multi-arch manifest.
+
+  merge-linux-amd64:
+    needs: [build-linux-amd64]
+    if: >-
+      needs.build-linux-amd64.outputs.versions != '' &&
+      needs.build-linux-amd64.outputs.latest_php_version != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -145,12 +172,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Create multi-arch manifest tags (${{ matrix.platform }})
+      - name: Create/update manifest tags (linux/amd64 available)
         uses: ./.github/actions/merge-manifests
         with:
-          versions:           ${{ needs.build.outputs.versions }}
-          versions_base:      ${{ needs.build.outputs.versions_base }}
-          versions_secure:    ${{ needs.build.outputs.versions_secure }}
-          tag_suffix:         ${{ needs.build.outputs.tag_suffix }}
+          versions:           ${{ needs.build-linux-amd64.outputs.versions }}
+          versions_base:      ${{ needs.build-linux-amd64.outputs.versions_base }}
+          versions_secure:    ${{ needs.build-linux-amd64.outputs.versions_secure }}
+          tag_suffix:         ${{ needs.build-linux-amd64.outputs.tag_suffix }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
+
+  merge-linux-arm64:
+    needs: [build-linux-arm64]
+    if: >-
+      needs.build-linux-arm64.outputs.versions != '' &&
+      needs.build-linux-arm64.outputs.latest_php_version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Create/update manifest tags (linux/arm64 available)
+        uses: ./.github/actions/merge-manifests
+        with:
+          versions:           ${{ needs.build-linux-arm64.outputs.versions }}
+          versions_base:      ${{ needs.build-linux-arm64.outputs.versions_base }}
+          versions_secure:    ${{ needs.build-linux-arm64.outputs.versions_secure }}
+          tag_suffix:         ${{ needs.build-linux-arm64.outputs.tag_suffix }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
