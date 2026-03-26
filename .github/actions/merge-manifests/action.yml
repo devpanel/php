@@ -2,11 +2,11 @@ name: Merge per-platform digests into multi-arch manifest tags
 description: >
   After per-platform builds have pushed their images to Docker Hub by content
   digest (no tags), this action downloads all digest artifacts (named
-  digests-*) uploaded during the current workflow run and creates the final
-  multi-architecture Docker Hub manifest tags using docker buildx imagetools
-  create.  One digest artifact per platform is expected; to add support for a
-  new platform, add another build job that uploads a corresponding digest
-  artifact — no changes to this action are needed.
+  digests-*) uploaded during the current workflow run and creates or updates
+  the multi-architecture Docker Hub manifest tags using docker buildx
+  imagetools create.  One digest artifact per platform is expected; to add
+  support for a new platform, add an entry to the build matrix — no changes
+  to this action are needed.
 
 inputs:
   versions:
