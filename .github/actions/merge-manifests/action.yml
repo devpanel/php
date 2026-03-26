@@ -4,9 +4,9 @@ description: >
   digest (no tags), this action downloads all digest artifacts (named
   digests-*) uploaded during the current workflow run and creates the final
   multi-architecture Docker Hub manifest tags using docker buildx imagetools
-  create.  One digest artifact per platform is expected; adding a new platform
-  only requires updating the build matrix — no changes to this action are
-  needed.
+  create.  One digest artifact per platform is expected; to add support for a
+  new platform, add another build job that uploads a corresponding digest
+  artifact — no changes to this action are needed.
 
 inputs:
   versions:

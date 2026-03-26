@@ -54,9 +54,9 @@ inputs:
       When 'true', final images (base/secure/advance) are pushed to Docker Hub
       by content digest without creating any tags.  The merge-manifests action
       then creates the final multi-arch manifest tag by combining the per-platform
-      digests received from both build jobs.  Set to 'true' for all per-platform
-      CI builds; leave 'false' for a combined multi-platform local build that
-      pushes the final tags directly.
+      digests received from all per-platform build jobs.  Set to 'true' for all
+      per-platform CI builds; leave 'false' for a combined multi-platform local
+      build that pushes the final tags directly.
     default: 'false'
 
 outputs:
@@ -69,12 +69,12 @@ outputs:
   versions_base:
     description: >
       Space-separated list of PHP versions for which base-stage images were
-      tagged and pushed to a registry.
+      pushed to a registry for this build (and should be included in final manifests).
     value: ${{ steps.detect.outputs.versions_base }}
   versions_secure:
     description: >
       Space-separated list of PHP versions for which secure-stage images were
-      tagged and pushed to a registry.
+      pushed to a registry for this build (and should be included in final manifests).
     value: ${{ steps.detect.outputs.versions_secure }}
   latest_php_version:
     description: The highest PHP version directory present in the repository.

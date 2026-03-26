@@ -8,118 +8,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Each platform builds independently, pushes images by content digest (no
-  # tags), and uploads a digest artifact.  As soon as a platform build
-  # completes its corresponding merge job fires (see below) and creates or
-  # updates the manifest tag using all digest artifacts available at that
-  # moment — so the tag is published immediately after the first platform
-  # finishes and progressively updated as each subsequent platform completes.
+  # Each matrix item builds its platform, pushes images by content digest (no
+  # tags), and uploads a digest artifact.  A shared concurrency group serializes
+  # the jobs so that only one runs at a time: when the first platform completes
+  # its build it immediately creates the manifest tag from its own digest, then
+  # the second platform's job starts, builds, uploads its digest, and re-creates
+  # the manifest tag with both digests — producing the full multi-arch manifest.
   #
-  # To add a new platform, copy one build+merge job pair, change the
-  # platforms_filter, and update the job names.  No other changes are needed.
+  # To add a new platform, add it to the matrix include list.  No other changes
+  # are needed.
 
-  build-linux-amd64:
+  build-and-merge:
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+          - platform: linux/arm64
+    # Serialize all matrix items within a run so that each merge step sees all
+    # digest artifacts uploaded by the jobs that ran before it.
+    concurrency:
+      group: merge-${{ github.run_id }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    outputs:
-      tag_suffix:         ${{ steps.build.outputs.tag_suffix }}
-      versions:           ${{ steps.build.outputs.versions }}
-      versions_base:      ${{ steps.build.outputs.versions_base }}
-      versions_secure:    ${{ steps.build.outputs.versions_secure }}
-      latest_php_version: ${{ steps.build.outputs.latest_php_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Build PHP images (linux/amd64)
+      - name: Build PHP images (${{ matrix.platform }})
         id: build
         uses: ./.github/actions/build-php-images
         with:
           cache_from_enabled: 'false'
-          platforms_filter:   linux/amd64
+          platforms_filter:   ${{ matrix.platform }}
           push_by_digest:     'true'
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
           github_token:       ${{ secrets.GITHUB_TOKEN }}
           ghcr_token:         ${{ secrets.GHCR_TOKEN }}
 
-  build-linux-arm64:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      tag_suffix:         ${{ steps.build.outputs.tag_suffix }}
-      versions:           ${{ steps.build.outputs.versions }}
-      versions_base:      ${{ steps.build.outputs.versions_base }}
-      versions_secure:    ${{ steps.build.outputs.versions_secure }}
-      latest_php_version: ${{ steps.build.outputs.latest_php_version }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Build PHP images (linux/arm64)
-        id: build
-        uses: ./.github/actions/build-php-images
-        with:
-          cache_from_enabled: 'false'
-          platforms_filter:   linux/arm64
-          push_by_digest:     'true'
-          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
-          github_token:       ${{ secrets.GITHUB_TOKEN }}
-          ghcr_token:         ${{ secrets.GHCR_TOKEN }}
-
-  # Each merge job depends only on its own platform's build job so it fires as
-  # soon as that platform finishes.  It downloads all digest artifacts that are
-  # available at that moment (other platforms may still be building) and creates
-  # or overwrites the manifest tag with whatever digests are present.  When the
-  # next platform finishes its own merge job runs and overwrites the tag again
-  # with the enlarged set of digests.  The final merge job to complete leaves
-  # the tag pointing at the full multi-arch manifest.
-
-  merge-linux-amd64:
-    needs: [build-linux-amd64]
-    if: >-
-      needs.build-linux-amd64.outputs.versions != '' &&
-      needs.build-linux-amd64.outputs.latest_php_version != ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Create/update manifest tags (linux/amd64 available)
+      - name: Create/update manifest tags (${{ matrix.platform }} available)
+        if: steps.build.outputs.versions != '' && steps.build.outputs.latest_php_version != ''
         uses: ./.github/actions/merge-manifests
         with:
-          versions:           ${{ needs.build-linux-amd64.outputs.versions }}
-          versions_base:      ${{ needs.build-linux-amd64.outputs.versions_base }}
-          versions_secure:    ${{ needs.build-linux-amd64.outputs.versions_secure }}
-          tag_suffix:         ${{ needs.build-linux-amd64.outputs.tag_suffix }}
-          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
-
-  merge-linux-arm64:
-    needs: [build-linux-arm64]
-    if: >-
-      needs.build-linux-arm64.outputs.versions != '' &&
-      needs.build-linux-arm64.outputs.latest_php_version != ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Create/update manifest tags (linux/arm64 available)
-        uses: ./.github/actions/merge-manifests
-        with:
-          versions:           ${{ needs.build-linux-arm64.outputs.versions }}
-          versions_base:      ${{ needs.build-linux-arm64.outputs.versions_base }}
-          versions_secure:    ${{ needs.build-linux-arm64.outputs.versions_secure }}
-          tag_suffix:         ${{ needs.build-linux-arm64.outputs.tag_suffix }}
+          versions:           ${{ steps.build.outputs.versions }}
+          versions_base:      ${{ steps.build.outputs.versions_base }}
+          versions_secure:    ${{ steps.build.outputs.versions_secure }}
+          tag_suffix:         ${{ steps.build.outputs.tag_suffix }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
