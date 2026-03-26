@@ -78,32 +78,27 @@ jobs:
 
           echo "before_sha=$BEFORE_SHA" >> "$GITHUB_OUTPUT"
 
-  # Each matrix item builds its platform, pushes images by content digest (no
-  # tags), and uploads a digest artifact.  A shared concurrency group serializes
-  # the jobs so that only one runs at a time: when the first platform completes
-  # its build it immediately creates the manifest tag from its own digest, then
-  # the second platform's job starts, builds, uploads its digest, and re-creates
-  # the manifest tag with both digests — producing the full multi-arch manifest.
-  #
-  # To add a new platform, add it to the matrix include list.  No other changes
-  # are needed.
+  # All platforms build in parallel.  Each job pushes images by content digest
+  # (no tags) and uploads a digest artifact.  To add a new platform, add it to
+  # the matrix include list — no other changes are needed.
 
-  build-and-merge:
+  build:
     needs: [prepare]
     strategy:
       matrix:
         include:
           - platform: linux/amd64
           - platform: linux/arm64
-    # Serialize all matrix items within a run so that each merge step sees all
-    # digest artifacts uploaded by the jobs that ran before it.
-    concurrency:
-      group: merge-${{ github.run_id }}
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    outputs:
+      tag_suffix:         ${{ steps.build.outputs.tag_suffix }}
+      versions:           ${{ steps.build.outputs.versions }}
+      versions_base:      ${{ steps.build.outputs.versions_base }}
+      versions_secure:    ${{ steps.build.outputs.versions_secure }}
+      latest_php_version: ${{ steps.build.outputs.latest_php_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -125,13 +120,25 @@ jobs:
           github_token:       ${{ secrets.GITHUB_TOKEN }}
           ghcr_token:         ${{ secrets.GHCR_TOKEN }}
 
-      - name: Create/update manifest tags (${{ matrix.platform }} available)
-        if: steps.build.outputs.versions != '' && steps.build.outputs.latest_php_version != ''
+  # After all platform builds have completed this single job downloads every
+  # digest artifact and assembles the final multi-arch manifest tags.
+
+  merge:
+    needs: [build]
+    if: needs.build.outputs.versions != '' && needs.build.outputs.latest_php_version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Create manifest tags from all platform digests
         uses: ./.github/actions/merge-manifests
         with:
-          versions:           ${{ steps.build.outputs.versions }}
-          versions_base:      ${{ steps.build.outputs.versions_base }}
-          versions_secure:    ${{ steps.build.outputs.versions_secure }}
-          tag_suffix:         ${{ steps.build.outputs.tag_suffix }}
+          versions:           ${{ needs.build.outputs.versions }}
+          versions_base:      ${{ needs.build.outputs.versions_base }}
+          versions_secure:    ${{ needs.build.outputs.versions_secure }}
+          tag_suffix:         ${{ needs.build.outputs.tag_suffix }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
