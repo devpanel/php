@@ -1,0 +1,196 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-yaml:
+    name: Lint YAML
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install yamllint
+        run: pip install --quiet yamllint
+
+      - name: Run YAML lint
+        run: bash tests/lint-yaml.sh
+
+  lint-shell:
+    name: Lint Shell
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Run shell lint
+        run: bash tests/lint-shell.sh
+
+  lint-dockerfile:
+    name: Lint Dockerfiles
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run Dockerfile lint
+        run: bash tests/lint-dockerfile.sh
+
+  build-dockerfiles:
+    name: Build and test PHP images
+    runs-on: ubuntu-latest
+    needs: [lint-yaml, lint-shell, lint-dockerfile, verify-extension, verify-code-server]
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pre-seed build downloads
+        id: preseed
+        uses: ./.github/actions/preseed-downloads
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build PHP images
+        env:
+          CACHE_FROM_ENABLED:          true
+          DOWNLOADS_DIR:               ${{ steps.preseed.outputs.downloads_dir }}
+          CODESERVER_VERSION:          ${{ steps.preseed.outputs.codeserver_version }}
+          CODESERVER_DEB_SHA256_AMD64: ${{ steps.preseed.outputs.codeserver_deb_sha256_amd64 }}
+          CODESERVER_DEB_SHA256_ARM64: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64 }}
+          COPILOT_CHAT_VERSION:        ${{ steps.preseed.outputs.copilot_chat_version }}
+          COPILOT_CHAT_VSIX_SHA256:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256 }}
+        run: bash tests/build-dockerfile.sh
+
+      - name: Run PHP functional tests
+        run: bash tests/run-dockerfile.sh
+
+  verify-extension:
+    name: Verify Copilot Chat VSIX
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Get pinned Copilot Chat version
+        id: copilot-version
+        run: |
+          echo "version=$(grep -m1 '^ARG COPILOT_CHAT_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Copilot Chat VSIX
+        id: cache-vsix
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/copilot-chat.vsix
+          key: copilot-chat-vsix-${{ steps.copilot-version.outputs.version }}
+
+      - name: Download Copilot Chat VSIX (cache miss only)
+        if: steps.cache-vsix.outputs.cache-hit != 'true'
+        run: |
+          VERSION="${{ steps.copilot-version.outputs.version }}"
+          VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${VERSION}/vspackage"
+          echo "Downloading GitHub.copilot-chat ${VERSION} from VS Marketplace"
+          curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
+            "${VSIX_URL}" -o "$RUNNER_TEMP/copilot-chat.vsix"
+
+      - name: Verify Copilot Chat VSIX
+        run: |
+          EXPECTED_SHA="$(grep -m1 '^ARG COPILOT_CHAT_VSIX_SHA256=' base/Dockerfile | cut -d= -f2)"
+          if ! od -An -tx1 -N4 "$RUNNER_TEMP/copilot-chat.vsix" | tr -d ' \n' | grep -qi '^504b0304'; then
+            ACTUAL_MAGIC="$(od -An -tx1 -N8 "$RUNNER_TEMP/copilot-chat.vsix" | tr -d ' \n')"
+            echo "Downloaded file is not a valid ZIP (expected magic 504b0304, got: ${ACTUAL_MAGIC})"
+            echo "The Marketplace may have returned a rate-limit/error page or gzip-encoded content."
+            exit 1
+          fi
+          ACTUAL_SHA="$(sha256sum "$RUNNER_TEMP/copilot-chat.vsix" | cut -d' ' -f1)"
+          echo "Computed SHA256: ${ACTUAL_SHA}"
+          if [ -n "${EXPECTED_SHA}" ]; then
+            echo "${EXPECTED_SHA}  $RUNNER_TEMP/copilot-chat.vsix" | sha256sum -c -
+            echo "SHA256 verified."
+          else
+            echo "::warning::COPILOT_CHAT_VSIX_SHA256 is not set in base/Dockerfile."
+            echo "::warning::Set ARG COPILOT_CHAT_VSIX_SHA256=${ACTUAL_SHA} in base/Dockerfile to enable integrity verification."
+          fi
+
+  verify-code-server:
+    name: Verify code-server .deb hashes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Get pinned code-server version
+        id: cs-version
+        run: |
+          echo "version=$(grep -m1 '^ARG CODESERVER_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache code-server .deb files
+        id: cache-debs
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/code-server-debs
+          key: code-server-debs-${{ steps.cs-version.outputs.version }}
+
+      - name: Download pinned code-server .deb files (cache miss only)
+        if: steps.cache-debs.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/code-server-debs"
+          VERSION="${{ steps.cs-version.outputs.version }}"
+          BASE_URL="https://github.com/coder/code-server/releases/download/v${VERSION}"
+          for arch in amd64 arm64; do
+            DEB="code-server_${VERSION}_${arch}.deb"
+            echo "Downloading ${DEB}"
+            curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
+              "${BASE_URL}/${DEB}" -o "$RUNNER_TEMP/code-server-debs/${DEB}"
+          done
+
+      - name: Verify pinned code-server .deb files
+        run: |
+          VERSION="${{ steps.cs-version.outputs.version }}"
+          SHA256_AMD64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_AMD64=' base/Dockerfile | cut -d= -f2)"
+          SHA256_ARM64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_ARM64=' base/Dockerfile | cut -d= -f2)"
+          for arch in amd64 arm64; do
+            DEB="code-server_${VERSION}_${arch}.deb"
+            ACTUAL_SHA="$(sha256sum "$RUNNER_TEMP/code-server-debs/${DEB}" | cut -d' ' -f1)"
+            echo "${arch} SHA256: ${ACTUAL_SHA}"
+            case "${arch}" in
+              amd64) EXPECTED_SHA="${SHA256_AMD64}" ;;
+              arm64) EXPECTED_SHA="${SHA256_ARM64}" ;;
+            esac
+            ARCH_UPPER="$(echo "${arch}" | tr '[:lower:]' '[:upper:]')"
+            if [ -n "${EXPECTED_SHA}" ]; then
+              echo "${EXPECTED_SHA}  $RUNNER_TEMP/code-server-debs/${DEB}" | sha256sum -c -
+              echo "${arch} SHA256 verified."
+            else
+              echo "::warning::CODESERVER_DEB_SHA256_${ARCH_UPPER} is not set in base/Dockerfile."
+              echo "::warning::Set ARG CODESERVER_DEB_SHA256_${ARCH_UPPER}=${ACTUAL_SHA} in base/Dockerfile to enable integrity verification."
+            fi
+          done

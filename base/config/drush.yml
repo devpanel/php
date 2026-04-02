@@ -1,0 +1,5 @@
+command:
+  sql:
+    dump:
+      options:
+        extra-dump: "--no-tablespaces"

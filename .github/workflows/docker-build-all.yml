@@ -1,0 +1,27 @@
+name: Build all Docker images
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build PHP images
+        uses: ./.github/actions/build-php-images
+        with:
+          cache_from_enabled: 'false'
+          dockerhub_username:  ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:     ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token:        ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token:          ${{ secrets.GHCR_TOKEN }}

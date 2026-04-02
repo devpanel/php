@@ -1,0 +1,6 @@
+[client]
+# MariaDB 11.x changed the default of ssl-verify-server-cert from FALSE (10.x)
+# to TRUE, breaking connections to MySQL 8.0 and cloud-managed databases (e.g.
+# DigitalOcean) whose self-signed CA is not in the system truststore.
+# SSL encryption is still used; only certificate chain validation is disabled.
+ssl-verify-server-cert = off
