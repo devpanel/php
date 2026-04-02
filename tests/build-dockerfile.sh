@@ -92,19 +92,40 @@ if [[ "$PLATFORMS" == *","* || "$PLATFORMS" == *" "* ]]; then
   exit 1
 fi
 
+# Normalize default variants before deriving PLATFORM_KEY so the test build
+# uses the same GHA/GHCR cache scopes as the CI build matrix job for the same
+# effective platform (e.g. CI treats "linux/arm64/v8" as "linux/arm64", so use
+# "php8_3-base-linux-arm64" instead of an unshared "php8_3-base-linux-arm64-v8").
+# This lets the test job hit the caches already populated by the corresponding
+# build job without changing the actual platform passed to the build.
+NORMALIZED_PLATFORM="$PLATFORMS"
+case "$NORMALIZED_PLATFORM" in
+  linux/amd64/v1) NORMALIZED_PLATFORM="linux/amd64" ;;
+  linux/arm64/v8) NORMALIZED_PLATFORM="linux/arm64" ;;
+esac
+PLATFORM_KEY="${NORMALIZED_PLATFORM//\//-}"
+
 # ---------------------------------------------------------------------------
 # Build using docker-bake.hcl in test mode
 # ---------------------------------------------------------------------------
 # Test-mode overrides:
-#   REPO/GHCR_REPO       Use a local test namespace; no real registry is pushed.
+#   REPO         Use a local test namespace so no real registry is pushed.
+#   GHCR_REPO    Defaults to localhost:0/<test-namespace> for standalone runs
+#                so that registry-cache attempts (cache-to with ignore-error=true)
+#                resolve to an unreachable local address rather than Docker Hub.
+#                Override via environment to point to the real GHCR registry for
+#                cache reads in CI.
 #   VERSIONS_BASE/SECURE Set equal to VERSIONS so every version's stages build.
 #   TAG_SUFFIX           Empty; tags match run-dockerfile.sh's TAG_PREFIX.
 #   CACHE_FROM_ENABLED   Defaults to false (clean build from source) for local
 #                        runs.  Set to true (e.g. in CI) to read from GHA cache
 #                        and benefit from layer reuse on re-runs.
 #   GHCR_WRITABLE        false; registry cache write failures are non-fatal
-#                        (ignore-error=true).  GHA cache writes are unconditional
-#                        and unaffected by this flag.
+#                        (ignore-error=true).  When true in docker-bake.hcl,
+#                        GHCR cache writes are enabled and GHA cache writes are
+#                        skipped.
+#   PLATFORM_KEY         Matches the key used by the build matrix job for this
+#                        platform so the test reads from the same cache scopes.
 #   DOWNLOADS_DIR        Path to a directory whose pre-downloaded/ subdirectory
 #                        contains pre-seeded artifacts.  When set by CI to a
 #                        runner-local directory populated by actions/cache@v5,
@@ -128,9 +149,10 @@ BAKE_ENV=(
   VERSIONS_BASE="$VERSIONS_LIST"
   VERSIONS_SECURE="$VERSIONS_LIST"
   REPO="$TEST_REPO"
-  GHCR_REPO="$TEST_REPO"
+  GHCR_REPO="${GHCR_REPO:-localhost:0/$TEST_REPO}"
   TAG_SUFFIX=""
   PLATFORMS="$PLATFORMS"
+  PLATFORM_KEY="$PLATFORM_KEY"
   "CACHE_FROM_ENABLED=${CACHE_FROM_ENABLED:-false}"
   GHCR_WRITABLE=false
 )
