@@ -1,5 +1,10 @@
 {
+    "config": {
+        "audit": {
+            "block-insecure": false
+        }
+    },
     "require": {
-        "drush/drush": "10.x"
+        "drush/drush": "^10"
     }
 }
