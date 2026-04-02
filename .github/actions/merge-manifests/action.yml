@@ -1,0 +1,777 @@
+name: Poll and merge platform manifests for all images
+description: >
+  Merges per-platform Docker Hub image digests into tagged multi-arch manifests
+  for every image in the merge matrix.  Runs as a single job alongside every
+  per-platform build job.
+
+  Before polling begins, each image's existing manifest is inspected once to
+  seed a per-image platform-digest state file.  This captures any platforms
+  already published (e.g. from a previous workflow run) so they are preserved
+  in every subsequent imagetools create call.
+
+  On every polling cycle it fetches the full artifact list for the run once and
+  uses it for all images:
+
+  1. Digest artifacts ("digests-{VERSION}-{STAGE}-{platform_key}"): for each
+     new one, the state file is updated (new digest replaces old for that
+     platform key), then a single "docker buildx imagetools create" call pushes
+     a manifest list built from every entry in the state file — existing
+     platforms plus every newly-built platform.
+
+  2. Build-done markers ("build-done-{VERSION}-{platform_key}"): uploaded by
+     every build job when it finishes (success or failure).  When the count of
+     these markers equals total_platforms all builds for that version are done
+     and the merge loop can exit for all stages of that version.
+
+  Batching multiple completions into one create call per image avoids
+  unnecessary intermediate manifest states and reduces Docker Hub API traffic.
+  A single job (not a matrix) is used for all images so that concurrent Docker
+  Hub API calls — which quickly exhaust the pull rate limit — are avoided.
+
+  To conserve the Docker Hub authenticated-pull quota (200/6 h per account),
+  manifest inspection at startup first uses an anonymous Docker Hub Registry
+  API token (100 unauthenticated pulls/6 h from the same IP).  If that fails
+  (e.g. 429 rate-limit, network error), it falls back to docker buildx
+  imagetools inspect which uses the stored Docker Hub credentials.  If both
+  attempts fail for a reason other than "tag not found", the job does NOT fail;
+  instead it falls back to the last known platform-digest state that was cached
+  by the previous workflow run.
+
+  The platform-digest state is always saved to the Actions cache at the end of
+  each run (even if the run fails) so that the fallback is always available.
+
+inputs:
+  merge_matrix:
+    description: >
+      JSON array of {version, stage} objects — one entry per Docker Hub image
+      that needs a manifest merge. Pass needs.detect.outputs.merge_matrix from
+      the calling workflow.
+      Example: [{"version":"8.3","stage":"base"},{"version":"8.3","stage":"secure"}]
+    required: true
+  repo:
+    description: Docker Hub repository (e.g. devpanel/php)
+    default: 'devpanel/php'
+  tag_suffix:
+    description: Image tag suffix appended to every tag (e.g. '' or '-rc')
+    required: true
+  total_platforms:
+    description: >
+      Number of distinct target platforms expected for each image.  The merge
+      loop for an image exits as soon as it has successfully merged this many
+      platform digests, or as soon as this many "build-done-{VERSION}-*"
+      markers have been observed for the version.
+    required: true
+  poll_interval_seconds:
+    description: Seconds to wait between polling cycles.
+    default: '60'
+  github_token:
+    description: >
+      Token used for GitHub API calls (list/download artifacts).
+      Requires actions:read permission.
+    required: true
+  run_id:
+    description: >
+      ID of the current GitHub Actions workflow run.
+      Pass github.run_id from the calling workflow.
+    required: true
+  repository:
+    description: >
+      Owner/repo slug of the current repository.
+      Pass github.repository from the calling workflow.
+    required: true
+  dockerhub_username:
+    description: >
+      Docker Hub username for image push authentication.
+      Used for docker login before imagetools inspect and imagetools create.
+    required: true
+  dockerhub_token:
+    description: >
+      Docker Hub token for image push authentication.
+      Used for docker login before imagetools inspect and imagetools create.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Compute digests cache key prefix
+      id: cache-key-prefix
+      shell: bash
+      run: |
+        # Sanitize inputs.repo: replace "/" with "-" (GHA cache keys must not
+        # contain "/" or other special characters).
+        safe_repo="${{ inputs.repo }}"
+        safe_repo="${safe_repo//\//-}"
+        echo "prefix=merge-manifests-${safe_repo}-${{ inputs.tag_suffix }}-" >> "$GITHUB_OUTPUT"
+
+    - name: Restore digests cache
+      id: restore-cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ runner.temp }}/merge-manifests-digests
+        # Key ends with "-" so GHA's built-in prefix matching finds the
+        # most-recently saved entry for this repo+tag_suffix combination.
+        # No restore-keys needed: the trailing dash already enables prefix matching.
+        key: ${{ steps.cache-key-prefix.outputs.prefix }}
+
+    # Unauthenticated manifest inspection (anonymous token via curl) is tried
+    # first in the polling step to conserve the authenticated-pull quota.
+    # Login is performed here so that the authenticated fallback
+    # (imagetools inspect) and imagetools create both have valid credentials
+    # without requiring the calling workflow to manage docker login separately.
+    - name: Login to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ inputs.dockerhub_username }}
+        password: ${{ inputs.dockerhub_token }}
+
+    - name: Poll and merge manifests
+      shell: bash
+      env:
+        MERGE_MATRIX_JSON:     ${{ inputs.merge_matrix }}
+        REPO:                  ${{ inputs.repo }}
+        TAG_SUFFIX:            ${{ inputs.tag_suffix }}
+        TOTAL_PLATFORMS:       ${{ inputs.total_platforms }}
+        POLL_INTERVAL_SECONDS: ${{ inputs.poll_interval_seconds }}
+        GH_TOKEN:              ${{ inputs.github_token }}
+        RUN_ID:                ${{ inputs.run_id }}
+        GITHUB_REPO:           ${{ inputs.repository }}
+        DIGESTS_CACHE_DIR:     ${{ runner.temp }}/merge-manifests-digests
+      run: |
+        set -euo pipefail
+
+        WORK_DIR="$(mktemp -d)"
+        trap 'rm -rf "${WORK_DIR}"' EXIT
+
+        # Stable directory for per-image platform-digest state files.
+        # Pre-populated by the cache restore step; persisted by the cache
+        # save step that runs after this step (even on failure).
+        mkdir -p "${DIGESTS_CACHE_DIR}"
+
+        # ── Parse merge matrix into parallel arrays ────────────────────────
+        # VERSIONS_STAGES[i] = "VERSION:STAGE"
+        readarray -t VERSIONS_STAGES < <(
+          printf '%s' "${MERGE_MATRIX_JSON}" \
+            | jq -r '.[] | .version + ":" + .stage'
+        )
+
+        if [[ ${#VERSIONS_STAGES[@]} -eq 0 ]]; then
+          echo "No images in merge matrix; nothing to do."
+          exit 0
+        fi
+
+        # Per-image state (keyed by "VERSION:STAGE", colons replaced with _ for
+        # filenames).
+        declare -A IMG_PROCESSED        # image_key → path to processed-artifacts file
+        declare -A IMG_DIGEST_MERGED    # image_key → count of distinct merged platforms
+        declare -A IMG_MERGED_PKEYS     # image_key → path to merged-platform-keys set file
+        declare -A IMG_DONE             # image_key → "true"/"false"
+        declare -A IMG_PLATFORM_DIGESTS # image_key → path to platform-digest state file
+        #   State file format: one "platform_key<TAB>sha256:digest" per line.
+        #   Seeded from the existing manifest at startup; updated after each
+        #   successful imagetools create.  Provides within-run preservation
+        #   without relying on a per-cycle inspect.
+
+        # Per-version build-done state.  A single "build-done-{VERSION}-*"
+        # marker covers all stages (base/secure/advance) for that version,
+        # so we track it per version, not per stage.
+        declare -A VER_BUILD_DONE    # version → count of build-done markers seen
+
+        # File tracking all build-done artifact names we have already counted
+        # (shared across all versions to avoid double-counting on re-read).
+        BUILD_DONE_SEEN_FILE="${WORK_DIR}/build-done-seen.txt"
+        touch "${BUILD_DONE_SEEN_FILE}"
+
+        echo "Managing manifests for ${#VERSIONS_STAGES[@]} image(s):"
+        for vs in "${VERSIONS_STAGES[@]}"; do
+          version="${vs%%:*}"
+          stage="${vs##*:}"
+          key="${version}:${stage}"
+          safe_key="${key//:/_}"
+
+          IMG_PROCESSED[$key]="${WORK_DIR}/processed-${safe_key}.txt"
+          IMG_MERGED_PKEYS[$key]="${WORK_DIR}/merged-pkeys-${safe_key}.txt"
+          IMG_PLATFORM_DIGESTS[$key]="${DIGESTS_CACHE_DIR}/digests-${safe_key}.txt"
+          IMG_DIGEST_MERGED[$key]=0
+          IMG_DONE[$key]="false"
+          touch "${IMG_PROCESSED[$key]}"
+          touch "${IMG_MERGED_PKEYS[$key]}"
+          # Only create the digests file if it wasn't pre-populated by the
+          # cache restore step.
+          [[ -f "${IMG_PLATFORM_DIGESTS[$key]}" ]] || touch "${IMG_PLATFORM_DIGESTS[$key]}"
+
+          if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
+            VER_BUILD_DONE[$version]=0
+          fi
+
+          echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
+        done
+        echo "(${TOTAL_PLATFORMS} platform(s) expected per image)"
+
+        POLL_CYCLE=0
+
+        # ── Seed platform-digest state from existing manifests ────────────────
+        # Inspect each image once before polling to capture platforms already
+        # published (e.g. from previous workflow runs).  This seeds the state
+        # file so that later imagetools create calls always include every
+        # platform, not just the ones built in this run.
+        #
+        # Inspect order (to conserve the Docker Hub authenticated-pull quota):
+        #   1. Unauthenticated via Docker Hub Registry API (anonymous token).
+        #   2. Authenticated via docker buildx imagetools inspect (uses stored
+        #      Docker Hub credentials from a docker login step).
+        #
+        # If the tag does not exist → empty state (first push).
+        # If both attempts fail for any other reason → fall back to the cached
+        # state from the previous run and emit a warning.  The job is NOT
+        # failed; a stale baseline is better than dropping all platforms.
+        echo "Seeding platform-digest state from existing manifests..."
+
+        # Obtain a single anonymous Docker Hub token that covers all images in
+        # the merge matrix.  One token request is enough because the scope
+        # parameter is per-repository, not per-tag.
+        anon_token_err="$(mktemp)"
+        ANON_TOKEN="$(curl -sf \
+          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
+          2>"${anon_token_err}" | jq -r '.token // ""')" || ANON_TOKEN=""
+        rm -f "${anon_token_err}"
+        if [[ -n "${ANON_TOKEN}" ]]; then
+          echo "  Obtained anonymous Docker Hub token (unauthenticated inspect)."
+        else
+          echo "  Could not obtain anonymous token; will use authenticated inspect."
+        fi
+
+        for vs in "${VERSIONS_STAGES[@]}"; do
+          version="${vs%%:*}"
+          stage="${vs##*:}"
+          key="${version}:${stage}"
+          safe_key="${key//:/_}"
+          IMAGE_SEED="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+          manifest_tag="${version}-${stage}${TAG_SUFFIX}"
+
+          # Back up any cached content (restored from a previous run) so we
+          # can fall back to it if both inspect attempts fail.
+          cached_backup="${WORK_DIR}/cached-backup-${safe_key}.txt"
+          cp "${IMG_PLATFORM_DIGESTS[$key]}" "${cached_backup}" 2>/dev/null || true
+
+          SEED_STATUS=""  # "ok" | "not_found" | "error"
+          SEED_RAW=""
+
+          # ── Step 1: unauthenticated (anonymous token) ─────────────────────
+          if [[ -n "${ANON_TOKEN}" ]]; then
+            manifest_tmp="$(mktemp)"
+            curl_stderr_tmp="$(mktemp)"
+            HTTP_CODE="$(curl -s \
+              -H "Authorization: Bearer ${ANON_TOKEN}" \
+              -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
+              -o "${manifest_tmp}" \
+              -w "%{http_code}" \
+              "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
+              2>"${curl_stderr_tmp}")" || HTTP_CODE="000"
+            case "${HTTP_CODE}" in
+              200)
+                SEED_RAW="$(cat "${manifest_tmp}")"
+                # Only accept the unauthenticated result when it contains at
+                # least one parseable platform entry.  A single-platform
+                # manifest (no "manifests" array) or one where every entry is
+                # filtered as unknown/attestation returns 0 platforms; in that
+                # case fall through to the authenticated path which may return
+                # a manifest-list format not given to anonymous callers.
+                _anon_plat_count=$(printf '%s' "${SEED_RAW}" | jq -r \
+                  '.manifests[]? |
+                   select((.platform.os // "") != "unknown" and
+                          (.platform.architecture // "") != "unknown") |
+                   .digest' 2>/dev/null | wc -l) || _anon_plat_count=0
+                if [[ "${_anon_plat_count}" -gt 0 ]]; then
+                  SEED_STATUS="ok"
+                  echo "  ${IMAGE_SEED}: fetched manifest (unauthenticated," \
+                       "${_anon_plat_count} platform(s))."
+                else
+                  echo "  ${IMAGE_SEED}: unauthenticated manifest has 0 valid" \
+                       "platform(s); trying authenticated inspect."
+                fi
+                ;;
+              404)
+                SEED_STATUS="not_found"
+                ;;
+              000)
+                # curl execution failure (network error, timeout, etc.)
+                curl_err="$(cat "${curl_stderr_tmp}" 2>/dev/null || true)"
+                echo "  ${IMAGE_SEED}: unauthenticated fetch failed" \
+                     "(${curl_err:-network error}); trying authenticated inspect."
+                ;;
+              *)
+                # 401, 429, or other HTTP error → fall through to authenticated
+                echo "  ${IMAGE_SEED}: unauthenticated fetch returned HTTP ${HTTP_CODE};" \
+                     "trying authenticated inspect."
+                ;;
+            esac
+            rm -f "${manifest_tmp}" "${curl_stderr_tmp}"
+          fi
+
+          # ── Step 2: authenticated (docker buildx imagetools inspect) ──────
+          if [[ -z "${SEED_STATUS}" ]]; then
+            seed_stderr="$(mktemp)"
+            if SEED_RAW="$(docker buildx imagetools inspect \
+                             "${IMAGE_SEED}" --raw 2>"${seed_stderr}")"; then
+              SEED_STATUS="ok"
+              echo "  ${IMAGE_SEED}: fetched manifest (authenticated)."
+            else
+              if grep -qi \
+                   "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
+                   "${seed_stderr}"; then
+                SEED_STATUS="not_found"
+              else
+                seed_err="$(cat "${seed_stderr}" 2>/dev/null || true)"
+                echo "::warning::${IMAGE_SEED}: authenticated inspect failed" \
+                     "(${seed_err:-unknown error})."
+                SEED_STATUS="error"
+              fi
+            fi
+            rm -f "${seed_stderr}"
+          fi
+
+          # ── Handle inspect result ─────────────────────────────────────────
+          case "${SEED_STATUS}" in
+            ok)
+              # Fresh manifest obtained; rewrite state file from it.
+              > "${IMG_PLATFORM_DIGESTS[$key]}"
+              # Parse each manifest entry as a JSON object (one per line) to
+              # avoid the bash IFS=$'\t' whitespace-collapsing issue that
+              # incorrectly merges consecutive tab delimiters (empty variant
+              # field) and shifts digest into the variant variable.
+              while IFS= read -r _entry; do
+                p_os="$(    printf '%s' "${_entry}" | jq -r '.os')"
+                p_arch="$(  printf '%s' "${_entry}" | jq -r '.arch')"
+                p_var="$(   printf '%s' "${_entry}" | jq -r '.var')"
+                p_digest="$(printf '%s' "${_entry}" | jq -r '.digest')"
+                # Skip attestation / unknown-platform entries.
+                [[ "${p_os}" == "unknown" || "${p_arch}" == "unknown" ]] && continue
+                # Skip entries with empty digest, os, or architecture.
+                [[ -n "${p_digest}" && -n "${p_os}" && -n "${p_arch}" ]] || continue
+                # Normalize the platform key to match what build jobs produce.
+                # Build jobs specify platforms like "linux/arm64" (without the
+                # default variant), so their artifact names use "linux-arm64"
+                # not "linux-arm64-v8".  Strip default variants so that seeded
+                # keys match artifact keys and avoid duplicate platform entries
+                # in subsequent imagetools create calls.
+                # Known default variants to strip: arm64/v8, amd64/v1.
+                # Non-default variants (arm/v6, arm/v7) are kept as-is because
+                # they identify distinct platforms.
+                _normalized_plat="${p_os}/${p_arch}"
+                if [[ -n "${p_var}" ]] && \
+                   ! [[ "${p_arch}" == "arm64" && "${p_var}" == "v8" ]] && \
+                   ! [[ "${p_arch}" == "amd64" && "${p_var}" == "v1" ]]; then
+                  _normalized_plat="${p_os}/${p_arch}/${p_var}"
+                fi
+                pkey="${_normalized_plat//\//-}"
+                printf '%s\t%s\n' "${pkey}" "${p_digest}" \
+                  >> "${IMG_PLATFORM_DIGESTS[$key]}"
+              done < <(printf '%s' "${SEED_RAW}" | jq -c \
+                '.manifests[]? |
+                 {os:     (.platform.os           // ""),
+                  arch:   (.platform.architecture // ""),
+                  var:    (.platform.variant      // ""),
+                  digest: (.digest                // "")}')
+              n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
+              if [[ "${n}" -gt 0 ]]; then
+                echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
+              else
+                # No .manifests[] entries: the tag is either a single-platform
+                # manifest (no manifests array) or every entry was filtered as
+                # unknown/attestation.  Try to extract the manifest digest and
+                # platform via imagetools inspect (non-raw), which fetches the
+                # image config so it can report platform info even for schema2
+                # single-platform manifests.
+                echo "  ${IMAGE_SEED}: 0 manifest-list entries; checking for" \
+                     "single-platform manifest via imagetools inspect..."
+                _si_out="$(docker buildx imagetools inspect "${IMAGE_SEED}" \
+                             2>/dev/null)" || _si_out=""
+                # Parse imagetools inspect output in a way that tolerates
+                # leading whitespace and either Digest:/Platform: ordering.
+                # Keep top-level fields separate from indented per-manifest
+                # fields so we do not accidentally pair a manifest-list index
+                # digest with a platform from a nested manifest entry.  If
+                # per-manifest pairs are present, use the first complete one;
+                # otherwise fall back to the top-level digest/platform pair
+                # for true single-platform manifests.
+                _si_pair="$(printf '%s' "${_si_out}" \
+                  | awk '
+                      /^[[:space:]]*Digest:[[:space:]]+/ {
+                        value = $2
+                        if ($0 ~ /^[[:space:]]+/) {
+                          entry_digest = value
+                          if (entry_platform != "") {
+                            print entry_digest "\t" entry_platform
+                            exit
+                          }
+                        } else {
+                          top_digest = value
+                        }
+                        next
+                      }
+                      /^[[:space:]]*Platform:[[:space:]]+/ {
+                        value = $2
+                        if ($0 ~ /^[[:space:]]+/) {
+                          entry_platform = value
+                          if (entry_digest != "") {
+                            print entry_digest "\t" entry_platform
+                            exit
+                          }
+                        } else {
+                          top_platform = value
+                        }
+                        next
+                      }
+                      END {
+                        if (top_digest != "" && top_platform != "") {
+                          print top_digest "\t" top_platform
+                        }
+                      }
+                    ')" || _si_pair=""
+                IFS=$'\t' read -r _si_digest _si_platform <<< "${_si_pair}"
+                if [[ -n "${_si_digest}" && -n "${_si_platform}" ]]; then
+                  # Normalize the platform key using the same logic as for
+                  # manifest-list entries above (strip default arm64/v8 and
+                  # amd64/v1 variants).
+                  IFS='/' read -r _si_os _si_arch _si_var <<< "${_si_platform}"
+                  # Skip attestation / unknown-platform entries (same filter
+                  # used for manifest-list parsing above).
+                  if [[ -n "${_si_os}" && -n "${_si_arch}" ]] && \
+                     [[ "${_si_os}" != "unknown" ]] && \
+                     [[ "${_si_arch}" != "unknown" ]]; then
+                    _si_norm="${_si_os}/${_si_arch}"
+                    if [[ -n "${_si_var:-}" ]] && \
+                       ! [[ "${_si_arch}" == "arm64" && "${_si_var}" == "v8" ]] && \
+                       ! [[ "${_si_arch}" == "amd64" && "${_si_var}" == "v1" ]]; then
+                      _si_norm="${_si_os}/${_si_arch}/${_si_var}"
+                    fi
+                    _si_pkey="${_si_norm//\//-}"
+                    printf '%s\t%s\n' "${_si_pkey}" "${_si_digest}" \
+                      >> "${IMG_PLATFORM_DIGESTS[$key]}"
+                    echo "  ${IMAGE_SEED}: seeded 1 platform from single-platform" \
+                         "manifest (${_si_platform}, ${_si_digest})."
+                  else
+                    echo "::warning::${IMAGE_SEED}: ignoring invalid single-platform" \
+                         "platform '${_si_platform}'; starting with empty state."
+                  fi
+                else
+                  echo "::warning::${IMAGE_SEED}: could not extract platform/digest" \
+                       "from single-platform manifest; starting with empty state."
+                fi
+              fi
+              ;;
+            not_found)
+              # Tag doesn't exist yet — start fresh (clear any cached content).
+              > "${IMG_PLATFORM_DIGESTS[$key]}"
+              echo "  ${IMAGE_SEED}: no existing manifest (first push)."
+              ;;
+            error)
+              # Both inspect attempts failed; fall back to cached state rather
+              # than failing the job.
+              if [[ -s "${cached_backup}" ]]; then
+                cp "${cached_backup}" "${IMG_PLATFORM_DIGESTS[$key]}"
+                n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
+                echo "::warning::${IMAGE_SEED}: inspect failed;" \
+                     "falling back to ${n} cached platform(s) from previous run."
+              else
+                > "${IMG_PLATFORM_DIGESTS[$key]}"
+                echo "::warning::${IMAGE_SEED}: inspect failed and no cached state" \
+                     "available; starting with empty state."
+              fi
+              ;;
+          esac
+        done
+
+        # Consecutive artifact-list API failure counter.  After this many
+        # back-to-back failures the loop aborts so the job fails instead of
+        # hanging forever (e.g. if the token lacks actions:read or the API is
+        # rate-limiting).
+        MAX_API_FAILURES=5
+        API_FAILURE_COUNT=0
+
+        while true; do
+
+          POLL_CYCLE=$(( POLL_CYCLE + 1 ))
+
+          # ── Check if all images are done ───────────────────────────────
+          PENDING_COUNT=0
+          for vs in "${VERSIONS_STAGES[@]}"; do
+            version="${vs%%:*}"
+            stage="${vs##*:}"
+            key="${version}:${stage}"
+            [[ "${IMG_DONE[$key]}" == "true" ]] || (( PENDING_COUNT++ )) || true
+          done
+          if [[ ${PENDING_COUNT} -eq 0 ]]; then
+            echo "All ${#VERSIONS_STAGES[@]} image(s) are complete."
+            break
+          fi
+
+          # ── Fetch all artifacts for this run in one API call ───────────
+          # Retrieve artifact names and ids in a single paginated request to
+          # minimise GitHub API traffic; classify them per image below.
+          ALL_ARTIFACTS=""
+          if ALL_ARTIFACTS="$(gh api --paginate \
+            "repos/${GITHUB_REPO}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            --jq '.artifacts[]
+                  | [.name, (.id | tostring)]
+                  | join("\t")')"; then
+            API_FAILURE_COUNT=0
+          else
+            API_FAILURE_COUNT=$(( API_FAILURE_COUNT + 1 ))
+            echo "::warning::Artifact list API call failed" \
+                 "(${API_FAILURE_COUNT}/${MAX_API_FAILURES} consecutive failures)."
+            if (( API_FAILURE_COUNT >= MAX_API_FAILURES )); then
+              echo "::error::Artifact list API call failed ${MAX_API_FAILURES}" \
+                   "times in a row; aborting merge loop."
+              exit 1
+            fi
+            sleep "${POLL_INTERVAL_SECONDS}"
+            continue
+          fi
+
+          # ── Count new build-done markers (per version, shared across stages) ─
+          # Use shell glob matching rather than grep regex so that dots and
+          # other metacharacters in VERSION are treated as literals.
+          while IFS=$'\t' read -r aname _; do
+            [[ -z "${aname}" ]] && continue
+            [[ "${aname}" == "build-done-"* ]] || continue
+            grep -qxF "${aname}" "${BUILD_DONE_SEEN_FILE}" 2>/dev/null && continue
+            for version in "${!VER_BUILD_DONE[@]}"; do
+              if [[ "${aname}" == "build-done-${version}-"* ]]; then
+                echo "${aname}" >> "${BUILD_DONE_SEEN_FILE}"
+                VER_BUILD_DONE[$version]=$(( VER_BUILD_DONE[$version] + 1 ))
+                echo "  Build-done marker: ${aname}" \
+                     "(${VER_BUILD_DONE[$version]}/${TOTAL_PLATFORMS} for v${version})"
+                break
+              fi
+            done
+          done <<< "${ALL_ARTIFACTS}"
+
+          # ── Process each pending image ─────────────────────────────────
+          CYCLE_DIR="${WORK_DIR}/cycle"
+          rm -rf "${CYCLE_DIR}"
+          mkdir -p "${CYCLE_DIR}"
+
+          for vs in "${VERSIONS_STAGES[@]}"; do
+            version="${vs%%:*}"
+            stage="${vs##*:}"
+            key="${version}:${stage}"
+            safe_key="${key//:/_}"
+            IMAGE="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+            ARTIFACT_PREFIX="digests-${version}-${stage}-"
+            DIGEST_KEY="${version}-${stage}"
+
+            [[ "${IMG_DONE[$key]}" == "true" ]] && continue
+
+            build_done="${VER_BUILD_DONE[$version]}"
+            img_dir="${CYCLE_DIR}/${safe_key}"
+            mkdir -p "${img_dir}/platforms"
+
+            # ── Collect newly available platform digests for this image ──
+            # "New" means not yet in this image's PROCESSED file.
+            # We do NOT add artifacts to PROCESSED here; that happens only
+            # after a successful imagetools create so that a failed or
+            # rate-limited inspect cycle does not permanently lose the digest.
+            # Use parallel arrays to avoid encoding issues (digests contain
+            # colons, e.g. "sha256:abc..." which would break :-delimited strings).
+            # Processed artifacts are tracked as "name:id" so that a re-uploaded
+            # artifact (same name, new id from overwrite:true reruns) is recognised
+            # as a new artifact and re-merged rather than silently skipped.
+            NEW_PKEYS=()         # platform keys,  e.g. linux-amd64
+            NEW_PDIGESTS=()      # full digest refs, e.g. sha256:abc…
+            NEW_ARTIFACT_IDS=()  # artifact ids, matching indices with NEW_PKEYS
+
+            while IFS=$'\t' read -r aname aid; do
+              [[ -z "${aname}" ]] && continue
+              [[ "${aname}" == "${ARTIFACT_PREFIX}"* ]] || continue
+              grep -qxF "${aname}:${aid}" "${IMG_PROCESSED[$key]}" 2>/dev/null && continue
+
+              platform_key="${aname#"${ARTIFACT_PREFIX}"}"   # e.g. linux-amd64
+              dl_dir="${img_dir}/dl/${aname}"
+              mkdir -p "${dl_dir}"
+
+              # Download the artifact zip.  On any failure (network, API rate
+              # limit, corrupt zip) log a warning and leave the artifact
+              # unprocessed — it will be retried next polling cycle.
+              DOWNLOAD_OK=false
+              if gh api \
+                   "repos/${GITHUB_REPO}/actions/artifacts/${aid}/zip" \
+                   > "${dl_dir}/artifact.zip" \
+                 && unzip -q "${dl_dir}/artifact.zip" -d "${dl_dir}"
+              then
+                DOWNLOAD_OK=true
+              fi
+
+              if [[ "${DOWNLOAD_OK}" == "true" ]]; then
+                digest_file="${dl_dir}/${platform_key}.json"
+                if [[ -f "${digest_file}" ]]; then
+                  DIGEST="$(jq -r \
+                    --arg k "${DIGEST_KEY}" '.[$k] // ""' "${digest_file}")"
+                  if [[ -n "${DIGEST}" ]]; then
+                    NEW_PKEYS+=("${platform_key}")
+                    NEW_PDIGESTS+=("${DIGEST}")
+                    NEW_ARTIFACT_IDS+=("${aid}")
+                  elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
+                    echo "::warning::${aname}: key '${DIGEST_KEY}' empty;" \
+                         "all builds complete, skipping."
+                    echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
+                  else
+                    echo "::warning::${aname}: key '${DIGEST_KEY}' empty;" \
+                         "will retry next cycle."
+                  fi
+                elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
+                  echo "::warning::${aname}: missing ${platform_key}.json;" \
+                       "all builds complete, skipping."
+                  echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
+                else
+                  echo "::warning::${aname}: missing ${platform_key}.json;" \
+                       "will retry next cycle."
+                fi
+              else
+                echo "  Download failed for ${aname}; will retry next cycle."
+              fi
+            done <<< "${ALL_ARTIFACTS}"
+
+            # ── Skip permanently inaccessible artifacts once all builds done ─
+            if [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
+              while IFS=$'\t' read -r aname aid; do
+                [[ -z "${aname}" ]] && continue
+                [[ "${aname}" == "${ARTIFACT_PREFIX}"* ]] || continue
+                grep -qxF "${aname}:${aid}" "${IMG_PROCESSED[$key]}" 2>/dev/null && continue
+                echo "::warning::${aname}: all builds done but cannot be" \
+                     "downloaded; skipping."
+                echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
+              done <<< "${ALL_ARTIFACTS}"
+            fi
+
+            # ── Merge new platforms into the Docker Hub tag ───────────────
+            # Strategy: the IMG_PLATFORM_DIGESTS state file holds every
+            # platform digest that was present in the existing manifest at
+            # startup (seeded once before the poll loop) plus every platform
+            # successfully pushed in this run so far.  For each new batch we:
+            #   1. Build a temp map = state file + new digests (new wins on
+            #      collision, i.e. when a platform is being rebuilt).
+            #   2. Call imagetools create with all refs from the temp map.
+            #   3. On success: promote the temp map to the state file and
+            #      record the artifacts as processed.
+            # No per-cycle inspect is needed — within-run state is always
+            # up-to-date and cross-run state was captured at startup.
+            if [[ ${#NEW_PKEYS[@]} -gt 0 ]]; then
+              echo "Merging ${#NEW_PKEYS[@]} new platform(s) into ${IMAGE}..."
+
+              # Build temp map: start from current state, add/replace new digests
+              REFS_MAP="${img_dir}/refs_map.txt"
+              cp "${IMG_PLATFORM_DIGESTS[$key]}" "${REFS_MAP}"
+              for i in "${!NEW_PKEYS[@]}"; do
+                pkey="${NEW_PKEYS[$i]}"
+                pdigest="${NEW_PDIGESTS[$i]}"
+                # Remove stale entry for this platform key (rebuild scenario),
+                # using awk for safe fixed-string matching on the key field.
+                awk -v k="${pkey}" -F'\t' '$1 != k' "${REFS_MAP}" > "${img_dir}/map_tmp.txt" || true
+                printf '%s\t%s\n' "${pkey}" "${pdigest}" >> "${img_dir}/map_tmp.txt"
+                mv "${img_dir}/map_tmp.txt" "${REFS_MAP}"
+                echo "  [${IMAGE}] ${pkey//-/\/}: ${pdigest}"
+              done
+
+              # Collect REFS from every entry in the temp map
+              REFS=()
+              while IFS=$'\t' read -r pkey pdigest; do
+                [[ -n "${pkey}" && -n "${pdigest}" ]] || continue
+                REFS+=("${REPO}@${pdigest}")
+              done < "${REFS_MAP}"
+
+              if [[ ${#REFS[@]} -gt 0 ]]; then
+                if docker buildx imagetools create \
+                     --tag "${IMAGE}" "${REFS[@]}"; then
+                  echo "  Updated ${IMAGE} with ${#REFS[@]} platform ref(s)."
+                  # Promote temp map to the persistent state file
+                  cp "${REFS_MAP}" "${IMG_PLATFORM_DIGESTS[$key]}"
+                  # ── Mark these artifacts as processed ────────────────
+                  # Only done here, after a successful create, so that a
+                  # failed create in a prior cycle is retried.
+                  # Record "name:id" so that if a build is retried and the
+                  # artifact is re-uploaded (same name, new id via
+                  # overwrite:true), the updated artifact is recognised as
+                  # new and its digest is re-merged.
+                  for i in "${!NEW_PKEYS[@]}"; do
+                    echo "${ARTIFACT_PREFIX}${NEW_PKEYS[$i]}:${NEW_ARTIFACT_IDS[$i]}" \
+                      >> "${IMG_PROCESSED[$key]}"
+                    # Only increment the merged-platform count if this
+                    # platform_key has not been counted before.  A retried
+                    # build re-uploads the artifact with the same platform_key
+                    # but a new artifact id; without this guard the counter
+                    # would exceed TOTAL_PLATFORMS and mark the image done
+                    # prematurely.
+                    pkey="${NEW_PKEYS[$i]}"
+                    if ! grep -qxF "${pkey}" "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
+                      echo "${pkey}" >> "${IMG_MERGED_PKEYS[$key]}"
+                      IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
+                    fi
+                  done
+                else
+                  echo "::warning::imagetools create failed for ${IMAGE};" \
+                       "will retry next cycle."
+                  # State file (IMG_PLATFORM_DIGESTS) is unchanged; the temp
+                  # map is discarded.  New artifacts remain unprocessed so they
+                  # will be retried on the next cycle.
+                fi
+              fi
+            fi
+
+            # ── Completion checks for this image ──────────────────────────
+            digest_merged="${IMG_DIGEST_MERGED[$key]}"
+
+            if [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
+              if [[ "${digest_merged}" -lt "${TOTAL_PLATFORMS}" ]]; then
+                echo "::warning::Only ${digest_merged}/${TOTAL_PLATFORMS}" \
+                     "platform(s) merged for ${IMAGE}; some builds may have" \
+                     "failed."
+              fi
+              IMG_DONE[$key]="true"
+              echo "Image ${IMAGE} complete" \
+                   "(${digest_merged}/${TOTAL_PLATFORMS} platform(s) merged)."
+            elif [[ "${digest_merged}" -ge "${TOTAL_PLATFORMS}" ]]; then
+              IMG_DONE[$key]="true"
+              echo "All ${TOTAL_PLATFORMS} platform(s) merged for ${IMAGE}."
+            fi
+          done
+
+          # ── Status summary and sleep ───────────────────────────────────
+          DONE_COUNT=0
+          for vs in "${VERSIONS_STAGES[@]}"; do
+            version="${vs%%:*}"
+            stage="${vs##*:}"
+            key="${version}:${stage}"
+            [[ "${IMG_DONE[$key]}" == "true" ]] && (( DONE_COUNT++ )) || true
+          done
+
+          if [[ ${DONE_COUNT} -lt ${#VERSIONS_STAGES[@]} ]]; then
+            echo "Cycle ${POLL_CYCLE}:" \
+                 "${DONE_COUNT}/${#VERSIONS_STAGES[@]} image(s) complete;" \
+                 "polling again in ${POLL_INTERVAL_SECONDS}s..."
+            sleep "${POLL_INTERVAL_SECONDS}"
+          fi
+        done
+
+    - name: Compute digests cache key
+      if: always()
+      id: digests-cache-key
+      shell: bash
+      run: |
+        # Hash the content of every state file so the cache key only changes
+        # when the platform-digest state actually changes.  This avoids creating
+        # a new cache entry on every run when nothing has been updated.
+        digests_dir="${{ runner.temp }}/merge-manifests-digests"
+        if [[ -d "$digests_dir" ]] && [[ -n "$(ls -A "$digests_dir" 2>/dev/null)" ]]; then
+          hash="$(find "$digests_dir" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
+          echo "key=${{ steps.cache-key-prefix.outputs.prefix }}${hash}" >> "$GITHUB_OUTPUT"
+        else
+          echo "key=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Save digests cache
+      if: always() && steps.digests-cache-key.outputs.key != '' && steps.restore-cache.outputs.cache-matched-key != steps.digests-cache-key.outputs.key
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ runner.temp }}/merge-manifests-digests
+        key: ${{ steps.digests-cache-key.outputs.key }}
