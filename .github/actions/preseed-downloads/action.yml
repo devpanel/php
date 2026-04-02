@@ -27,6 +27,27 @@ inputs:
       Used to pull the actual php:<version>-apache images and detect which Debian
       codename each version runs on, so compatibility tests use the real target image.
     required: true
+  dockerhub_username:
+    description: >
+      Docker Hub username for authenticated pulls.  Used only as a fallback when an
+      unauthenticated pull fails (e.g. due to the anonymous rate limit).
+    default: ''
+  dockerhub_token:
+    description: >
+      Docker Hub token for authenticated pulls.  Used only as a fallback when an
+      unauthenticated pull fails (e.g. due to the anonymous rate limit).
+    default: ''
+  refresh_cache:
+    description: >
+      When "true", always download fresh artifacts even when a cache entry
+      already exists.  Cache entries are keyed from the resolved Debian
+      codename and code-server / Copilot Chat versions, so a new cache entry
+      is created automatically when any of those resolved values changes.
+      If the resolved codename and versions are unchanged, the cache key is
+      also unchanged and the existing cache entry remains current.  Use this
+      in workflows whose purpose is to rebuild cached artifacts (e.g.
+      docker-build-all.yml).
+    default: 'false'
 
 outputs:
   downloads_dir:
@@ -49,11 +70,27 @@ runs:
       shell: bash
       run: echo "downloads_dir=${{ runner.temp }}/build-downloads" >> "$GITHUB_OUTPUT"
 
+    # ── Codenames cache ────────────────────────────────────────────────────────
+    # Caches the (PHP version → Debian codename) mapping across runs so that
+    # docker pull is skipped when the codename for that version is known.
+    # Keyed by PHP version, not image digest, so the cache survives upstream
+    # image rebuilds (the Debian release for a PHP version never changes
+    # mid-lifecycle).  The key ends with "-" so GHA's built-in prefix matching
+    # finds the most-recently created entry whose key starts with that prefix.
+    - name: Restore codenames cache
+      id: codenames-cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ runner.temp }}/php-codenames-cache.json
+        key: php-codenames-
+
     - name: Detect Debian codenames and resolve artifact versions
       id: detect-and-resolve
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
+        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
+        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
       run: |
         set -euo pipefail
         VERSIONS="${{ inputs.versions }}"
@@ -64,12 +101,106 @@ runs:
         declare -A IMAGE_FOR      # Debian codename → representative php:<ver>-apache image
         declare -A VERSIONS_FOR   # Debian codename → space-separated PHP versions
 
+        # ── Load codenames cache ──────────────────────────────────────────────
+        # The cache maps PHP version → Debian codename.  A cache hit avoids
+        # docker pull entirely; a cache miss pulls and updates the cache.
+        # Keyed by PHP version (not image digest) so the cache survives upstream
+        # image rebuilds — the Debian release never changes within a PHP version's
+        # lifecycle (e.g. PHP 8.2 is always bookworm).
+        CODENAMES_CACHE_FILE="${RUNNER_TEMP}/php-codenames-cache.json"
+        [[ -f "${CODENAMES_CACHE_FILE}" ]] || echo '{}' > "${CODENAMES_CACHE_FILE}"
+
+        # Obtain an anonymous Docker Hub token for library/php to look up
+        # image manifests without using the authenticated pull quota.
+        ANON_PHP_TOKEN=""
+        ANON_PHP_TOKEN="$(curl -sf \
+          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/php:pull" \
+          2>/dev/null | jq -r '.token // ""')" || ANON_PHP_TOKEN=""
+        if [[ -n "${ANON_PHP_TOKEN}" ]]; then
+          echo "  Obtained anonymous Docker Hub token for library/php." >&2
+        else
+          echo "  Could not obtain anonymous token; will use docker pull for all versions." >&2
+        fi
+
         for ver in $VERSIONS; do
           image="php:${ver}-apache"
-          echo "Pulling ${image} to detect Debian codename..." >&2
-          docker pull --quiet "$image" >&2
-          codename=$(docker run --rm "$image" sh -c \
-            '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-}"')
+
+          # ── Check codenames cache by PHP version ──────────────────────────
+          # The Debian release for a PHP version never changes mid-lifecycle,
+          # so the version string is a stable cache key (unlike the image
+          # digest, which changes on every upstream rebuild).
+          codename="$(jq -r --arg v "${ver}" '.[$v] // ""' \
+            "${CODENAMES_CACHE_FILE}" 2>/dev/null)" || codename=""
+
+          if [[ -n "${codename}" ]]; then
+            echo "  ${image} → ${codename} (cached for version ${ver})" >&2
+          else
+            # ── Cache miss: pull the image and detect codename ─────────────
+            # Attempt flow (best-effort probe → unauthenticated pull →
+            # authenticated fallback):
+            #   1. Best-effort anonymous registry API probe to check manifest
+            #      reachability and capture the digest for logging only
+            #      (no docker pull, no account pull quota consumed). Probe
+            #      failures are diagnostic and do not skip the pull steps.
+            #   2. Unauthenticated docker pull (IP-based anonymous quota).
+            #   3. Authenticated docker pull (per-account quota, only when
+            #      credentials are available and step 2 fails).
+            if [[ -n "${ANON_PHP_TOKEN}" ]]; then
+              _head_tmp="$(mktemp)"
+              _curl_ok=false
+              curl -sf \
+                -H "Authorization: Bearer ${ANON_PHP_TOKEN}" \
+                -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+                -D "${_head_tmp}" \
+                -o /dev/null \
+                "https://registry-1.docker.io/v2/library/php/manifests/${ver}-apache" \
+                2>/dev/null && _curl_ok=true || true
+              if [[ "${_curl_ok}" == "true" ]]; then
+                _image_digest="$(grep -i '^docker-content-digest:' "${_head_tmp}" 2>/dev/null \
+                  | awk '{print $2}' | tr -d '\r\n')" || _image_digest=""
+                [[ -n "${_image_digest}" ]] \
+                  && echo "  ${image} digest: ${_image_digest} (manifest reachable)" >&2
+              else
+                echo "  Anonymous manifest HEAD failed for ${image}." >&2
+              fi
+              rm -f "${_head_tmp}"
+            fi
+            _DOCKERHUB_LOGGED_IN=false
+            echo "Pulling ${image} to detect Debian codename (unauthenticated)..." >&2
+            if ! docker pull --quiet "$image" >&2 2>/dev/null; then
+              if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+                echo "  Unauthenticated pull failed; retrying with Docker Hub credentials..." >&2
+                if echo "${DOCKERHUB_TOKEN}" \
+                  | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin >&2; then
+                  _DOCKERHUB_LOGGED_IN=true
+                  # Install a trap so docker logout always runs on EXIT (including
+                  # on set -e early exit from the pull or docker run below).
+                  trap 'docker logout >&2 2>/dev/null || true' EXIT
+                  docker pull --quiet "$image" >&2
+                else
+                  echo "  Docker Hub login failed; cannot retry authenticated pull for ${image}." >&2
+                  exit 1
+                fi
+              else
+                # Re-run without redirection so the error is visible in the log.
+                docker pull --quiet "$image" >&2
+              fi
+            fi
+            codename=$(docker run --rm "$image" sh -c \
+              '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-}"')
+            # Log out again so subsequent steps start without Docker Hub credentials,
+            # preserving the unauthenticated-first pattern for any later pulls.
+            if [[ "${_DOCKERHUB_LOGGED_IN}" == "true" ]]; then
+              docker logout >&2 2>/dev/null || true
+              trap - EXIT
+            fi
+            # Cache the codename by PHP version (stable key, never changes mid-lifecycle).
+            if [[ -n "${codename}" ]]; then
+              _updated="$(jq --arg v "${ver}" --arg c "${codename}" \
+                '. + {($v): $c}' "${CODENAMES_CACHE_FILE}" 2>/dev/null)" || _updated=""
+              [[ -n "${_updated}" ]] && printf '%s\n' "${_updated}" > "${CODENAMES_CACHE_FILE}"
+            fi
+          fi
           # Validate: Debian codenames are purely lowercase ASCII letters.
           if [ -z "$codename" ] || ! printf '%s' "$codename" | grep -qE '^[a-z]+$'; then
             echo "ERROR: unexpected VERSION_CODENAME '${codename}' from ${image}" >&2
@@ -227,25 +358,54 @@ runs:
           echo "  ${cn}: code-server=${CS_VERSION_FOR[$cn]}  copilot-chat=${CC_VERSION_FOR[$cn]}"
         done
 
+    # ── Save codenames cache ───────────────────────────────────────────────────
+    # Persist the (PHP version → Debian codename) map using a content-based key
+    # so identical cache files reuse the same entry instead of creating a new
+    # one every run.  Runs even if the detection step failed, in case it
+    # partially updated the cache file.
+    - name: Compute codenames cache key
+      if: always()
+      id: codenames-cache-key
+      shell: bash
+      run: |
+        cache_file="${{ runner.temp }}/php-codenames-cache.json"
+        if [[ -f "$cache_file" ]]; then
+          hash="$(sha256sum "$cache_file" | awk '{print $1}')"
+          echo "key=php-codenames-${hash}" >> "$GITHUB_OUTPUT"
+        else
+          echo "key=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Save codenames cache
+      if: always() && steps.codenames-cache-key.outputs.key != '' && steps.codenames-cache.outputs.cache-matched-key != steps.codenames-cache-key.outputs.key
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ runner.temp }}/php-codenames-cache.json
+        key: ${{ steps.codenames-cache-key.outputs.key }}
+
     # ── Cache step ────────────────────────────────────────────────────────────
     # A single cache entry covers all detected Debian tiers.  The key is a
     # hash of every (codename, cs_version, cc_version) tuple, so the cache is
-    # invalidated if any resolved version changes for any tier.
-    - name: Cache preseed artifacts
+    # invalidated when any resolved version changes for any tier.  The key is
+    # stable across runs as long as the content hash does not change; there is
+    # at most one cache entry per hash.
+    - name: Restore preseed artifacts cache
       id: cache
-      uses: actions/cache@v5
+      uses: actions/cache/restore@v5
       with:
         path: ${{ runner.temp }}/preseed-artifacts
         key: preseed-${{ steps.detect-and-resolve.outputs.cache_key }}
 
     # ── Download step ─────────────────────────────────────────────────────────
-    # Runs only on cache miss.  Downloads primary artifacts, runs compatibility
-    # tests for non-primary Debian codenames (searching backwards for an older
-    # compatible version when the primary does not work), writes a final-versions.env
-    # into the cache directory (so subsequent cache-hit runs can recover actual
-    # per-codename versions without re-downloading), then downloads all artifacts.
+    # Runs on cache miss (cache-matched-key is empty), or unconditionally when
+    # refresh_cache is "true" (e.g. in the rebuild-all workflow).  Downloads primary
+    # artifacts, runs compatibility tests for non-primary Debian codenames
+    # (searching backwards for an older compatible version when the primary does
+    # not work), writes a final-versions.env into the cache directory (so
+    # subsequent cache-hit runs can recover actual per-codename versions without
+    # re-downloading), then downloads all artifacts.
     - name: Download artifacts for all detected Debian tiers (cache miss)
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.cache.outputs.cache-matched-key == '' || inputs.refresh_cache == 'true'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
@@ -533,6 +693,18 @@ runs:
             }
           fi
         done
+
+    # ── Save preseed artifacts cache ──────────────────────────────────────────
+    # Runs when the restore step did not find this exact key, i.e. the content
+    # hash changed or no entry exists yet.  There is at most one cache entry per
+    # hash; when the restore already matched our key, the content is unchanged
+    # and no new entry is needed.
+    - name: Save preseed artifacts cache
+      if: steps.cache.outputs.cache-matched-key != format('preseed-{0}', steps.detect-and-resolve.outputs.cache_key)
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ runner.temp }}/preseed-artifacts
+        key: preseed-${{ steps.detect-and-resolve.outputs.cache_key }}
 
     # ── Assemble step ─────────────────────────────────────────────────────────
     # Copies unique artifacts to pre-downloaded/, computes SHA256 digests, and

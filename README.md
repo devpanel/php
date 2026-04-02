@@ -245,12 +245,12 @@ and functional tests for any changed Dockerfiles.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `ci.yml` | push to `main`/`develop`; pull_request (any branch) | Lint, build & functional checks (required) |
+| `test.yml` | push to `main`/`develop`; pull_request (any branch) | Lint, build & functional checks (required) |
 | `docker-build-on-push.yml` | push to `main` or `develop` | Detect changed versions and build images |
 | `docker-build-all.yml` | `workflow_dispatch` | Build all versions unconditionally |
 
-`ci.yml` runs lint, build, and functional tests in parallel.  Configure branch protection
-rules in GitHub to require all `ci.yml` status checks to pass before pull
+`test.yml` runs lint, build, and functional tests in parallel.  Configure branch protection
+rules in GitHub to require all `test.yml` status checks to pass before pull
 requests to `main` or `develop` can be merged, ensuring no broken Dockerfile
 or script reaches the publish workflows.  See the
 [GitHub docs on required status checks](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging)
