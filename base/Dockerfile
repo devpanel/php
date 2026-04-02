@@ -241,7 +241,8 @@ ENV CODES_ENABLE=yes
 # libfreetype6-dev) are NOT included here — they are dev-only and are
 # installed, used, and removed inside the per-version Dockerfiles where gd is
 # built (gd configure flags differ by PHP version). libmagickwand-dev and
-# libmagickcore-dev ARE installed in the common build stage below.
+# libmagickcore-dev are similarly NOT included here — imagick also varies by
+# PHP version and is installed in each per-version Dockerfile.
 # Dpkg::Use-Pty "0" is the log-friendly dpkg configuration: it disables the
 # PTY-based progress reporting that produces "(Reading database ... N%)" noise,
 # while leaving all real dpkg output (package names, errors, warnings) intact.
@@ -292,6 +293,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
 # NOTE: gd is NOT built here — its configure flags differ by PHP version
 # (avif support for 8.1+ vs no avif for 7.4/8.0). Each version's Dockerfile
 # runs docker-php-ext-configure gd and docker-php-ext-install gd separately.
+# NOTE: imagick is NOT built here — it uses different version pins across PHP
+# versions (3.8.1 for 7.4–8.2; no pin for 8.3+). Each version's Dockerfile
+# installs imagick, libmagickwand-dev, and libmagickcore-dev separately.
 # NOTE: libsodium sources are mounted read-write from the 'common-downloader'
 # stage via --mount=type=bind,rw so ./configure and make can write build
 # artifacts into the mount without polluting the final image layer.
@@ -304,9 +308,6 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
           libbz2-dev \
           libgmp-dev \
           libicu-dev \
-          libmagickwand-dev \
-          libmagickcore-dev \
-          libpspell-dev \
           libtidy-dev \
           libxslt1-dev \
           libyaml-dev \
@@ -317,16 +318,14 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
-    && docker-php-ext-configure opcache --enable-opcache \
     && docker-php-ext-install -j$(nproc) \
-        bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
-        pdo_mysql pspell shmop soap sockets sysvmsg sysvsem sysvshm \
+        bcmath bz2 calendar exif gettext gmp intl mysqli \
+        pdo_mysql shmop soap sockets sysvmsg sysvsem sysvshm \
         tidy xsl zip pcntl \
     && pecl install -o -f \
         redis-5.3.7 \
         yaml-2.2.2 \
         memcached-3.2.0 \
-        imagick-3.8.1 \
     && rm -f /usr/local/etc/php/conf.d/*sodium.ini \
     && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
     && apt-get remove libsodium* -y \
@@ -334,8 +333,8 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
     && pecl install -o -f libsodium \
     && docker-php-ext-enable \
         bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
-        pdo_mysql pspell redis shmop soap sockets sodium sysvmsg \
-        sysvsem sysvshm tidy xsl yaml zip pcntl memcached imagick \
+        pdo_mysql redis shmop soap sockets sodium sysvmsg \
+        sysvsem sysvshm tidy xsl yaml zip pcntl memcached \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \
     && { find /usr/local/lib/php/extensions -name '*.so' \

@@ -172,6 +172,9 @@ test_base() {
   assert_contains "$image" "PDO" "PDO extension loaded" \
     php -m
 
+  assert_contains "$image" "pdo_mysql" "pdo_mysql extension loaded" \
+    php -m
+
   assert_contains "$image" "mbstring" "mbstring extension loaded" \
     php -m
 
