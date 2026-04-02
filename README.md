@@ -1,9 +1,297 @@
-# php
+# devpanel/php
+
+PHP Docker images for [DevPanel](https://devpanel.com) — multi-version,
+multi-variant images covering PHP 7.4 through 8.3 with Apache, ModSecurity,
+Redis, code-server (VS Code in the browser), Composer, Drush, WP-CLI and more.
+
+---
+
+## Table of Contents
+
+- [Image variants](#image-variants)
+- [Quick start (users)](#quick-start-users)
+- [Environment variables](#environment-variables)
+- [Contributing](#contributing)
+- [Testing](#testing)
+- [CI / CD](#ci--cd)
+- [Agent notes](#agent-notes)
+- [Code-server artifact pinning](#code-server-artifact-pinning)
+
+---
+
+## Image variants
+
+Each PHP version ships three layered variants.
+
+| Variant   | Tag suffix  | What it adds |
+|-----------|-------------|--------------|
+| `base`    | `X.Y-base`  | PHP + Apache + code-server + Composer + Drush + WP-CLI |
+| `secure`  | `X.Y-secure`| `base` + ModSecurity / OWASP Core Rule Set |
+| `advance` | `X.Y-advance`| `secure` + Redis + Supervisor |
+
+Release candidate tags end with `-rc` (e.g. `8.3-base-rc`).
+
+Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3**
+
+---
+
+## Quick start (users)
+
+```bash
+# Pull the latest stable PHP 8.3 advance image
+docker pull devpanel/php:8.3-advance
+
+# Run with code-server enabled on port 8080
+docker run -p 80:80 -p 8080:8080 devpanel/php:8.3-advance
+```
+
+Open `http://localhost` for the web application and `http://localhost:8080`
+for the browser-based editor.
+
+---
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `APP_ROOT` | `/var/www/html` | Application root directory |
+| `WEB_ROOT` | `$APP_ROOT` | Document root for Apache |
+| `PHP_MEMORY_LIMIT` | `4096M` | PHP `memory_limit` |
+| `PHP_MAX_EXECUTION_TIME` | `600` | PHP `max_execution_time` |
+| `PHP_MAX_INPUT_TIME` | `600` | PHP `max_input_time` |
+| `PHP_MAX_INPUT_VARS` | `3000` | PHP `max_input_vars` |
+| `PHP_UPLOAD_MAX_FILESIZE` | `64M` | PHP `upload_max_filesize` |
+| `PHP_POST_MAX_SIZE` | `64M` | PHP `post_max_size` |
+| `PHP_CLEAR_ENV` | `false` | PHP-FPM `clear_env` |
+| `SERVER_NAME` | `default` | Apache `ServerName` |
+| `GIT_BRANCH` | `master` | Default Git branch |
+| `CODES_PORT` | `8080` | code-server listen port |
+| `CODES_ENABLE` | `yes` | Set to `no` to disable code-server |
+| `CODES_AUTH` | _(unset)_ | Set to `yes` to require a password |
+
+---
+
+## Contributing
+
+### Repository layout
+
+```
+<php-version>/
+  base/       # Base image sources (per-version overlay)
+  secure/     # Secure image sources (per-version overlay)
+  advance/    # Advance image sources (per-version overlay)
+base/         # Shared base stage sources (common across all versions)
+secure/       # Shared secure stage sources
+advance/      # Shared advance stage sources
+docker-bake.hcl  # Docker Bake build matrix
+.github/
+  workflows/  # GitHub Actions CI / build workflows
+.githooks/    # Git hooks (activated with ./setup-hooks.sh)
+tests/
+  baselines/           # Stored violation counts for each linter
+  detect-versions.sh   # Shared version-detection script (used by tests and CI)
+  *.sh                 # Lint, build, and functional test scripts
+  compare-baseline.py  # Shared baseline-comparison helper
+test.sh           # Run all checks locally
+setup-hooks.sh    # Configure Git to use .githooks/ (run once after cloning)
+.yamllint.yml     # yamllint configuration
+```
+
+### Adding a new PHP version
+
+1. Copy an existing version directory (e.g. `cp -r 8.3 8.4`).
+2. Update the `FROM` line and any version-specific package pins.
+3. Update `docker-bake.hcl` if any bake variables need adjusting (the matrix
+   auto-generates build targets for every `X.Y/` directory; no per-version
+   workflow files are needed).
+4. Run `./test.sh` to make sure there are no new lint or build violations.
+5. If the new Dockerfiles introduce violations that are intentional or
+   unavoidable, update the baseline:
+
+   ```bash
+   ./test.sh --update-baseline
+   git add tests/baselines/
+   ```
+
+### Updating a baseline
+
+Run any individual suite with `--update-baseline`:
+
+```bash
+bash tests/lint-dockerfile.sh --update-baseline
+bash tests/lint-shell.sh      --update-baseline
+bash tests/lint-yaml.sh       --update-baseline
+```
+
+Or update all baselines at once:
+
+```bash
+./test.sh --update-baseline
+```
+
+Commit the changed `tests/baselines/*.json` files together with the code
+change that justifies the update.
+
+---
+
+## Testing
+
+### Prerequisites
+
+| Tool | Purpose | Install |
+|---|---|---|
+| `shellcheck` | Shell script linting | `apt install shellcheck` |
+| `yamllint` | YAML linting | `pip install yamllint` |
+| `docker` **or** `hadolint` | Dockerfile linting | [docker.com](https://docs.docker.com/get-docker/) or [hadolint releases](https://github.com/hadolint/hadolint/releases) |
+| `docker` | Docker build tests | [docker.com](https://docs.docker.com/get-docker/) |
+
+### Running all checks
+
+```bash
+./test.sh
+```
+
+### Running a single suite
+
+```bash
+./test.sh yaml        # YAML lint only
+./test.sh shell       # Shell lint only
+./test.sh dockerfile  # Dockerfile lint only
+./test.sh build       # Docker build tests only
+./test.sh run         # Docker functional (run) tests only
+./test.sh build run --version 8.2  # Build and run tests for a single PHP version
+```
+
+### Build tests
+
+`tests/build-dockerfile.sh` builds every Dockerfile in the repository (without
+pushing) to verify the images are buildable.  Images are built in dependency
+order per PHP version using `docker buildx bake`:
+
+```
+base  →  secure (built FROM base)  →  advance (built FROM secure)
+```
+
+Locally-created test tags are cleaned up by `run-dockerfile.sh` after
+functional tests complete (only the images tested in that invocation are
+removed).  To remove all `devpanel-php-test:*` images at once, run:
+
+```bash
+bash tests/cleanup-test-images.sh
+```
+
+Build tests take several minutes per PHP version because the images download
+packages (code-server, composer, etc.).  Run a single version during
+development to keep the feedback loop short:
+
+```bash
+./test.sh build --version 8.2
+```
+
+### Functional (run) tests
+
+`tests/run-dockerfile.sh` starts each built image as a short-lived container
+and verifies core tools and extensions are working:
+
+| Variant | Checks |
+|---|---|
+| `base` | `php --version`, PHP code execution, `composer --version`, `apache2 -v`, `pdo`/`mbstring` extensions |
+| `secure` | All base checks + `mod_security2.so` present |
+| `advance` | All base checks + `redis-cli --version` |
+
+Run tests require images built by the build suite.  Run both together:
+
+```bash
+./test.sh build run --version 8.2
+```
+
+> **Tip:** Set `DEVPANEL_BUILD_ON_PUSH=1` before a `git push` to have the
+> pre-push hook also run build and functional tests for any changed Dockerfiles.
+> By default the hook runs lint only (fast); CI always runs the full suite.
+
+### How baseline tracking works
+
+Lint checks cover **all severities including style warnings**.  Each baseline
+file (`tests/baselines/*.json`) records the number of times each lint rule
+fires per file.  A check **fails only when the count for any rule/file pair
+*increases* above its baseline value** — or when a rule appears in a file
+where it was not present before.  Reducing violations (improving the code) is
+always accepted silently.
+
+This means:
+- Existing known violations do not block your push or the CI build.
+- Any *new* violation introduced by your change will block the push and must
+  be fixed (or explicitly added to the baseline with a justification commit).
+
+### Installing the Git pre-push hook
+
+```bash
+./setup-hooks.sh
+```
+
+This sets `core.hooksPath = .githooks` in the local Git config so the hooks
+in `.githooks/` are used directly — no copying needed.  The hooks stay in
+sync with the repository automatically.
+
+After running `setup-hooks.sh`, `git push` will automatically lint only the
+files you changed.  Set `DEVPANEL_BUILD_ON_PUSH=1` to also run Docker build
+and functional tests for any changed Dockerfiles.
+
+---
+
+## CI / CD
+
+### Workflow overview
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `ci.yml` | push to `main`/`develop`; pull_request (any branch) | Lint, build & functional checks (required) |
+| `docker-build-on-push.yml` | push to `main` or `develop` | Detect changed versions and build images |
+| `docker-build-all.yml` | `workflow_dispatch` | Build all versions unconditionally |
+
+`ci.yml` runs lint, build, and functional tests in parallel.  Configure branch protection
+rules in GitHub to require all `ci.yml` status checks to pass before pull
+requests to `main` or `develop` can be merged, ensuring no broken Dockerfile
+or script reaches the publish workflows.  See the
+[GitHub docs on required status checks](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging)
+for setup instructions.
+
+### Secrets required
+
+| Secret | Description |
+|---|---|
+| `DOCKERHUB_USERNAME` | Docker Hub username |
+| `DOCKERHUB_TOKEN` | Docker Hub access token |
+
+---
+
+## Agent notes
+
+- Source files live under both per-version directories (`7.4/`, `8.0/`, …) and
+  shared top-level directories (`base/`, `secure/`, `advance/`).  Changes to
+  a shared directory affect all versions; changes under `X.Y/` affect only
+  that version.  Version selection for both local tests and CI is handled by
+  `tests/detect-versions.sh`.
+- Lint baselines are stored as JSON in `tests/baselines/`.  Update them with
+  `./test.sh --update-baseline` whenever you make a change that intentionally
+  alters lint counts.
+- Build tests (`tests/build-dockerfile.sh`) try to build every Dockerfile
+  without pushing.  Functional tests (`tests/run-dockerfile.sh`) then start each
+  built image and verify PHP, Apache, Composer, and extensions work.
+  Run `./test.sh build run --version <v>` to test a single PHP version quickly.
+- Build workflows are `docker-build-on-push.yml` (push-triggered) and
+  `docker-build-all.yml` (manual dispatch).  Both call the
+  `.github/actions/build-php-images` composite action which performs detect → build.
+- The `advance` variant depends on `secure`, which depends on `base`.
+  The build chain is enforced via the bake target dependency graph.
+
+---
 
 ## Code-server artifact pinning
 
-`base/Dockerfile` files define `CODESERVER_PINNED_HASH_VERSION` (currently `4.99.4`) and use it as the default `CODESERVER_VERSION`.
-Checksum verification is applied when `CODESERVER_VERSION` matches `CODESERVER_PINNED_HASH_VERSION`.
+`base/Dockerfile` defines `CODESERVER_VERSION` (currently `4.99.4`) as the default version.
+SHA256 checksum verification is always applied during the build.
+The CI "Verify code-server .deb hashes" job independently downloads both platform packages and confirms they match the hashes stored in the Dockerfile.
 
 For the pinned hash version, keep both hashes in sync:
 
@@ -24,17 +312,96 @@ for arch in amd64 arm64; do
 done
 ```
 
-Then update each `*/base/Dockerfile` so the version condition and both SHA256 values stay in sync.
+Then update `CODESERVER_VERSION`, `CODESERVER_DEB_SHA256_AMD64`, and `CODESERVER_DEB_SHA256_ARM64` in `base/Dockerfile`.
 
-Example pattern used in `base/Dockerfile` files:
+## GitHub Copilot Chat extension pinning
 
-```dockerfile
-if [ "$CODESERVER_VERSION" = "$CODESERVER_PINNED_HASH_VERSION" ]; then \
-	case "$DEB_ARCH" in \
-		amd64) DEB_SHA256="$CODESERVER_DEB_SHA256_AMD64" ;; \
-		arm64) DEB_SHA256="$CODESERVER_DEB_SHA256_ARM64" ;; \
-	esac; \
-	echo "$DEB_SHA256  /tmp/code-server.deb" | sha256sum -c -; \
-fi; \
-dpkg -i /tmp/code-server.deb
+GitHub Copilot Chat is not available in the Open VSX marketplace used by
+code-server, so `base/Dockerfile` downloads it directly from the Visual Studio
+Marketplace at image-build time.  Only **stable** releases are used.
+
+### How the pinned version is chosen
+
+The Copilot Chat extension publishes to two channels on the VS Marketplace:
+
+| Channel | Version format | Example | Where visible |
+|---|---|---|---|
+| **Stable** (release) | `MAJOR.MINOR.PATCH` | `0.26.7` | VS Code desktop "Version History" |
+| **Pre-release** | `MAJOR.MINOR.YYYYMMDDNN` | `0.26.2025040204` | Marketplace API (`flags=17`) only |
+
+The "Version History" panel in the VS Code desktop app shows stable patch releases
+(e.g. `0.26.0` through `0.26.7`).  Pre-release builds use a date-stamped third
+component (`YYYYMMDDNN` = year + month + day + sequence), so `0.26.2025040204`
+is build #04 on 2025-04-02.  Because this date-derived number is much larger
+than the stable patch counter, and the Marketplace API returns all versions
+newest-first by publish date (regardless of channel), pre-release builds appear
+before their stable equivalents in the API response.
+
+Each release declares a minimum VS Code engine version in its
+`Microsoft.VisualStudio.Code.Engine` property (e.g. `^1.99.0`).
+code-server `4.X.Y` bundles VS Code `1.X.Y` (e.g. `4.99.4` → VS Code
+`1.99.4`), so the correct pinned version is **the most recent stable Copilot
+Chat release whose engine minimum is ≤ the VS Code version bundled in the
+target code-server release**.
+
+The current pin `0.26.7` is the latest stable release compatible with
+code-server `4.99.4` (VS Code `1.99.4`, engine requirement `^1.99.0`).
+Versions in the `0.27.x` series and later require VS Code `^1.100.0` or higher.
+
+### Finding the right version for a new code-server release
+
+1. Determine the VS Code version bundled with the target code-server release
+   (e.g. code-server `4.99.4` → VS Code `1.99.4`).
+2. Query the VS Marketplace extensionquery API for `GitHub.copilot-chat`,
+   filtering for stable versions only (patch component 1–9 digits, excluding 10-digit pre-release date-stamps):
+   ```bash
+   curl -fsSL -X POST \
+     -H 'Content-Type: application/json' \
+     -H 'Accept: application/json;api-version=3.0-preview.1' \
+     -d '{"filters":[{"criteria":[{"filterType":7,"value":"GitHub.copilot-chat"}],"pageSize":100}],"flags":17}' \
+     'https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery' \
+   | python3 -c "
+   import json, sys, re
+   vscode = sys.argv[1]
+   data = json.load(sys.stdin)
+   for v in data['results'][0]['extensions'][0]['versions']:
+       ver = v.get('version','')
+       # Skip pre-release builds (10-digit date-stamped patch component).
+       if not re.match(r'^\d+\.\d+\.\d{1,9}$', ver): continue
+       engine = next((p['value'] for p in v.get('properties',[])
+                      if p['key']=='Microsoft.VisualStudio.Code.Engine'), '')
+       eng_min = engine.lstrip('^~>=').split('-')[0]
+       if eng_min and tuple(int(x) for x in vscode.split('.')) >= \
+                      tuple(int(x) for x in eng_min.split('.')):
+           print(ver); break
+   " 1.99.4
+   ```
+3. For versions `v0.29.0` and later the engine requirement is also visible in
+   the extension's
+   [`package.json`](https://github.com/microsoft/vscode-copilot-chat) on GitHub.
+   For earlier versions (before the repository was open-sourced in June 2025)
+   use the [VsixHub version history](https://www.vsixhub.com/history/143611/).
+
+### Computing and updating the SHA256
+
+Once you have the correct version string, download the VSIX with `--compressed` (the
+Marketplace serves the VSIX with gzip transfer encoding) and compute its SHA256:
+
+```bash
+VERSION=0.26.7
+curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
+	"https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${VERSION}/vspackage" \
+	-o "/tmp/copilot-chat-${VERSION}.vsix"
+# Linux:
+sha256sum "/tmp/copilot-chat-${VERSION}.vsix"
+# macOS:
+shasum -a 256 "/tmp/copilot-chat-${VERSION}.vsix"
 ```
+
+Then update `COPILOT_CHAT_VERSION` and `COPILOT_CHAT_VSIX_SHA256` in
+`base/Dockerfile`.  The CI "Verify Copilot Chat VSIX" job independently downloads
+the pinned VSIX from the same URL, validates it is a valid ZIP, and verifies the
+SHA256 on every CI run.
+
+The VSIX is architecture-independent, so only one hash value is needed (unlike
+code-server which ships separate `amd64`/`arm64` packages).
