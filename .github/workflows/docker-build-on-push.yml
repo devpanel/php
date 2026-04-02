@@ -1,4 +1,5 @@
 name: Build changed Docker images on push
+run-name: "docker-build-${{ github.ref }}"
 
 on:
   push:
@@ -10,85 +11,284 @@ concurrency:
   group: docker-build-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Comma-separated list of platforms to build.  Override via the
+  # PLATFORMS repository variable (Settings → Variables → Actions).
+  PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
+
 jobs:
+  # ── Find the effective before SHA ───────────────────────────────────────────
+  # Use the head SHA of the last *successful* build run on this branch as the
+  # effective before_sha so that commits covered by cancelled runs are not
+  # silently skipped.  Both the on-push and the manual full-rebuild workflow
+  # are queried so that a successful dispatch is not ignored.
   prepare:
     runs-on: ubuntu-latest
     permissions:
-      actions: read
+      actions: write
+      contents: read
     outputs:
       before_sha: ${{ steps.effective_sha.outputs.before_sha }}
     steps:
-      - name: Compute effective before_sha
-        id: effective_sha
+      - name: Append commit subject to run name
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          RUN_PREFIX: "docker-build-${{ github.ref }}"
         run: |
-          set -euo pipefail
-          # If this run cancelled a previous push workflow, that workflow may
-          # have been mid-build and its changes would be lost.  To guarantee
-          # no commits are skipped, use the head_sha of the last *successful*
-          # run on this branch as the effective before_sha.  This covers every
-          # commit since the last known-good build, regardless of how many
-          # prior runs were cancelled in the interim.
-          #
-          # We query every workflow that calls the shared reusable build
-          # workflow (on-push and workflow_dispatch/all) so that a successful
-          # full-rebuild dispatch is not ignored when computing the diff range.
-          # Fetch the last 10 from each so we have enough candidates to find
-          # the closest reachable ancestor even when recent runs share SHAs.
-          CANDIDATES=$({
-            gh api \
-              "repos/${{ github.repository }}/actions/workflows/docker-build-on-push.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=10" \
-              --jq '.workflow_runs[].head_sha // empty'
-            gh api \
-              "repos/${{ github.repository }}/actions/workflows/docker-build-all.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=10" \
-              --jq '.workflow_runs[].head_sha // empty'
-          } | (grep . || true) | sort -u)
+          subject=$(printf '%s' "${COMMIT_MSG}" | head -1)
+          if [ "${#subject}" -gt 72 ]; then
+            subject="${subject:0:71}…"
+          fi
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            -f display_title="${RUN_PREFIX}: ${subject}"
 
-          # Among all candidates, pick the closest reachable ancestor of the
-          # current commit — the one with the smallest ahead_by distance.
-          # This is more correct than using timestamps because it is based on
-          # the actual git ancestry of the branch rather than wall-clock time.
-          LAST_SUCCESS_SHA=""
-          BEST_AHEAD=""
-          while IFS= read -r SHA; do
-            [[ -z "$SHA" || "$SHA" == "${{ github.sha }}" ]] && continue
-            COMPARE=$(gh api \
-              "repos/${{ github.repository }}/compare/${SHA}...${{ github.sha }}" \
-              --jq '{status: .status, ahead_by: .ahead_by}' 2>/dev/null || true)
-            STATUS=$(printf '%s' "$COMPARE" | jq -r '.status // ""')
-            AHEAD=$(printf '%s' "$COMPARE" | jq -r '.ahead_by // empty')
-            if [[ "$STATUS" == "ahead" || "$STATUS" == "identical" ]] && [[ "$AHEAD" =~ ^[0-9]+$ ]]; then
-              if [[ -z "$BEST_AHEAD" || "$AHEAD" -lt "$BEST_AHEAD" ]]; then
-                BEST_AHEAD="$AHEAD"
-                LAST_SUCCESS_SHA="$SHA"
-              fi
-            fi
-          done <<< "$CANDIDATES"
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
-          echo "before_sha=$LAST_SUCCESS_SHA" >> "$GITHUB_OUTPUT"
+      - name: Compute effective before_sha
+        id: effective_sha
+        uses: ./.github/actions/effective-before-sha
+        with:
+          workflow_files: |
+            docker-build-on-push.yml
+            docker-build-all.yml
+          concurrency_group: docker-build-${{ github.ref }}
+          current_sha: ${{ github.sha }}
+          ref_name: ${{ github.ref_name }}
+          repository: ${{ github.repository }}
+          github_token: ${{ github.token }}
+          event_name: ${{ github.event_name }}
 
-  build:
+  # ── Detect which versions changed and which platforms to target ─────────────
+  # Runs after prepare so that before_sha is available, and its outputs drive
+  # both the per-platform build matrix and the merge job.
+  detect:
     needs: prepare
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      actions: write
+    outputs:
+      versions: ${{ steps.detect.outputs.versions }}
+      versions_base: ${{ steps.detect.outputs.versions_base }}
+      versions_secure: ${{ steps.detect.outputs.versions_secure }}
+      latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
+      tag_suffix: ${{ steps.detect.outputs.tag_suffix }}
+      before_sha: ${{ needs.prepare.outputs.before_sha }}
+      # Total number of distinct platforms — used by each merge job to know
+      # when all per-platform digest artifacts have been collected.
+      total_platforms: ${{ steps.detect.outputs.total_platforms }}
+      # JSON array of {version, stage} objects — one entry per Docker Hub
+      # image that needs a manifest merge.  The downstream single merge job
+      # consumes the full array and passes it to the merge-manifests action,
+      # which iterates over entries internally to merge each image's tag.
+      merge_matrix: ${{ steps.detect.outputs.merge_matrix }}
+      # JSON array of {version, platform, versions_base, versions_secure}
+      # objects — one entry per PHP-version × platform combination.  Each
+      # entry becomes one parallel build job that builds one version on one
+      # platform and uploads per-image digest artifacts immediately.
+      build_matrix: ${{ steps.detect.outputs.build_matrix }}
+      # Total number of build matrix jobs (versions × platforms).  Passed to
+      # the merge job so it can account for in-progress build pulls when
+      # deciding whether the quota allows seeding existing manifests.
+      build_matrix_length: ${{ steps.detect.outputs.build_matrix_length }}
+      # Whether GHCR is writable with the current token.  Set once here in the
+      # detect job and passed to every build job via the build matrix so that
+      # each job uses GHCR as primary (writable) or GHA as primary (not writable).
+      ghcr_writable: ${{ steps.detect.outputs.ghcr_writable }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          # Full history is needed when before_sha/after_sha are provided so
-          # that git diff can compare before_sha..after_sha.
           fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
+
+      - name: Detect versions
+        id: detect
+        uses: ./.github/actions/detect-versions
+        with:
+          before_sha: ${{ needs.prepare.outputs.before_sha }}
+          after_sha: ${{ github.sha }}
+          platforms_filter: ${{ env.PLATFORMS }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token: ${{ secrets.GHCR_TOKEN }}
+
+      # Wait here — in the single detect job that runs before the build matrix —
+      # until enough authenticated Docker Hub pulls are available for the
+      # pre-seed step and all parallel build jobs.  The pre-seed action may
+      # need one pull per PHP version to detect its Debian codename (only
+      # when the codenames cache is cold); each build job may also need 1
+      # pull for the base PHP image (the unauthenticated pre-pull is
+      # non-fatal; the GHCR layer cache can miss after a base-image update
+      # or Dockerfile change).  Waiting once here prevents N matrix jobs
+      # from racing each other to use the same pool of available pulls.
+      - name: Wait for Docker Hub pull quota
+        if: steps.detect.outputs.versions != ''
+        uses: ./.github/actions/wait-pull-quota
+        with:
+          needed_pulls: ${{ steps.detect.outputs.needed_pulls }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          build_matrix_length: ${{ steps.detect.outputs.build_matrix_length }}
+
+      # Pre-seed is run here in the detect job (once, with ALL PHP versions in
+      # the repo) rather than inside each parallel build job.  This is critical
+      # for two reasons:
+      #   1. The newest PHP version's codename (e.g. bookworm from PHP 8.3)
+      #      must be the "primary" tier so that older codenames (e.g. buster
+      #      from PHP 7.4) receive proper GLIBC compatibility testing.  When
+      #      preseed only sees a single old version it designates that codename
+      #      as primary and skips the compat check entirely, potentially
+      #      selecting a code-server too new for that codename (GLIBC_2.34).
+      #   2. Running preseed once avoids N parallel build jobs competing to
+      #      save the same preseed cache entry, which produces spurious
+      #      "cache already exists" warnings.
+      # The pre-downloaded files and bake-overrides output are shared with
+      # build jobs via actions/upload-artifact and actions/download-artifact.
+      - name: Pre-seed build downloads
+        id: preseed
+        if: steps.detect.outputs.versions != ''
+        uses: ./.github/actions/preseed-downloads
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          versions: ${{ steps.detect.outputs.all_versions }}
+
+      - name: Upload preseed bake overrides
+        if: steps.detect.outputs.versions != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: preseed-bake-overrides
+          path: ${{ steps.preseed.outputs.bake_overrides_file }}
+          retention-days: 1
+
+      # Upload the flat pre-downloaded/ directory (code-server .deb files and
+      # Copilot Chat VSIX) as a workflow artifact so build jobs can download it
+      # directly.  Using an artifact (rather than the GHA preseed cache) is
+      # more reliable because artifacts are guaranteed to persist for the
+      # lifetime of the workflow run; the GHA cache can be evicted mid-run
+      # and a cache miss would silently produce an empty pre-downloaded/ dir.
+      - name: Upload preseed pre-downloaded artifacts
+        if: steps.detect.outputs.versions != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: preseed-pre-downloaded
+          path: ${{ steps.preseed.outputs.downloads_dir }}/pre-downloaded/
+          retention-days: 1
+
+  # ── Per-version-platform builds (run in parallel) ──────────────────────────
+  # One job per PHP version × platform pair.  Each job builds all stages
+  # (base / secure / advance) for that single version on that single platform,
+  # then uploads one digest artifact per stage immediately after the bake
+  # step completes.  The merge job picks up those artifacts as they arrive and
+  # assembles the tagged multi-arch manifests.
+  #
+  # There is deliberately no per-job Docker Hub quota wait here.  The
+  # centralized gate in wait-pull-quota (detect job above) coordinates before
+  # any build job starts.  Per-job waits cannot share state between runners so
+  # they cannot coordinate; the anonymous pre-pull is non-fatal and the
+  # authenticated fallback is already covered by the auth reservation made in
+  # wait-pull-quota (one slot per build job via build_matrix_length).
+  build:
+    needs: detect
+    if: needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != ''
+    name: build (${{ matrix.version }}, ${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect.outputs.build_matrix) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      actions: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: ${{ needs.detect.outputs.before_sha != '' && '0' || '1' }}
+
+      # Download the pre-seeded code-server .deb and Copilot Chat VSIX files
+      # that the detect job assembled and uploaded.  Using a workflow artifact
+      # (not the GHA preseed cache) guarantees these files are present for the
+      # lifetime of the run; a cache miss would silently produce an empty
+      # pre-downloaded/ directory and fail the Docker build.
+      - name: Download preseed pre-downloaded artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: preseed-pre-downloaded
+          path: ${{ runner.temp }}/build-downloads/pre-downloaded
+
+      # Download the bake-overrides JSON generated by the detect job's preseed
+      # run.  It contains the correct code-server / Copilot Chat versions and
+      # SHA256 digests for every detected Debian codename, including the
+      # downgraded versions needed for older codenames (Buster / Bullseye).
+      - name: Download preseed bake overrides
+        uses: actions/download-artifact@v8
+        with:
+          name: preseed-bake-overrides
+          path: ${{ runner.temp }}
 
       - name: Build PHP images
         uses: ./.github/actions/build-php-images
         with:
-          before_sha:          ${{ needs.prepare.outputs.before_sha }}
-          after_sha:           ${{ github.sha }}
-          platforms_filter: linux/amd64
-          dockerhub_username:  ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token:     ${{ secrets.DOCKERHUB_TOKEN }}
-          github_token:        ${{ secrets.GITHUB_TOKEN }}
-          ghcr_token:          ${{ secrets.GHCR_TOKEN }}
+          version: ${{ matrix.version }}
+          versions_base: ${{ matrix.versions_base }}
+          versions_secure: ${{ matrix.versions_secure }}
+          tag_suffix: ${{ needs.detect.outputs.tag_suffix }}
+          platform: ${{ matrix.platform }}
+          repo: ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token: ${{ secrets.GHCR_TOKEN }}
+          ghcr_writable: ${{ needs.detect.outputs.ghcr_writable }}
+          downloads_dir: ${{ runner.temp }}/build-downloads
+          bake_overrides_file: ${{ runner.temp }}/preseed-bake-overrides.json
+
+  # ── Single manifest merge job ────────────────────────────────────────────────
+  # One job handles all Docker Hub images (every version × stage combination).
+  # It starts as soon as detect finishes and runs in parallel with every build
+  # job.
+  #
+  # The job polls for "digests-*" artifacts from the build jobs.  Whenever one
+  # or more new platform digests arrive in the same polling cycle they are
+  # batched into a single "docker buildx imagetools create" call per image,
+  # preserving any platform still missing from the current batch via the
+  # previously published Docker Hub manifest.
+  #
+  # Using a single job (rather than a per-image matrix) avoids saturating the
+  # Docker Hub pull rate limit with many concurrent "imagetools inspect" calls
+  # and reduces the number of runners consumed during the build.
+  merge:
+    needs: detect
+    if: needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Poll and merge platform manifests
+        uses: ./.github/actions/merge-manifests
+        with:
+          merge_matrix: ${{ needs.detect.outputs.merge_matrix }}
+          repo: ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
+          tag_suffix: ${{ needs.detect.outputs.tag_suffix }}
+          total_platforms: ${{ needs.detect.outputs.total_platforms }}
+          build_matrix_length: ${{ needs.detect.outputs.build_matrix_length }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          run_id: ${{ github.run_id }}
+          repository: ${{ github.repository }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          run_started_at: ${{ github.run_started_at }}
