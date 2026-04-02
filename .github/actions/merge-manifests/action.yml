@@ -4,9 +4,12 @@ description: >
   digest (no tags), this action downloads all digest artifacts (named
   digests-*) uploaded during the current workflow run and creates or updates
   the multi-architecture Docker Hub manifest tags using docker buildx
-  imagetools create.  One digest artifact per platform is expected; to add
-  support for a new platform, add an entry to the build matrix — no changes
-  to this action are needed.
+  imagetools create.  If a tag is already published (e.g. by an earlier
+  platform build in the same run), any platform digests that are not covered
+  by the current run's artifacts are carried forward from the existing manifest
+  so that the tag always lists every platform built so far.  One digest
+  artifact per platform is expected; to add support for a new platform, add
+  an entry to the build matrix — no changes to this action are needed.
 
 inputs:
   versions:
@@ -78,21 +81,49 @@ runs:
             if [[ "$stage" == "secure" ]] && ! in_list "$version" "$VERSIONS_SECURE"; then continue; fi
 
             KEY="${version}-${stage}"
-            SOURCES=()
+            FINAL_TAG="${REPO}:${version}-${stage}${TAG_SUFFIX}"
 
-            # Collect digests from every downloaded platform artifact file.
+            # Collect digests from newly-built platform artifact files.
+            NEW_SOURCES=()
+            NEW_DIGESTS=()
             for digest_file in /tmp/digests/digests-*.json; do
               [[ -f "$digest_file" ]] || continue
               DIGEST=$(jq -r --arg k "${KEY}" '.[$k] // empty' "${digest_file}")
-              [[ -n "$DIGEST" ]] && SOURCES+=("${REPO}@${DIGEST}")
+              if [[ -n "$DIGEST" ]]; then
+                NEW_SOURCES+=("${REPO}@${DIGEST}")
+                NEW_DIGESTS+=("$DIGEST")
+              fi
             done
 
-            if [[ ${#SOURCES[@]} -eq 0 ]]; then
+            if [[ ${#NEW_SOURCES[@]} -eq 0 ]]; then
               echo "Skipping ${KEY}: no digests available for any platform."
               continue
             fi
 
-            FINAL_TAG="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+            # Start with the newly-built platform digests.
+            SOURCES=("${NEW_SOURCES[@]}")
+
+            # Inspect the existing tag (if published) and carry forward digests
+            # for any platforms not covered by this run's artifacts, so that the
+            # manifest always lists every platform built so far while the run is
+            # still in progress.
+            EXISTING_MANIFEST=$(docker buildx imagetools inspect --raw "${FINAL_TAG}" 2>/dev/null || true)
+            if [[ -n "$EXISTING_MANIFEST" ]] && \
+               printf '%s' "$EXISTING_MANIFEST" | jq -e '.manifests' >/dev/null 2>&1; then
+              while IFS= read -r existing_digest; do
+                [[ -z "$existing_digest" ]] && continue
+                # Skip if this platform's image was rebuilt in the current run.
+                already_built=0
+                for d in "${NEW_DIGESTS[@]}"; do
+                  [[ "$existing_digest" == "$d" ]] && { already_built=1; break; }
+                done
+                if [[ "$already_built" -eq 0 ]]; then
+                  echo "  Carrying forward existing platform digest: ${existing_digest}"
+                  SOURCES+=("${REPO}@${existing_digest}")
+                fi
+              done < <(printf '%s' "$EXISTING_MANIFEST" | jq -r '.manifests[].digest // empty')
+            fi
+
             echo "Creating manifest: ${FINAL_TAG}"
             printf '  source: %s\n' "${SOURCES[@]}"
             docker buildx imagetools create -t "${FINAL_TAG}" "${SOURCES[@]}"

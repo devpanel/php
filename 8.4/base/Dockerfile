@@ -1,23 +1,24 @@
 # syntax=docker/dockerfile:1
-# ─── PHP 8.1 base final image ─────────────────────────────────────────────────
+# ─── PHP 8.4 base final image ─────────────────────────────────────────────────
 # Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
-# PHP_VERSION=8.1. Contains ONLY PHP 8.1 specific differences:
-#   - libavif-dev + libpcre2-dev (+ gd build libs): installed, used, removed
-#   - libmagickwand-dev + libmagickcore-dev for imagick: installed, used, removed
-#   - libpspell-dev for pspell: installed, used, removed
+# PHP_VERSION=8.4. Contains ONLY PHP 8.4 specific differences:
+#   - libavif-dev + libpcre2-dev (+ gd build libs) installed, used, removed
 #   - gd configure flags (with avif)
-#   - PECL: igbinary 3.2.12, imagick 3.8.1
+#   - PECL: igbinary latest (no version pin), imagick latest, xdebug
+#   - Composer override (common installs 2.3.10)
 FROM common-php-ext AS final
 
 # Switch to root for version-specific installation
 ARG DEBIAN_FRONTEND=noninteractive
 USER root
 
-# Install dev libraries needed to build gd, imagick, and pspell for PHP 8.1,
-# build the extensions, then remove the dev libraries and their
-# automatically-added dependencies that are not needed at runtime.
+# Install dev libraries needed to build gd and imagick for PHP 8.4, build the
+# extensions, then remove the dev libraries and their automatically-added
+# dependencies that are not needed at runtime.
 # libavif-dev enables AVIF image support in gd (PHP 8.1+).
 # libmagickwand-dev and libmagickcore-dev are required to build imagick.
+# imagick is installed without a version pin to pick up the latest release with
+# PHP 8.4 API support (imagick 3.8.x does not support PHP 8.4+).
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
@@ -32,16 +33,16 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
           libpcre2-dev \
           libmagickwand-dev \
           libmagickcore-dev \
-          libpspell-dev \
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
     && docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp \
-    && docker-php-ext-install -j$(nproc) gd pspell \
+    && docker-php-ext-install -j$(nproc) gd \
     && pecl install -o -f \
-        igbinary-3.2.12 \
-        imagick-3.8.1 \
-    && docker-php-ext-enable gd igbinary imagick pspell \
+        igbinary \
+        imagick \
+        xdebug \
+    && docker-php-ext-enable gd igbinary imagick xdebug \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \
     && { find /usr/local/lib/php/extensions -name '*.so' \
@@ -57,6 +58,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
         -o APT::AutoRemove::RecommendsImportant=false \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
+
+# Override Composer with PHP 8.4 version using self-update
+RUN composer self-update
 
 USER ${USER}
 
