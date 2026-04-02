@@ -1,0 +1,172 @@
+name: Wait for Docker Hub pull quota
+description: >
+  Waits until the Docker Hub authenticated-pull quota has at least
+  `needed_pulls` remaining requests.  Used by the detect job — before
+  the parallel build matrix starts — so that all build jobs can proceed
+  without competing for the same pool of available pulls.
+
+  Polls every 60 seconds.  Gives up after 5h30m (19800 s) to avoid
+  being cancelled by the default 6 h GitHub-hosted job timeout.
+
+inputs:
+  needed_pulls:
+    description: >
+      Minimum number of authenticated Docker Hub pulls required.
+      Typically equal to the number of parallel build matrix jobs (one
+      pull per job in the worst case where every job misses the GHCR
+      layer cache).
+    required: true
+  dockerhub_username:
+    description: Docker Hub username for authenticating the pull-rate-limit probe.
+    required: true
+  dockerhub_token:
+    description: Docker Hub token for authenticating the pull-rate-limit probe.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Wait for Docker Hub pull quota
+      shell: bash
+      env:
+        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
+        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
+        NEEDED_PULLS: ${{ inputs.needed_pulls }}
+      run: |
+        set -euo pipefail
+        needed_pulls="${NEEDED_PULLS}"
+        if [[ ! "${needed_pulls}" =~ ^[0-9]+$ ]]; then
+          echo "::error::Invalid value for inputs.needed_pulls: '${needed_pulls}'." \
+               "It must be a non-negative integer."
+          exit 1
+        fi
+
+        # Preflight: verify required tools are available.
+        for _cmd in curl jq; do
+          if ! command -v "${_cmd}" >/dev/null 2>&1; then
+            echo "::error::Required command '${_cmd}' not found in PATH." \
+                 "Ensure the runner has '${_cmd}' installed."
+            exit 1
+          fi
+        done
+
+        # Preflight: verify Docker Hub credentials can obtain an auth token.
+        # Fail fast here rather than burning 5h30m on unresolvable credential errors.
+        # Distinguish credential failures (401/403) from transient network issues.
+        echo "Verifying Docker Hub credentials..."
+        _pre_creds="$(umask 077; mktemp)"
+        _pre_stderr="$(umask 077; mktemp)"
+        printf 'machine auth.docker.io login %s password %s\n' \
+          "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_pre_creds}"
+        _pre_curl_status=0
+        _pre_response="$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+          --netrc-file "${_pre_creds}" \
+          --write-out $'\n%{http_code}' \
+          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+          2>"${_pre_stderr}")" || _pre_curl_status=$?
+        rm -f "${_pre_creds}"
+        _pre_http_code="${_pre_response##*$'\n'}"
+        _pre_json="${_pre_response%$'\n'*}"
+        _pre_stderr_text="$(cat "${_pre_stderr}")"
+        rm -f "${_pre_stderr}"
+        _pre_token="$(printf '%s' "${_pre_json}" | jq -r '.token // ""' 2>/dev/null)" \
+          || _pre_token=""
+        if [[ ${_pre_curl_status} -ne 0 ]]; then
+          echo "::error::Could not reach the Docker Hub auth endpoint (curl exit ${_pre_curl_status})." \
+               "This may be a transient network, DNS, TLS, or timeout issue rather than invalid secrets." \
+               "Details: ${_pre_stderr_text:-none}." \
+               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+          exit 1
+        fi
+        if [[ "${_pre_http_code}" == "401" || "${_pre_http_code}" == "403" ]]; then
+          echo "::error::Docker Hub authentication rejected (HTTP ${_pre_http_code})." \
+               "Verify that the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are set and valid." \
+               "To retry after fixing credentials: click 'Re-run failed jobs' on this workflow run's summary page."
+          exit 1
+        fi
+        if [[ -z "${_pre_token}" ]]; then
+          echo "::error::Could not parse a Docker Hub auth token from the response (HTTP ${_pre_http_code:-unknown})." \
+               "Details: ${_pre_stderr_text:-none}." \
+               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+          exit 1
+        fi
+        echo "Docker Hub credentials verified."
+
+        echo "Checking Docker Hub pull quota" \
+             "(need ${needed_pulls} pull(s) for ${needed_pulls} parallel build job(s))..."
+        MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
+        POLL_INTERVAL=60
+        elapsed=0
+        while true; do
+          _creds_file="$(umask 077; mktemp)"
+          printf 'machine auth.docker.io login %s password %s\n' \
+            "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
+          _auth_json="$(curl -sf --connect-timeout 10 --max-time 30 \
+            --netrc-file "${_creds_file}" \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+            2>/dev/null)" || _auth_json=""
+          rm -f "${_creds_file}"
+          _token="$(printf '%s' "${_auth_json}" | jq -r '.token // ""' 2>/dev/null)" \
+            || _token=""
+          _remaining=""
+          if [[ -n "${_token}" ]]; then
+            # Fetch the rate-limit headers; capture the HTTP status code
+            # separately so we can distinguish a true 2xx success from
+            # 3xx redirects or network/auth failures.  curl -s (no -f)
+            # never exits non-zero for HTTP errors, so the exit status
+            # only reflects network/TLS failures.
+            _rl_tmpheaders="$(mktemp)"
+            _rl_http_code="$(curl -s --connect-timeout 10 --max-time 30 \
+              -H "Authorization: Bearer ${_token}" \
+              -X HEAD -D "${_rl_tmpheaders}" -o /dev/null \
+              -w '%{http_code}' \
+              "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
+              2>/dev/null)" || _rl_http_code=""
+            _headers="$(cat "${_rl_tmpheaders}" 2>/dev/null || true)"
+            rm -f "${_rl_tmpheaders}"
+            if [[ "${_rl_http_code:0:1}" == "2" ]]; then
+              # Got a 2xx response — try to parse the rate-limit header.
+              _remaining="$(printf '%s' "${_headers}" \
+                | grep -i '^ratelimit-remaining:' \
+                | grep -oE '[0-9]+' | head -1)" || _remaining=""
+              if [[ -z "${_remaining}" ]]; then
+                # 2xx but no RateLimit-Remaining header → Docker Hub account
+                # has no pull-rate limit (Pro / Team / Business plan).
+                echo "No Docker Hub rate-limit header in response;" \
+                     "assuming unlimited pull quota. Proceeding."
+                break
+              fi
+            fi
+            # If _rl_http_code is empty or non-2xx (network/auth/redirect
+            # error), _remaining stays empty and we fall through to the
+            # transient-failure retry below.
+          fi
+          if [[ -z "${_remaining}" ]]; then
+            if (( elapsed >= MAX_WAIT )); then
+              echo "::error::Could not verify Docker Hub pull quota after ${elapsed}s." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+              exit 1
+            fi
+            echo "Could not check Docker Hub pull quota." \
+                 "Retrying in ${POLL_INTERVAL}s (${elapsed}/${MAX_WAIT}s elapsed)..."
+            sleep "${POLL_INTERVAL}"
+            elapsed=$(( elapsed + POLL_INTERVAL ))
+            continue
+          fi
+          if (( _remaining >= needed_pulls )); then
+            echo "Docker Hub pull quota: ${_remaining} remaining" \
+                 "(need ${needed_pulls}); proceeding."
+            break
+          fi
+          if (( elapsed >= MAX_WAIT )); then
+            echo "::error::Docker Hub pull quota: waited ${elapsed}s but only" \
+                 "${_remaining}/${needed_pulls} pull(s) available." \
+                 "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+            exit 1
+          fi
+          echo "Docker Hub pull quota insufficient" \
+               "(${_remaining}/${needed_pulls} available)." \
+               "Waiting ${POLL_INTERVAL}s (${elapsed}/${MAX_WAIT}s elapsed)..."
+          sleep "${POLL_INTERVAL}"
+          elapsed=$(( elapsed + POLL_INTERVAL ))
+        done
