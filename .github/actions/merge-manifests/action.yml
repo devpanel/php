@@ -107,21 +107,23 @@ runs:
             # for any platforms not covered by this run's artifacts, so that the
             # manifest always lists every platform built so far while the run is
             # still in progress.
-            EXISTING_MANIFEST=$(docker buildx imagetools inspect --raw "${FINAL_TAG}" 2>/dev/null || true)
-            if [[ -n "$EXISTING_MANIFEST" ]] && \
-               printf '%s' "$EXISTING_MANIFEST" | jq -e '.manifests' >/dev/null 2>&1; then
-              while IFS= read -r existing_digest; do
-                [[ -z "$existing_digest" ]] && continue
-                # Skip if this platform's image was rebuilt in the current run.
-                already_built=0
-                for d in "${NEW_DIGESTS[@]}"; do
-                  [[ "$existing_digest" == "$d" ]] && { already_built=1; break; }
-                done
-                if [[ "$already_built" -eq 0 ]]; then
-                  echo "  Carrying forward existing platform digest: ${existing_digest}"
-                  SOURCES+=("${REPO}@${existing_digest}")
-                fi
-              done < <(printf '%s' "$EXISTING_MANIFEST" | jq -r '.manifests[].digest // empty')
+            if EXISTING_MANIFEST=$(docker buildx imagetools inspect --raw "${FINAL_TAG}" 2>&1); then
+              if printf '%s' "$EXISTING_MANIFEST" | jq -e '.manifests' >/dev/null 2>&1; then
+                while IFS= read -r existing_digest; do
+                  [[ -z "$existing_digest" ]] && continue
+                  # Skip if this platform's image was rebuilt in the current run.
+                  already_built=0
+                  for d in "${NEW_DIGESTS[@]}"; do
+                    [[ "$existing_digest" == "$d" ]] && { already_built=1; break; }
+                  done
+                  if [[ "$already_built" -eq 0 ]]; then
+                    echo "  Carrying forward existing platform digest: ${existing_digest}"
+                    SOURCES+=("${REPO}@${existing_digest}")
+                  fi
+                done < <(printf '%s' "$EXISTING_MANIFEST" | jq -r '.manifests[].digest // empty')
+              fi
+            else
+              echo "  Note: could not inspect existing tag (tag may not exist yet or inspect failed): ${EXISTING_MANIFEST}"
             fi
 
             echo "Creating manifest: ${FINAL_TAG}"
