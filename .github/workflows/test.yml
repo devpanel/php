@@ -1,4 +1,4 @@
-name: CI
+name: Test
 
 on:
   push:
@@ -51,13 +51,100 @@ jobs:
       - name: Run Dockerfile lint
         run: bash tests/lint-dockerfile.sh
 
-  build-dockerfiles:
-    name: Build and test PHP images
+  # Detect PHP versions to test, compute the lowercase GHCR repo name, and
+  # pre-seed build downloads for ALL detected versions at once.  Running
+  # preseed here (rather than in every parallel build job) means:
+  #   • The codename-detection cache is saved exactly once, avoiding the
+  #     "cache already exists" warnings that occur when N jobs compete.
+  #   • ALL versions are visible to preseed, so the newest PHP version's
+  #     codename becomes the primary tier and older codenames (e.g. Buster
+  #     for PHP 7.4, Bullseye for PHP 8.0) receive proper GLIBC compatibility
+  #     checking and get a downgraded code-server when the latest one does not
+  #     work on their glibc.  When preseed only sees a single old version it
+  #     designates that codename as primary and skips the compatibility check,
+  #     causing the GLIBC_2.34 error seen in CI.
+  # The bake-overrides JSON and pre-downloaded artifacts are both uploaded as
+  # workflow artifacts so each parallel build job can download them directly
+  # without re-running preseed.  Workflow artifacts are guaranteed to persist
+  # for the lifetime of the run; unlike the GHA preseed cache, they cannot be
+  # evicted mid-run.
+  detect:
+    name: Detect versions
     runs-on: ubuntu-latest
-    needs: [lint-yaml, lint-shell, lint-dockerfile, verify-extension, verify-code-server]
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      versions:     ${{ steps.versions.outputs.versions }}
+      has_versions: ${{ steps.versions.outputs.has_versions }}
+      ghcr_repo:    ${{ steps.ghcr.outputs.repo }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compute GHCR repository (lowercase)
+        id: ghcr
+        env:
+          REPO: ${{ github.repository }}
+        run: echo "repo=ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Detect PHP versions for build test
+        id: versions
+        run: |
+          versions_str=$(bash tests/detect-versions.sh | sort -V | tr '\n' ' ' | sed 's/ $//')
+          versions_json=$(printf '%s\n' $versions_str | jq -R -s -c '[split("\n")[] | select(length > 0)]')
+          echo "versions=${versions_json}" >> "$GITHUB_OUTPUT"
+          echo "versions_str=${versions_str}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${versions_str}" ]]; then
+            echo "has_versions=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_versions=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pre-seed build downloads
+        id: preseed
+        if: steps.versions.outputs.has_versions == 'true'
+        uses: ./.github/actions/preseed-downloads
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          versions: ${{ steps.versions.outputs.versions_str }}
+
+      - name: Upload preseed bake overrides
+        if: steps.versions.outputs.has_versions == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: preseed-bake-overrides
+          path: ${{ steps.preseed.outputs.bake_overrides_file }}
+          retention-days: 1
+
+      # Upload the flat pre-downloaded/ directory (code-server .deb files and
+      # Copilot Chat VSIX) as a workflow artifact so build jobs can download it
+      # directly.  Using an artifact (rather than the GHA preseed cache) is
+      # more reliable because artifacts are guaranteed to persist for the
+      # lifetime of the workflow run; the GHA cache can be evicted mid-run
+      # and a cache miss would silently produce an empty pre-downloaded/ dir.
+      - name: Upload preseed pre-downloaded artifacts
+        if: steps.versions.outputs.has_versions == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: preseed-pre-downloaded
+          path: ${{ steps.preseed.outputs.downloads_dir }}/pre-downloaded/
+          retention-days: 1
+
+  # One job per PHP version, all on linux/amd64.  Runs after lints and
+  # verification pass and after the detect job has produced the version list.
+  build:
+    name: Build and test PHP ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    needs: [lint-yaml, lint-shell, lint-dockerfile, verify-extension, verify-code-server, detect]
+    if: needs.detect.outputs.has_versions == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.detect.outputs.versions) }}
     permissions:
       contents: read
       packages: read
+      actions: read
     steps:
       - uses: actions/checkout@v6
 
@@ -71,28 +158,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Detect PHP versions for build test
-        id: versions
-        run: |
-          versions=$(bash tests/detect-versions.sh | sort -V | tr '\n' ' ' | xargs)
-          echo "versions=${versions}" >> "$GITHUB_OUTPUT"
-
-      - name: Pre-seed build downloads
-        id: preseed
-        uses: ./.github/actions/preseed-downloads
+      # Download the pre-seeded code-server .deb and Copilot Chat VSIX files
+      # that the detect job assembled and uploaded.  Using a workflow artifact
+      # (not the GHA preseed cache) guarantees these files are present for the
+      # lifetime of the run; a cache miss would silently produce an empty
+      # pre-downloaded/ directory and fail the Docker build.
+      - name: Download preseed pre-downloaded artifacts
+        uses: actions/download-artifact@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          versions:     ${{ steps.versions.outputs.versions }}
+          name: preseed-pre-downloaded
+          path: ${{ runner.temp }}/build-downloads/pre-downloaded
+
+      # Download the bake-overrides JSON generated by the detect job's preseed
+      # run.  It contains the correct code-server / Copilot Chat versions and
+      # SHA256 digests for every detected Debian codename, including the
+      # downgraded versions needed for older codenames (Buster / Bullseye).
+      - name: Download preseed bake overrides
+        uses: actions/download-artifact@v4
+        with:
+          name: preseed-bake-overrides
+          path: ${{ runner.temp }}
 
       - name: Build PHP images
         env:
-          CACHE_FROM_ENABLED:    true
-          DOWNLOADS_DIR:         ${{ steps.preseed.outputs.downloads_dir }}
-          BAKE_OVERRIDES_FILE:   ${{ steps.preseed.outputs.bake_overrides_file }}
-        run: bash tests/build-dockerfile.sh
+          CACHE_FROM_ENABLED:   true
+          GHCR_REPO:            ${{ needs.detect.outputs.ghcr_repo }}
+          PLATFORMS:            linux/amd64
+          DOWNLOADS_DIR:        ${{ runner.temp }}/build-downloads
+          BAKE_OVERRIDES_FILE:  ${{ runner.temp }}/preseed-bake-overrides.json
+        run: bash tests/build-dockerfile.sh --version ${{ matrix.version }}
 
       - name: Run PHP functional tests
-        run: bash tests/run-dockerfile.sh
+        run: bash tests/run-dockerfile.sh --version ${{ matrix.version }}
 
   verify-extension:
     name: Verify Copilot Chat VSIX
