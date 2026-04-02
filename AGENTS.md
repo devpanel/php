@@ -47,7 +47,7 @@ test.sh                       # Convenience wrapper: runs yaml/shell/dockerfile/
   workflows/
     docker-build-on-push.yml  # Triggered on push to main/develop; detects changed versions
     docker-build-all.yml      # Manual full rebuild (workflow_dispatch, no cache)
-    ci.yml                    # Linting and tests (push + pull_request)
+    test.yml                  # Linting and tests (push + pull_request)
   actions/
     build-php-images/         # Composite action: detect changed versions and run the Docker build
       action.yml
@@ -131,7 +131,7 @@ Baseline JSON files in `tests/baselines/` track pre-existing lint violations per
 #### Workflows
 - **`docker-build-on-push.yml`** — triggered on pushes to `main` or `develop`; uses `tests/detect-versions.sh` to determine which versions/stages are affected, then calls `.github/actions/build-php-images` with caching enabled.
 - **`docker-build-all.yml`** — manual `workflow_dispatch` trigger to rebuild all images without cache.
-- **`ci.yml`** — runs YAML, shell, and Dockerfile linting plus build/run tests on pushes and pull requests.
+- **`test.yml`** — runs YAML, shell, and Dockerfile linting plus build/run tests on pushes and pull requests.
 - Production images are tagged without suffix (e.g. `devpanel/php:8.3-base`); `develop` branch builds use the `-rc` suffix.
 - Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Optional: `GHCR_TOKEN` (falls back to `GITHUB_TOKEN` for GHCR pushes).
 
