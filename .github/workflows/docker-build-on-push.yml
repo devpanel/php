@@ -97,6 +97,7 @@ jobs:
         with:
           before_sha:          ${{ needs.prepare.outputs.before_sha }}
           after_sha:           ${{ github.sha }}
+          platforms_filter:    linux/amd64
           dockerhub_username:  ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token:     ${{ secrets.DOCKERHUB_TOKEN }}
           github_token:        ${{ secrets.GITHUB_TOKEN }}
