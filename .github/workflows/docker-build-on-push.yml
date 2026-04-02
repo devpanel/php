@@ -66,17 +66,7 @@ jobs:
             fi
           done <<< "$CANDIDATES"
 
-          BEFORE_SHA=""
-          if [[ -n "$LAST_SUCCESS_SHA" ]]; then
-            BEFORE_SHA="$LAST_SUCCESS_SHA"
-          else
-            # No prior successful run found whose commit is reachable from the
-            # current commit (e.g. first run ever, or after a force-push).
-            # Fall back to the push event's own before SHA.
-            BEFORE_SHA="${{ github.event.before }}"
-          fi
-
-          echo "before_sha=$BEFORE_SHA" >> "$GITHUB_OUTPUT"
+          echo "before_sha=$LAST_SUCCESS_SHA" >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
