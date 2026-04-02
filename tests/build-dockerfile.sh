@@ -92,6 +92,12 @@ if [[ "$PLATFORMS" == *","* || "$PLATFORMS" == *" "* ]]; then
   exit 1
 fi
 
+# Derive PLATFORM_KEY from the target platform so the test build uses the same
+# GHA/GHCR cache scopes as the CI build matrix job for the same platform (e.g.
+# "php83-base-linux-amd64" instead of the unkeyed "php83-base").  This lets the
+# test job hit the caches already populated by the corresponding build job.
+PLATFORM_KEY="${PLATFORMS//\//-}"
+
 # ---------------------------------------------------------------------------
 # Build using docker-bake.hcl in test mode
 # ---------------------------------------------------------------------------
@@ -105,6 +111,8 @@ fi
 #   GHCR_WRITABLE        false; registry cache write failures are non-fatal
 #                        (ignore-error=true).  GHA cache writes are unconditional
 #                        and unaffected by this flag.
+#   PLATFORM_KEY         Matches the key used by the build matrix job for this
+#                        platform so the test reads from the same cache scopes.
 #   DOWNLOADS_DIR        Path to a directory whose pre-downloaded/ subdirectory
 #                        contains pre-seeded artifacts.  When set by CI to a
 #                        runner-local directory populated by actions/cache@v5,
@@ -131,6 +139,7 @@ BAKE_ENV=(
   GHCR_REPO="$TEST_REPO"
   TAG_SUFFIX=""
   PLATFORMS="$PLATFORMS"
+  PLATFORM_KEY="$PLATFORM_KEY"
   "CACHE_FROM_ENABLED=${CACHE_FROM_ENABLED:-false}"
   GHCR_WRITABLE=false
 )

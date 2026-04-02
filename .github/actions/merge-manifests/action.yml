@@ -1,0 +1,363 @@
+name: Poll and merge platform manifests for one image
+description: >
+  Part of the parallel manifest-merge matrix.  Each instance is responsible
+  for exactly one Docker Hub image (VERSION + STAGE).
+
+  The action runs continuously in parallel with every per-platform build job.
+  On every polling cycle it fetches the full artifact list for the run once
+  and uses it for two purposes:
+
+  1. Digest artifacts ("digests-{VERSION}-{STAGE}-{platform_key}"): for each
+     new one it extracts the per-platform digest for this image, then issues a
+     single "docker buildx imagetools create" call that atomically replaces the
+     tag with a manifest list containing every newly available platform plus
+     any platforms still preserved from the previously published manifest.
+
+  2. Build-done markers ("build-done-{VERSION}-{platform_key}"): uploaded by
+     every build job when it finishes (success or failure).  When the count of
+     these markers equals total_platforms the merge loop exits, even if some
+     digest artifacts were never produced (e.g. builds that failed).
+
+  Batching multiple completions into one create call avoids unnecessary
+  intermediate manifest states and reduces Docker Hub API traffic.
+
+  Because every matrix instance writes to exactly one Docker Hub tag there
+  are no concurrent writes and therefore no race conditions.
+
+inputs:
+  version:
+    description: PHP version string (e.g. 8.3)
+    required: true
+  stage:
+    description: Image stage — one of base, secure, advance
+    required: true
+  repo:
+    description: Docker Hub repository (e.g. devpanel/php)
+    default: 'devpanel/php'
+  tag_suffix:
+    description: Image tag suffix appended to every tag (e.g. '' or '-rc')
+    required: true
+  total_platforms:
+    description: >
+      Number of distinct target platforms expected for the current image
+      (VERSION + STAGE). The action exits as soon as it has successfully
+      extracted and merged digests from this many matching
+      "digests-{VERSION}-{STAGE}-*" artifacts for the current workflow run,
+      or as soon as it has observed this many "build-done-{VERSION}-*"
+      markers indicating all per-platform build jobs have finished.
+    required: true
+  poll_interval_seconds:
+    description: Seconds to wait between polling cycles.
+    default: '60'
+  github_token:
+    description: >
+      Token used for GitHub API calls (list/download artifacts).
+      Requires actions:read permission.
+    required: true
+  run_id:
+    description: >
+      ID of the current GitHub Actions workflow run.
+      Pass github.run_id from the calling workflow.
+    required: true
+  repository:
+    description: >
+      Owner/repo slug of the current repository.
+      Pass github.repository from the calling workflow.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Poll and merge manifests
+      shell: bash
+      env:
+        VERSION:               ${{ inputs.version }}
+        STAGE:                 ${{ inputs.stage }}
+        REPO:                  ${{ inputs.repo }}
+        TAG_SUFFIX:            ${{ inputs.tag_suffix }}
+        TOTAL_PLATFORMS:       ${{ inputs.total_platforms }}
+        POLL_INTERVAL_SECONDS: ${{ inputs.poll_interval_seconds }}
+        GH_TOKEN:              ${{ inputs.github_token }}
+        RUN_ID:                ${{ inputs.run_id }}
+        GITHUB_REPO:           ${{ inputs.repository }}
+      run: |
+        set -euo pipefail
+
+        IMAGE="${REPO}:${VERSION}-${STAGE}${TAG_SUFFIX}"
+        KEY="${VERSION}-${STAGE}"
+
+        WORK_DIR="$(mktemp -d)"
+        trap 'rm -rf "${WORK_DIR}"' EXIT
+
+        # Each artifact name is recorded here after it is processed so that it
+        # is never downloaded or counted more than once across polling cycles.
+        PROCESSED_FILE="${WORK_DIR}/processed.txt"
+        touch "${PROCESSED_FILE}"
+
+        POLL_CYCLE=0
+
+        # Consecutive artifact-list API failure counter.  After this many
+        # back-to-back failures the loop aborts so the job fails instead of
+        # hanging forever (e.g. if the token lacks actions:read or the API is
+        # rate-limiting).
+        MAX_API_FAILURES=5
+        API_FAILURE_COUNT=0
+
+        # Running count of build-done markers seen for this VERSION.
+        # Incremented when a "build-done-{VERSION}-*" artifact is found.
+        # Once this equals TOTAL_PLATFORMS every per-platform build job has
+        # finished (success or failure) and the merge loop can exit.
+        BUILD_DONE_SEEN=0
+
+        # Running count of digests that were successfully extracted and merged.
+        # Only incremented when a digest is non-empty and sent to imagetools.
+        # Skipped artifacts (empty digest, missing file, download failure) are
+        # NOT counted here, so DIGEST_MERGED accurately reflects how many
+        # platforms have actually been incorporated into the manifest.
+        DIGEST_MERGED=0
+
+        echo "Watching for platform digests for ${IMAGE}" \
+             "(${TOTAL_PLATFORMS} platform(s) expected)..."
+
+        while true; do
+
+          POLL_CYCLE=$(( POLL_CYCLE + 1 ))
+
+          # ── Fetch all artifacts for this run in one API call ────────────
+          # Retrieve artifact names and ids in a single paginated request
+          # to minimise GitHub API traffic, then classify digest artifacts
+          # and build-done markers in shell below.
+          ARTIFACT_PREFIX="digests-${VERSION}-${STAGE}-"
+          BUILD_DONE_PREFIX="build-done-${VERSION}-"
+          if ALL_ARTIFACTS="$(gh api --paginate \
+            "repos/${GITHUB_REPO}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            --jq '.artifacts[]
+                  | [.name, (.id | tostring)]
+                  | join("\t")')"; then
+            API_FAILURE_COUNT=0
+          else
+            API_FAILURE_COUNT=$(( API_FAILURE_COUNT + 1 ))
+            echo "::warning::Artifact list API call failed (${API_FAILURE_COUNT}/${MAX_API_FAILURES} consecutive failures)."
+            if (( API_FAILURE_COUNT >= MAX_API_FAILURES )); then
+              echo "::error::Artifact list API call failed ${MAX_API_FAILURES} times in a row; aborting merge loop."
+              exit 1
+            fi
+            ALL_ARTIFACTS=""
+          fi
+
+          # Split into digest artifacts and build-done markers.
+          # Use shell glob matching (==) rather than grep regex so that dots
+          # and other metacharacters in VERSION are treated as literals.
+          ARTIFACT_LIST="$(
+            while IFS=$'\t' read -r aname aid; do
+              [[ -z "${aname}" ]] && continue
+              [[ "${aname}" == "${ARTIFACT_PREFIX}"* ]] || continue
+              printf '%s\t%s\n' "${aname}" "${aid}"
+            done <<< "${ALL_ARTIFACTS}"
+          )"
+          # Count any new build-done markers we haven't seen before.
+          while IFS=$'\t' read -r aname _aid; do
+            [[ -z "${aname}" ]] && continue
+            grep -qxF "${aname}" "${PROCESSED_FILE}" 2>/dev/null && continue
+            if [[ "${aname}" == "${BUILD_DONE_PREFIX}"* ]]; then
+              BUILD_DONE_SEEN=$(( BUILD_DONE_SEEN + 1 ))
+              echo "  Build-done marker received: ${aname} (${BUILD_DONE_SEEN}/${TOTAL_PLATFORMS})"
+              echo "${aname}" >> "${PROCESSED_FILE}"
+            fi
+          done <<< "${ALL_ARTIFACTS}"
+
+          # ── Collect every new artifact in this polling cycle ───────────
+          # "New" means not yet recorded in PROCESSED_FILE.
+          # All new artifacts are batched together so that a single
+          # imagetools create call handles however many platforms completed
+          # between this cycle and the previous one.
+          CYCLE_DIR="${WORK_DIR}/cycle"
+          rm -rf "${CYCLE_DIR}"
+          mkdir -p "${CYCLE_DIR}/platforms"
+          NEW_IN_CYCLE=0
+
+          while IFS=$'\t' read -r aname aid; do
+            [[ -z "${aname}" ]] && continue
+            grep -qxF "${aname}" "${PROCESSED_FILE}" 2>/dev/null && continue
+
+            # Artifact name format: digests-{VERSION}-{STAGE}-{platform_key}
+            # e.g. digests-8.3-base-linux-amd64
+            PREFIX="digests-${VERSION}-${STAGE}-"
+            platform_key="${aname#"${PREFIX}"}"   # e.g. linux-amd64
+
+            dl_dir="${CYCLE_DIR}/dl/${aname}"
+            mkdir -p "${dl_dir}"
+
+            # Download the artifact zip.  On any failure (network, API rate
+            # limit, corrupt zip) log a warning and leave the artifact
+            # unprocessed — it will be retried next polling cycle.
+            # Retries continue until either the download succeeds or the
+            # build-done marker signals that all builds have finished, at
+            # which point any remaining failures are warned and skipped.
+            DOWNLOAD_OK=false
+            if gh api \
+                 "repos/${GITHUB_REPO}/actions/artifacts/${aid}/zip" \
+                 > "${dl_dir}/artifact.zip" \
+               && unzip -q "${dl_dir}/artifact.zip" \
+                         -d "${dl_dir}"
+            then
+              DOWNLOAD_OK=true
+            fi
+
+            if [[ "${DOWNLOAD_OK}" == "true" ]]; then
+              digest_file="${dl_dir}/${platform_key}.json"
+              if [[ -f "${digest_file}" ]]; then
+                DIGEST="$(jq -r --arg k "${KEY}" '.[$k] // ""' "${digest_file}")"
+                if [[ -n "${DIGEST}" ]]; then
+                  # platform_key → digest, one file per platform in the batch
+                  printf '%s\t%s\n' "${platform_key}" "${DIGEST}" \
+                    > "${CYCLE_DIR}/platforms/${platform_key}.tsv"
+                  NEW_IN_CYCLE=$(( NEW_IN_CYCLE + 1 ))
+                  DIGEST_MERGED=$(( DIGEST_MERGED + 1 ))
+                  echo "  [${IMAGE}] ${platform_key//-/\/}: ${DIGEST}"
+                  echo "${aname}" >> "${PROCESSED_FILE}"
+                elif [[ "${BUILD_DONE_SEEN}" -ge "${TOTAL_PLATFORMS}" ]]; then
+                  echo "::warning::${aname}: digest file present but key" \
+                       "'${KEY}' has no value; all builds complete, skipping."
+                  echo "${aname}" >> "${PROCESSED_FILE}"
+                else
+                  echo "::warning::${aname}: digest file present but key" \
+                       "'${KEY}' has no value; will retry next cycle."
+                fi
+              elif [[ "${BUILD_DONE_SEEN}" -ge "${TOTAL_PLATFORMS}" ]]; then
+                echo "::warning::${aname}: downloaded artifact is missing" \
+                     "expected digest file ${platform_key}.json; all builds" \
+                     "complete, skipping."
+                echo "${aname}" >> "${PROCESSED_FILE}"
+              else
+                echo "::warning::${aname}: downloaded artifact is missing" \
+                     "expected digest file ${platform_key}.json; will retry" \
+                     "next cycle."
+              fi
+            else
+              echo "  Download failed for ${aname}; will retry next cycle."
+            fi
+          done <<< "${ARTIFACT_LIST}"
+
+          # ── When all builds are done, skip any artifacts that still failed ─
+          # Once every build-done marker has arrived no new digest artifacts
+          # will be uploaded.  Any artifact that still cannot be downloaded at
+          # this point is permanently inaccessible — warn and skip it so the
+          # loop can exit cleanly.
+          if [[ "${BUILD_DONE_SEEN}" -ge "${TOTAL_PLATFORMS}" ]]; then
+            while IFS=$'\t' read -r aname _aid; do
+              [[ -z "${aname}" ]] && continue
+              [[ "${aname}" != "${ARTIFACT_PREFIX}"* ]] && continue
+              grep -qxF "${aname}" "${PROCESSED_FILE}" 2>/dev/null && continue
+              echo "::warning::${aname}: all builds complete but artifact" \
+                   "could not be downloaded; skipping."
+              echo "${aname}" >> "${PROCESSED_FILE}"
+            done <<< "${ARTIFACT_LIST}"
+          fi
+
+          # ── Merge all new platforms in one imagetools create call ──────
+          if [[ ${NEW_IN_CYCLE} -gt 0 ]]; then
+            echo "Merging ${NEW_IN_CYCLE} new platform(s) into ${IMAGE}..."
+
+            REFS_FILE="${CYCLE_DIR}/refs.txt"
+            BATCH_PLAT_FILE="${CYCLE_DIR}/batch_platforms.txt"
+            > "${REFS_FILE}"
+            > "${BATCH_PLAT_FILE}"
+
+            for tsv in "${CYCLE_DIR}/platforms/"*.tsv; do
+              [[ -f "${tsv}" ]] || continue
+              platform_key="$(cut -f1 "${tsv}")"
+              digest="$(cut -f2 "${tsv}")"
+              echo "${REPO}@${digest}"      >> "${REFS_FILE}"
+              echo "${platform_key//-/\/}"  >> "${BATCH_PLAT_FILE}"
+            done
+
+            # Preserve every platform from the existing manifest that is NOT
+            # being replaced by the current batch, using variant-aware matching:
+            # - a batch entry without a variant (e.g. linux/arm64) replaces
+            #   every existing linux/arm64/* entry in the manifest
+            # - a batch entry with an explicit variant (e.g. linux/arm/v7)
+            #   replaces only that exact variant; other linux/arm/* variants
+            #   are preserved
+            EXISTING="$(docker buildx imagetools inspect \
+                          "${IMAGE}" --raw 2>/dev/null || true)"
+            if [[ -n "${EXISTING}" ]]; then
+              while IFS=$'\t' read -r p_os p_arch p_var e_digest; do
+                existing_base="${p_os}/${p_arch}"
+                if [[ -n "${p_var}" ]]; then
+                  existing_platform="${existing_base}/${p_var}"
+                else
+                  existing_platform="${existing_base}"
+                fi
+                # An existing entry is covered (and should NOT be preserved) if
+                # the batch contains:
+                #   - an entry without a variant matching os/arch (covers all
+                #     variants of that os/arch), OR
+                #   - an entry with the exact same os/arch/variant
+                if [[ -n "${e_digest}" ]] \
+                   && ! awk -F'/' -v base="${existing_base}" \
+                               -v plat="${existing_platform}" '
+                     {
+                       if (NF >= 3) {
+                         if ($1 "/" $2 "/" $3 == plat) { found=1; exit }
+                       } else {
+                         if ($1 "/" $2 == base) { found=1; exit }
+                       }
+                     }
+                     END { exit found ? 0 : 1 }
+                   ' "${BATCH_PLAT_FILE}"; then
+                  echo "${REPO}@${e_digest}" >> "${REFS_FILE}"
+                fi
+              done < <(echo "${EXISTING}" | jq -r \
+                '.manifests[]? |
+                 [(.platform.os // "linux"),
+                  (.platform.architecture // ""),
+                  (.platform.variant // ""),
+                  (.digest // "")] | @tsv')
+            fi
+
+            # Single imagetools create call for all refs in this batch
+            REFS=()
+            while IFS= read -r ref; do
+              [[ -n "${ref}" ]] && REFS+=("${ref}")
+            done < "${REFS_FILE}"
+
+            if [[ ${#REFS[@]} -gt 0 ]]; then
+              docker buildx imagetools create \
+                --tag "${IMAGE}" "${REFS[@]}"
+              echo "  Updated ${IMAGE} with ${#REFS[@]} platform ref(s)."
+            fi
+          fi
+
+          # ── Exit when all build jobs have signalled completion ──────────
+          # Check this before the DIGEST_MERGED exit so that the warning about
+          # missing digests is always emitted when applicable.
+          # Each per-platform build job uploads a "build-done-{VERSION}-*"
+          # marker on finish (success or failure).  When the count equals
+          # total_platforms every build for this version has finished and the
+          # merge loop can exit even if some digest artifacts are missing.
+          if [[ "${BUILD_DONE_SEEN}" -ge "${TOTAL_PLATFORMS}" ]]; then
+            echo "All ${TOTAL_PLATFORMS} build job(s) have signalled completion."
+            if [[ "${DIGEST_MERGED}" -lt "${TOTAL_PLATFORMS}" ]]; then
+              echo "::warning::Only ${DIGEST_MERGED}/${TOTAL_PLATFORMS} platform(s)" \
+                   "produced digest artifacts for ${IMAGE};" \
+                   "some builds may have failed."
+            fi
+            break
+          fi
+
+          # ── Exit when all expected platform digests have been successfully merged ─
+          # DIGEST_MERGED counts only digests that were fully extracted and sent
+          # to imagetools.  Skipped artifacts (empty digest, missing file, or
+          # failed download) are NOT counted, so this exit is only taken when
+          # every platform has genuinely contributed to the manifest.
+          if [[ "${DIGEST_MERGED}" -ge "${TOTAL_PLATFORMS}" ]]; then
+            echo "All ${TOTAL_PLATFORMS} platform(s) merged successfully for ${IMAGE}."
+            break
+          fi
+
+          echo "Cycle ${POLL_CYCLE}: polling again in ${POLL_INTERVAL_SECONDS}s" \
+               "(${DIGEST_MERGED}/${TOTAL_PLATFORMS} digests merged," \
+               "${BUILD_DONE_SEEN}/${TOTAL_PLATFORMS} builds done for ${IMAGE})..."
+          sleep "${POLL_INTERVAL_SECONDS}"
+        done

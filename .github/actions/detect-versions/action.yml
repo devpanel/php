@@ -1,0 +1,157 @@
+name: Detect PHP versions and build matrix
+description: >
+  Detects which PHP versions to build and emits a build matrix and merge matrix
+  for use in the CI pipeline.
+
+  When before_sha and after_sha are provided, only the PHP versions whose
+  source files changed between those two commits are included. Otherwise every
+  versioned directory is built.
+
+  The repository must be checked out by the calling job before this action
+  is invoked. Pass fetch-depth: 0 when before_sha/after_sha are used so that
+  the git history required by detect-versions.sh is available.
+
+inputs:
+  before_sha:
+    description: >
+      Commit SHA before the push. When provided together with after_sha, only
+      changed versions are detected. Omit for a full rebuild.
+    default: ''
+  after_sha:
+    description: >
+      Commit SHA after the push. When provided together with before_sha, only
+      changed versions are detected. Omit for a full rebuild.
+    default: ''
+  platforms_filter:
+    description: >
+      Comma-separated list of platforms to build
+      (e.g. "linux/amd64,linux/arm64").
+    required: true
+
+outputs:
+  versions:
+    description: Space-separated list of PHP versions to build.
+    value: ${{ steps.detect.outputs.versions }}
+  versions_base:
+    description: Space-separated list of versions where the base stage changed.
+    value: ${{ steps.detect.outputs.versions_base }}
+  versions_secure:
+    description: Space-separated list of versions where the secure stage changed.
+    value: ${{ steps.detect.outputs.versions_secure }}
+  latest_php_version:
+    description: The highest PHP version present in the repository.
+    value: ${{ steps.detect.outputs.latest_php_version }}
+  total_platforms:
+    description: Total number of distinct build platforms.
+    value: ${{ steps.detect.outputs.total_platforms }}
+  merge_matrix:
+    description: >
+      JSON array of {version, stage} objects — one entry per Docker Hub image
+      that needs a manifest merge.
+    value: ${{ steps.detect.outputs.merge_matrix }}
+  build_matrix:
+    description: >
+      JSON array of {version, platform, versions_base, versions_secure} objects
+      — one entry per PHP-version x platform combination.
+    value: ${{ steps.detect.outputs.build_matrix }}
+
+runs:
+  using: composite
+  steps:
+    - name: Detect versions and build matrix
+      id: detect
+      shell: bash
+      env:
+        BEFORE_SHA:      ${{ inputs.before_sha }}
+        AFTER_SHA:       ${{ inputs.after_sha }}
+        PLATFORMS:       ${{ inputs.platforms_filter }}
+      run: |
+        set -euo pipefail
+
+        LATEST_PHP_VERSION=""
+        while IFS= read -r VER; do
+          LATEST_PHP_VERSION="$VER"
+        done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*.[0-9]*' \
+                   | sed 's|./||' | sort -V)
+
+        if [[ -n "${BEFORE_SHA}" && -n "${AFTER_SHA}" ]]; then
+          VERSIONS_OUT=$(bash tests/detect-versions.sh \
+            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" | tr '\n' ' ' | xargs)
+          VERSIONS_BASE_OUT=$(bash tests/detect-versions.sh \
+            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage base \
+            | tr '\n' ' ' | xargs)
+          VERSIONS_SECURE_OUT=$(bash tests/detect-versions.sh \
+            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage secure \
+            | tr '\n' ' ' | xargs)
+        else
+          VERSIONS_OUT=$(bash tests/detect-versions.sh | tr '\n' ' ' | xargs)
+          VERSIONS_BASE_OUT="$VERSIONS_OUT"
+          VERSIONS_SECURE_OUT="$VERSIONS_OUT"
+        fi
+
+        echo "latest_php_version=${LATEST_PHP_VERSION}"     >> "$GITHUB_OUTPUT"
+        echo "versions=${VERSIONS_OUT}"                     >> "$GITHUB_OUTPUT"
+        echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
+        echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
+
+        # Parse configured platforms into an array, trimming whitespace and
+        # removing duplicates (duplicates would inflate TOTAL_PLATFORMS and
+        # produce colliding artifact names in the build matrix).
+        readarray -t PLATFORM_LIST < <(printf '%s\n' "${PLATFORMS}" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' | sort -u)
+        TOTAL_PLATFORMS="${#PLATFORM_LIST[@]}"
+
+        if [[ "${TOTAL_PLATFORMS}" -eq 0 ]]; then
+          echo "::error::No platforms configured. Provide at least one platform (e.g. linux/amd64,linux/arm64)."
+          exit 1
+        fi
+
+        if [[ -z "${VERSIONS_OUT}" ]]; then
+          echo "total_platforms=0" >> "$GITHUB_OUTPUT"
+          echo "merge_matrix=[]"   >> "$GITHUB_OUTPUT"
+          echo "build_matrix=[]"   >> "$GITHUB_OUTPUT"
+        else
+          echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
+
+          # Build merge matrix: one {version, stage} entry per Docker Hub image
+          # to be merged.  base/secure entries are included only for versions
+          # that actually changed at that stage.
+          MERGE_MATRIX="$(
+            {
+              for v in ${VERSIONS_OUT}; do
+                [[ " ${VERSIONS_BASE_OUT} " == *" ${v} "* ]] \
+                  && jq -nc --arg version "${v}" --arg stage "base" \
+                       '{"version":$version,"stage":$stage}'
+                [[ " ${VERSIONS_SECURE_OUT} " == *" ${v} "* ]] \
+                  && jq -nc --arg version "${v}" --arg stage "secure" \
+                       '{"version":$version,"stage":$stage}'
+                jq -nc --arg version "${v}" --arg stage "advance" \
+                  '{"version":$version,"stage":$stage}'
+              done
+            } | jq -sc '.'
+          )"
+          echo "merge_matrix=${MERGE_MATRIX}" >> "$GITHUB_OUTPUT"
+
+          # Build build matrix: one {version, platform, versions_base,
+          # versions_secure} entry per PHP-version x platform pair so that
+          # each job builds exactly one version on one platform and can upload
+          # per-image digest artifacts without waiting for other combinations.
+          BUILD_MATRIX="$(
+            {
+              for p in "${PLATFORM_LIST[@]}"; do
+                for v in ${VERSIONS_OUT}; do
+                  vb=$( [[ " ${VERSIONS_BASE_OUT} " == *" ${v} "* ]] \
+                          && echo "${v}" || echo "" )
+                  vs=$( [[ " ${VERSIONS_SECURE_OUT} " == *" ${v} "* ]] \
+                          && echo "${v}" || echo "" )
+                  jq -nc \
+                    --arg version "${v}" \
+                    --arg platform "${p}" \
+                    --arg versions_base "${vb}" \
+                    --arg versions_secure "${vs}" \
+                    '{"version":$version,"platform":$platform,"versions_base":$versions_base,"versions_secure":$versions_secure}'
+                done
+              done
+            } | jq -sc '.'
+          )"
+          echo "build_matrix=${BUILD_MATRIX}" >> "$GITHUB_OUTPUT"
+        fi

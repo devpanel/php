@@ -1,6 +1,8 @@
 {
-  "./.github/actions/build-php-images/action.yml:colons": 14,
+  "./.github/actions/build-php-images/action.yml:colons": 57,
+  "./.github/actions/detect-versions/action.yml:colons": 3,
+  "./.github/actions/merge-manifests/action.yml:colons": 8,
   "./.github/workflows/ci.yml:colons": 4,
-  "./.github/workflows/docker-build-all.yml:colons": 4,
-  "./.github/workflows/docker-build-on-push.yml:colons": 6
+  "./.github/workflows/docker-build-all.yml:colons": 26,
+  "./.github/workflows/docker-build-on-push.yml:colons": 29
 }

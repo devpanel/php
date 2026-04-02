@@ -79,6 +79,21 @@ variable "CACHE_FROM_ENABLED"            { default = "true"                    }
 # never abort due to a GHCR write failure.
 variable "GHCR_WRITABLE"                { default = "false"                   }
 variable "PLATFORMS"                     { default = "linux/amd64,linux/arm64" }
+# PUSH_BY_DIGEST: when "true" final images are pushed by content-hash with no
+# tag.  A separate manifest-merge step then creates / updates the tagged
+# multi-arch manifest.  Intermediate targets (downloader, php-ext, secure-int)
+# are unaffected; they always push to their GHCR tags.
+# Default is "false" so that local builds and test runs (using --load) work
+# without needing a real registry.  The build-php-images CI action always sets
+# this to "true" to enable the progressive-manifest merge pipeline.
+variable "PUSH_BY_DIGEST"               { default = "false"                   }
+# PLATFORM_KEY: when non-empty, cache scopes and GHCR cache refs are suffixed
+# with "-${PLATFORM_KEY}" to isolate each platform's GHA/GHCR cache entries.
+# This prevents cache thrashing when multiple per-platform jobs for the same PHP
+# version run concurrently (e.g. amd64 + arm64 in the build matrix).  Set by
+# build-php-images from inputs.platform (e.g. "linux-amd64").  Defaults to ""
+# so that local multi-platform builds share a single cache entry as before.
+variable "PLATFORM_KEY"                  { default = ""                        }
 # Versions using Debian 11 / mod_security 2.9.3 that require the
 # REQUEST-922-MULTIPART-ATTACK rule to be removed.
 variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
@@ -95,6 +110,14 @@ variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
 function "ver_key" {
   params = [v]
   result = replace(v, ".", "_")
+}
+
+# plat_sfx: returns "-${PLATFORM_KEY}" when PLATFORM_KEY is set, "" otherwise.
+# Appended to cache scope names and GHCR cache refs to keep each platform's
+# GHA / GHCR cache entries separate when the build matrix runs one job per platform.
+function "plat_sfx" {
+  params = []
+  result = PLATFORM_KEY != "" ? "-${PLATFORM_KEY}" : ""
 }
 
 # should_push: true if version v is listed in the space-separated stage_versions
@@ -205,8 +228,8 @@ target "php-downloader" {
   inherits   = ["_downloader-common"]
   args       = { PHP_VERSION = version }
   tags       = ["${GHCR_REPO}:${version}-downloader${TAG_SUFFIX}"]
-  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-downloader${TAG_SUFFIX}", "php${ver_key(version)}-downloader")
-  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-downloader${TAG_SUFFIX}", "php${ver_key(version)}-downloader")
+  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-downloader${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-downloader${plat_sfx()}")
+  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-downloader${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-downloader${plat_sfx()}")
 }
 
 # ─── Common php-ext intermediates (pushed to GHCR, NOT pushed to Docker Hub) ─
@@ -239,8 +262,8 @@ target "php-php-ext" {
     common-downloader = "target:php${ver_key(version)}-downloader"
   }
   tags       = ["${GHCR_REPO}:${version}-php-ext${TAG_SUFFIX}"]
-  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-php-ext${TAG_SUFFIX}", "php${ver_key(version)}-php-ext")
-  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-php-ext${TAG_SUFFIX}", "php${ver_key(version)}-php-ext")
+  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-php-ext${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-php-ext${plat_sfx()}")
+  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-php-ext${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-php-ext${plat_sfx()}")
 }
 
 # ─── Base final images ────────────────────────────────────────────────────────
@@ -267,9 +290,13 @@ target "php-base" {
     common-downloader = "target:php${ver_key(version)}-downloader"
     common            = "./base"
   }
-  tags       = should_push(VERSIONS_BASE, version) ? ["${REPO}:${version}-base${TAG_SUFFIX}"] : []
-  cache-from = cache_from("php${ver_key(version)}-base")
-  cache-to   = cache_to("php${ver_key(version)}-base")
+  # Normal mode (default): push directly to the named tag on Docker Hub.
+  # Digest mode (CI): push by content-hash only (no tag); a separate merge
+  # step creates / updates the tagged multi-arch manifest list.
+  tags   = PUSH_BY_DIGEST != "true" && should_push(VERSIONS_BASE, version) ? ["${REPO}:${version}-base${TAG_SUFFIX}"] : []
+  output = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_BASE, version) ? ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  cache-from = cache_from("php${ver_key(version)}-base${plat_sfx()}")
+  cache-to   = cache_to("php${ver_key(version)}-base${plat_sfx()}")
 }
 
 # ─── Secure intermediate targets (pushed to GHCR, NOT pushed to Docker Hub) ──
@@ -293,8 +320,8 @@ target "php-secure-int" {
   inherits = ["_secure-int-common"]
   contexts = { base-image = "target:php${ver_key(version)}-base" }
   tags       = ["${GHCR_REPO}:${version}-secure-int${TAG_SUFFIX}"]
-  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-secure-int${TAG_SUFFIX}", "php${ver_key(version)}-secure-int")
-  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-secure-int${TAG_SUFFIX}", "php${ver_key(version)}-secure-int")
+  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-secure-int${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-secure-int${plat_sfx()}")
+  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-secure-int${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-secure-int${plat_sfx()}")
 }
 
 # ─── Secure final images ──────────────────────────────────────────────────────
@@ -319,9 +346,13 @@ target "php-secure" {
   dockerfile = "Dockerfile"
   context    = contains(split(" ", VERSIONS_NEEDING_MULTIPART_FIX), version) ? "${version}/secure" : "secure"
   contexts   = { secure-intermediate = "target:php${ver_key(version)}-secure-int" }
-  tags       = should_push(VERSIONS_SECURE, version) ? ["${REPO}:${version}-secure${TAG_SUFFIX}"] : []
-  cache-from = cache_from("php${ver_key(version)}-secure")
-  cache-to   = cache_to("php${ver_key(version)}-secure")
+  # Normal mode (default): push directly to the named tag on Docker Hub.
+  # Digest mode (CI): push by content-hash only (no tag); a separate merge
+  # step creates / updates the tagged multi-arch manifest list.
+  tags   = PUSH_BY_DIGEST != "true" && should_push(VERSIONS_SECURE, version) ? ["${REPO}:${version}-secure${TAG_SUFFIX}"] : []
+  output = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_SECURE, version) ? ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  cache-from = cache_from("php${ver_key(version)}-secure${plat_sfx()}")
+  cache-to   = cache_to("php${ver_key(version)}-secure${plat_sfx()}")
 }
 
 # ─── Advance final images ─────────────────────────────────────────────────────
@@ -341,7 +372,11 @@ target "php-advance" {
   name     = "php${ver_key(version)}-advance"
   inherits = ["_advance-common"]
   contexts = { base-image = "target:php${ver_key(version)}-secure" }
-  tags     = ["${REPO}:${version}-advance${TAG_SUFFIX}"]
-  cache-from = cache_from("php${ver_key(version)}-advance")
-  cache-to   = cache_to("php${ver_key(version)}-advance")
+  # Normal mode (default): push directly to the named tag on Docker Hub.
+  # Digest mode (CI): push by content-hash only (no tag); a separate merge
+  # step creates / updates the tagged multi-arch manifest list.
+  tags   = PUSH_BY_DIGEST != "true" ? ["${REPO}:${version}-advance${TAG_SUFFIX}"] : []
+  output = PUSH_BY_DIGEST == "true" ? ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  cache-from = cache_from("php${ver_key(version)}-advance${plat_sfx()}")
+  cache-to   = cache_to("php${ver_key(version)}-advance${plat_sfx()}")
 }

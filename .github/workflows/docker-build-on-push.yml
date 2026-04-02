@@ -10,6 +10,11 @@ concurrency:
   group: docker-build-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Comma-separated list of platforms to build.  Override via the
+  # PLATFORMS repository variable (Settings → Variables → Actions).
+  PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -68,27 +73,145 @@ jobs:
 
           echo "before_sha=$LAST_SUCCESS_SHA" >> "$GITHUB_OUTPUT"
 
-  build:
+  # ── Detect which versions changed and which platforms to target ─────────────
+  # Runs after prepare so that before_sha is available, and its outputs drive
+  # both the per-platform build matrix and the merge job.
+  detect:
     needs: prepare
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+    outputs:
+      versions:           ${{ steps.detect.outputs.versions }}
+      versions_base:      ${{ steps.detect.outputs.versions_base }}
+      versions_secure:    ${{ steps.detect.outputs.versions_secure }}
+      latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
+      tag_suffix:         ${{ steps.tag-suffix.outputs.tag_suffix }}
+      before_sha:         ${{ needs.prepare.outputs.before_sha }}
+      # Total number of distinct platforms — used by each merge job to know
+      # when all per-platform digest artifacts have been collected.
+      total_platforms:    ${{ steps.detect.outputs.total_platforms }}
+      # JSON array of {version, stage} objects — one entry per Docker Hub
+      # image that needs a manifest merge.  Each entry becomes one parallel
+      # merge job so all images are merged concurrently with no race
+      # conditions (every job owns exactly one tag).
+      merge_matrix:       ${{ steps.detect.outputs.merge_matrix }}
+      # JSON array of {version, platform, versions_base, versions_secure}
+      # objects — one entry per PHP-version × platform combination.  Each
+      # entry becomes one parallel build job that builds one version on one
+      # platform and uploads per-image digest artifacts immediately.
+      build_matrix:       ${{ steps.detect.outputs.build_matrix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          # Full history is needed when before_sha/after_sha are provided so
-          # that git diff can compare before_sha..after_sha.
           fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
+
+      - name: Compute tag suffix
+        id: tag-suffix
+        run: |
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            echo "tag_suffix=" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF}" == "refs/heads/develop" ]]; then
+            echo "tag_suffix=-rc" >> "$GITHUB_OUTPUT"
+          else
+            sanitized_ref="$(printf '%s' "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
+            echo "tag_suffix=-${sanitized_ref}" >> "$GITHUB_OUTPUT"
+          fi
+        shell: bash
+
+      - name: Detect versions
+        id: detect
+        uses: ./.github/actions/detect-versions
+        with:
+          before_sha:      ${{ needs.prepare.outputs.before_sha }}
+          after_sha:       ${{ github.sha }}
+          platforms_filter: ${{ env.PLATFORMS }}
+
+  # ── Per-version-platform builds (run in parallel) ──────────────────────────
+  # One job per PHP version × platform pair.  Each job builds all stages
+  # (base / secure / advance) for that single version on that single platform,
+  # then uploads one digest artifact per stage immediately after the bake
+  # step completes.  The merge job picks up those artifacts as they arrive and
+  # assembles the tagged multi-arch manifests.
+  build:
+    needs: detect
+    if: needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != ''
+    name: build (${{ matrix.version }}, ${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect.outputs.build_matrix) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      actions:  write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: ${{ needs.detect.outputs.before_sha != '' && '0' || '1' }}
 
       - name: Build PHP images
         uses: ./.github/actions/build-php-images
         with:
-          before_sha:          ${{ needs.prepare.outputs.before_sha }}
-          after_sha:           ${{ github.sha }}
-          platforms_filter: linux/amd64
-          dockerhub_username:  ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token:     ${{ secrets.DOCKERHUB_TOKEN }}
-          github_token:        ${{ secrets.GITHUB_TOKEN }}
-          ghcr_token:          ${{ secrets.GHCR_TOKEN }}
+          version:            ${{ matrix.version }}
+          versions_base:      ${{ matrix.versions_base }}
+          versions_secure:    ${{ matrix.versions_secure }}
+          tag_suffix:         ${{ needs.detect.outputs.tag_suffix }}
+          platform:           ${{ matrix.platform }}
+          repo:               ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token:       ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token:         ${{ secrets.GHCR_TOKEN }}
+
+  # ── Parallel manifest merge matrix ──────────────────────────────────────────
+  # One job per Docker Hub image (version × stage).  All jobs start as soon as
+  # detect finishes and run fully in parallel with every build job and with
+  # each other.
+  #
+  # Each job polls for "digests-*" artifacts from the build jobs.  Whenever
+  # one or more new platform digests arrive in the same polling cycle they are
+  # batched into a single "docker buildx imagetools create" call, preserving
+  # any platform still missing from the current batch via the previously
+  # published Docker Hub manifest.
+  #
+  # Because every job writes to exactly one Docker Hub tag there are no
+  # concurrent writes and therefore no race conditions.
+  merge:
+    needs: detect
+    if: needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect.outputs.merge_matrix) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions:  read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Poll and merge platform manifests
+        uses: ./.github/actions/merge-manifests
+        with:
+          version:          ${{ matrix.version }}
+          stage:            ${{ matrix.stage }}
+          repo:             ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
+          tag_suffix:       ${{ needs.detect.outputs.tag_suffix }}
+          total_platforms:  ${{ needs.detect.outputs.total_platforms }}
+          github_token:     ${{ secrets.GITHUB_TOKEN }}
+          run_id:           ${{ github.run_id }}
+          repository:       ${{ github.repository }}
