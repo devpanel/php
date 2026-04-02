@@ -1,36 +1,42 @@
-name: Detect versions and build PHP images
+name: Build PHP images
 description: >
-  Detects which PHP versions to build (and which platforms to target), then
-  builds and pushes the images to Docker Hub and GHCR.
-
-  When before_sha and after_sha are provided, only the PHP versions whose
-  source files changed between those two commits are built.  Otherwise every
-  versioned directory is built.
+  Builds and pushes Docker images for a single PHP version on a single platform
+  to Docker Hub and GHCR, then uploads per-stage digest artifacts.
 
   The repository must be checked out by the calling job before this action
-  is invoked.  Pass fetch-depth: 0 when before_sha/after_sha are used so
-  that the git history required by detect-versions.sh is available.
+  is invoked.
 
 inputs:
-  before_sha:
+  version:
+    description: PHP version to build (e.g. "8.3").
+    required: true
+  versions_base:
     description: >
-      Commit SHA before the push.  When provided together with after_sha,
-      only changed versions are built.
+      Pass the version string to push the base image, or empty to skip.
     default: ''
-  after_sha:
+  versions_secure:
     description: >
-      Commit SHA after the push.  When provided together with before_sha,
-      only changed versions are built.
+      Pass the version string to push the secure image, or empty to skip.
     default: ''
+  tag_suffix:
+    description: >
+      Docker image tag suffix (empty for main, "-rc" for develop, "-BRANCH"
+      for other branches).
+    required: true
   cache_from_enabled:
     description: Whether to read from cache (set to 'false' for a forced full rebuild)
     default: 'true'
-  platforms_filter:
+  platform:
     description: >
-      Optional comma-separated list of platforms (e.g. "linux/amd64").
-      When provided, the build is restricted to platforms that appear in
-      both the auto-detected list and this filter.
-    default: 'linux/amd64,linux/arm64'
+      The single platform to build on (e.g. "linux/amd64").  Each matrix job
+      passes exactly one platform here so that per-platform digest artifacts
+      can be uploaded and merged independently.
+    required: true
+  repo:
+    description: >
+      Docker Hub repository to push images to (e.g. "devpanel/php").
+      Must match the repo used by the corresponding merge-manifests call.
+    default: 'devpanel/php'
   dockerhub_username:
     description: Docker Hub username for image push authentication.
     required: true
@@ -53,126 +59,8 @@ inputs:
 runs:
   using: composite
   steps:
-    # ── Detect versions and platforms ────────────────────────────────────────
-    - name: Detect versions and platforms
-      id: detect
-      shell: bash
-      env:
-        BEFORE_SHA: ${{ inputs.before_sha }}
-        AFTER_SHA:  ${{ inputs.after_sha }}
-        PLATFORMS_FILTER: ${{ inputs.platforms_filter }}
-        REF:        ${{ github.ref }}
-        REF_NAME:   ${{ github.ref_name }}
-      run: |
-        set -euo pipefail
-
-        if [[ "${REF}" == "refs/heads/main" ]]; then
-          TAG_SUFFIX=""
-        elif [[ "${REF}" == "refs/heads/develop" ]]; then
-          TAG_SUFFIX="-rc"
-        else
-          TAG_SUFFIX="-${REF_NAME//\//-}"
-        fi
-
-        # Collect all versioned directories (numeric names), sorted by version.
-        LATEST_PHP_VERSION=""
-        while IFS= read -r VER; do
-          LATEST_PHP_VERSION="$VER"
-        done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*.[0-9]*' \
-                   | sed 's|./||' | sort -V)
-
-        if [[ -n "${BEFORE_SHA}" && -n "${AFTER_SHA}" ]]; then
-          # Delegate version detection to the shared script so that the same
-          # logic is used in CI and in the local test scripts.
-          VERSIONS_OUT=$(bash tests/detect-versions.sh \
-            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" | tr '\n' ' ' | xargs)
-          VERSIONS_BASE_OUT=$(bash tests/detect-versions.sh \
-            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage base | tr '\n' ' ' | xargs)
-          VERSIONS_SECURE_OUT=$(bash tests/detect-versions.sh \
-            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage secure | tr '\n' ' ' | xargs)
-        else
-          VERSIONS_OUT=$(bash tests/detect-versions.sh | tr '\n' ' ' | xargs)
-          # No SHA range — full rebuild: push all stages for all versions.
-          VERSIONS_BASE_OUT="$VERSIONS_OUT"
-          VERSIONS_SECURE_OUT="$VERSIONS_OUT"
-        fi
-
-        echo "tag_suffix=${TAG_SUFFIX}"                     >> "$GITHUB_OUTPUT"
-        echo "latest_php_version=${LATEST_PHP_VERSION}"     >> "$GITHUB_OUTPUT"
-        echo "versions=${VERSIONS_OUT}"                     >> "$GITHUB_OUTPUT"
-        echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
-        echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
-
-        # If no versions were selected for build, skip platform detection/filtering.
-        PLATFORMS_OUT=""
-        if [[ -z "$VERSIONS_OUT" ]]; then
-          echo "No PHP versions selected for build; skipping platform detection and filtering."
-        else
-          # Determine build platforms by inspecting every PHP base image
-          # manifest and keeping only the platforms supported by all versions.
-          PLATFORMS_INTERSECT=""
-          while IFS= read -r VER; do
-            PHP_MANIFEST=$(docker manifest inspect "php:${VER}-apache" 2>/dev/null || echo "")
-            VER_PLATFORMS=""
-            if [[ -n "$PHP_MANIFEST" ]]; then
-              VER_PLATFORMS=$(echo "$PHP_MANIFEST" \
-                | jq -r '.manifests[].platform | select(.os=="linux") | "\(.os)/\(.architecture)\(if .variant and .variant!="" then "/"+.variant else "" end)"' \
-                | sort | tr '\n' ',' | sed 's/,$//')
-            fi
-            # Skip versions whose manifest is unavailable.
-            [[ -z "$VER_PLATFORMS" ]] && continue
-            if [[ -z "$PLATFORMS_INTERSECT" ]]; then
-              PLATFORMS_INTERSECT="$VER_PLATFORMS"
-            else
-              # Keep only platforms present in both sets.
-              PLATFORMS_INTERSECT=$(comm -12 \
-                <(echo "$PLATFORMS_INTERSECT" | tr ',' '\n' | sort) \
-                <(echo "$VER_PLATFORMS"       | tr ',' '\n' | sort) \
-                | tr '\n' ',' | sed 's/,$//')
-            fi
-          done < <(echo "$VERSIONS_OUT" | tr ' ' '\n' | grep -v '^$')
-
-          # If versions were selected but no platforms were detected at all, fail with a clear error.
-          if [[ -z "$PLATFORMS_INTERSECT" ]]; then
-            echo "::error::Failed to detect any platforms for the selected PHP versions. 'docker manifest inspect' did not return a usable manifest for any candidate image."
-            exit 1
-          fi
-
-          PLATFORMS_OUT="$PLATFORMS_INTERSECT"
-
-          # Apply optional platforms_filter: keep detected platforms where the
-          # detected entry equals or starts with a filter entry (e.g. the filter
-          # value "linux/arm64" matches the manifest entry "linux/arm64/v8").
-          if [[ -n "${PLATFORMS_FILTER}" ]]; then
-            FILTERED_LIST=()
-            while IFS= read -r FILTER_PLAT; do
-              while IFS= read -r DETECTED_PLAT; do
-                if [[ "$DETECTED_PLAT" == "$FILTER_PLAT" || "$DETECTED_PLAT" == "$FILTER_PLAT/"* ]]; then
-                  FILTERED_LIST+=("$DETECTED_PLAT")
-                fi
-              done < <(echo "$PLATFORMS_OUT" | tr ',' '\n')
-            done < <(echo "${PLATFORMS_FILTER}" | tr ',' '\n')
-            PLATFORMS_OUT=$(printf '%s\n' "${FILTERED_LIST[@]+"${FILTERED_LIST[@]}"}" \
-              | sort -u | tr '\n' ',' | sed 's/,$//')
-            if [[ -z "$PLATFORMS_OUT" ]]; then
-              echo "::error::No detected platforms matched platforms_filter '${PLATFORMS_FILTER}'. Detected: ${PLATFORMS_INTERSECT}"
-              exit 1
-            fi
-          fi
-        fi
-
-        echo "platforms=${PLATFORMS_OUT}" >> "$GITHUB_OUTPUT"
-
-    # ── Build steps (skipped when no versions were detected) ─────────────────
-    - name: Login to Docker Hub
-      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
-      uses: docker/login-action@v4
-      with:
-        username: ${{ inputs.dockerhub_username }}
-        password: ${{ inputs.dockerhub_token }}
-
+    # ── Build steps ──────────────────────────────────────────────────────────
     - name: Compute GHCR repository (lowercase)
-      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
       id: ghcr
       shell: bash
       env:
@@ -180,7 +68,6 @@ runs:
       run: echo "repo=ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
     - name: Login to GitHub Container Registry
-      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
       uses: docker/login-action@v4
       with:
         registry: ghcr.io
@@ -188,7 +75,6 @@ runs:
         password: ${{ inputs.ghcr_token || inputs.github_token }}
 
     - name: Check GHCR write access
-      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
       id: check-ghcr
       shell: bash
       env:
@@ -415,30 +301,76 @@ runs:
         fi
 
     - name: Set up QEMU
-      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
       uses: docker/setup-qemu-action@v4
 
     - name: Set up Docker Buildx
-      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
       uses: docker/setup-buildx-action@v4
 
     - name: Pre-seed build downloads
-      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
       id: preseed
       uses: ./.github/actions/preseed-downloads
       with:
         github_token: ${{ inputs.github_token }}
-        versions:     ${{ steps.detect.outputs.versions }}
+        versions:     ${{ inputs.version }}
+        dockerhub_username: ${{ inputs.dockerhub_username }}
+        dockerhub_token: ${{ inputs.dockerhub_token }}
 
-    - name: Build and push images
-      if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
+    # Docker Hub login is intentionally deferred until after pre-seeding so
+    # that any docker pull in the preseed step is unauthenticated (anonymous
+    # IP-based quota) and does not consume the per-account authenticated-pull
+    # quota (200 pulls/6 h) shared across all parallel build jobs.
+    - name: Login to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ inputs.dockerhub_username }}
+        password: ${{ inputs.dockerhub_token }}
+
+    - name: Validate single-platform input
+      id: platform
+      shell: bash
+      env:
+        PLATFORM: ${{ inputs.platform }}
+        VERSION:  ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        platform_trimmed="$(printf '%s' "${PLATFORM}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        if [[ -z "${platform_trimmed}" ]]; then
+          echo "::error::No platform was selected for per-platform digest extraction."
+          exit 1
+        fi
+        if [[ "${platform_trimmed}" == *,* ]]; then
+          echo "::error::Expected exactly one platform for per-platform digest extraction, but got '${PLATFORM}'. Use separate per-platform builds."
+          exit 1
+        fi
+        if [[ "${platform_trimmed}" =~ [[:space:]] ]]; then
+          echo "::error::Platform must not contain whitespace or newlines. Got '${PLATFORM}'."
+          exit 1
+        fi
+        echo "platform_key=${platform_trimmed//\//-}" >> "$GITHUB_OUTPUT"
+        echo "version=${VERSION}"                     >> "$GITHUB_OUTPUT"
+
+    # ── Build each stage separately ───────────────────────────────────────────────
+    # Stages are built sequentially (base → secure → advance).  Each stage's
+    # digest artifact is uploaded immediately after that stage's bake completes,
+    # so the merge job for each stage can start as soon as its image is ready —
+    # without waiting for later stages to finish building.
+    # Each bake call reuses the GHA / GHCR layer cache from the previous call.
+    # To avoid re-pushing earlier stages, VERSIONS_BASE / VERSIONS_SECURE are
+    # set only in the bake step that actually publishes that stage.
+
+    - name: Build base image
+      id: bake-base
+      if: inputs.versions_base != ''
       uses: docker/bake-action@v7
       env:
-        TAG_SUFFIX:                  ${{ steps.detect.outputs.tag_suffix }}
-        VERSIONS:                    ${{ steps.detect.outputs.versions }}
-        VERSIONS_BASE:               ${{ steps.detect.outputs.versions_base }}
-        VERSIONS_SECURE:             ${{ steps.detect.outputs.versions_secure }}
-        PLATFORMS:                   ${{ steps.detect.outputs.platforms }}
+        TAG_SUFFIX:                  ${{ inputs.tag_suffix }}
+        VERSIONS:                    ${{ inputs.version }}
+        VERSIONS_BASE:               ${{ inputs.versions_base }}
+        VERSIONS_SECURE:             ''
+        PLATFORMS:                   ${{ inputs.platform }}
+        PLATFORM_KEY:                ${{ steps.platform.outputs.platform_key }}
+        REPO:                        ${{ inputs.repo }}
+        PUSH_BY_DIGEST:              'true'
         CACHE_FROM_ENABLED:          ${{ inputs.cache_from_enabled }}
         GHCR_REPO:                   ${{ steps.ghcr.outputs.repo }}
         GHCR_WRITABLE:               ${{ steps.check-ghcr.outputs.writable }}
@@ -449,4 +381,194 @@ runs:
         files: |
           docker-bake.hcl
           ${{ steps.preseed.outputs.bake_overrides_file }}
-        push:  true
+        targets:       php-base
+
+    - name: Extract base digest
+      id: base-digest
+      if: inputs.versions_base != '' && steps.bake-base.outcome == 'success'
+      shell: bash
+      env:
+        PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
+        VERSION:      ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        VER_KEY="${VERSION//./_}"
+        mkdir -p /tmp/digests/base
+        DIGEST=$(jq -r --arg t "php${VER_KEY}-base" '.[$t]["containerimage.digest"] // ""' \
+          - <<'__BAKE_METADATA__'
+        ${{ steps.bake-base.outputs.metadata }}
+        __BAKE_METADATA__
+        )
+        if [[ -n "${DIGEST}" ]]; then
+          jq -n --arg k "${VERSION}-base" --arg d "${DIGEST}" '{($k): $d}' \
+            > "/tmp/digests/base/${PLATFORM_KEY}.json"
+          echo "  ${VERSION}-base: ${DIGEST}"
+          echo "has_base=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "  ${VERSION}-base: no digest (stage not pushed for this version)"
+          echo "has_base=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload base digest artifact
+      if: steps.base-digest.outputs.has_base == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name:              digests-${{ steps.platform.outputs.version }}-base-${{ steps.platform.outputs.platform_key }}
+        path:              /tmp/digests/base/${{ steps.platform.outputs.platform_key }}.json
+        if-no-files-found: error
+        retention-days:    1
+        overwrite: true
+
+    - name: Build secure image
+      id: bake-secure
+      if: inputs.versions_secure != ''
+      uses: docker/bake-action@v7
+      env:
+        TAG_SUFFIX:                  ${{ inputs.tag_suffix }}
+        VERSIONS:                    ${{ inputs.version }}
+        VERSIONS_BASE:               ''
+        VERSIONS_SECURE:             ${{ inputs.versions_secure }}
+        PLATFORMS:                   ${{ inputs.platform }}
+        PLATFORM_KEY:                ${{ steps.platform.outputs.platform_key }}
+        REPO:                        ${{ inputs.repo }}
+        PUSH_BY_DIGEST:              'true'
+        CACHE_FROM_ENABLED:          ${{ inputs.cache_from_enabled }}
+        GHCR_REPO:                   ${{ steps.ghcr.outputs.repo }}
+        GHCR_WRITABLE:               ${{ steps.check-ghcr.outputs.writable }}
+        DOWNLOADS_DIR:               ${{ steps.preseed.outputs.downloads_dir }}
+        BUILDX_BAKE_ENTITLEMENTS_FS: 0
+      with:
+        source: .
+        files: |
+          docker-bake.hcl
+          ${{ steps.preseed.outputs.bake_overrides_file }}
+        targets:       php-secure
+
+    - name: Extract secure digest
+      id: secure-digest
+      if: inputs.versions_secure != '' && steps.bake-secure.outcome == 'success'
+      shell: bash
+      env:
+        PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
+        VERSION:      ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        VER_KEY="${VERSION//./_}"
+        mkdir -p /tmp/digests/secure
+        DIGEST=$(jq -r --arg t "php${VER_KEY}-secure" '.[$t]["containerimage.digest"] // ""' \
+          - <<'__BAKE_METADATA__'
+        ${{ steps.bake-secure.outputs.metadata }}
+        __BAKE_METADATA__
+        )
+        if [[ -n "${DIGEST}" ]]; then
+          jq -n --arg k "${VERSION}-secure" --arg d "${DIGEST}" '{($k): $d}' \
+            > "/tmp/digests/secure/${PLATFORM_KEY}.json"
+          echo "  ${VERSION}-secure: ${DIGEST}"
+          echo "has_secure=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "  ${VERSION}-secure: no digest (stage not pushed for this version)"
+          echo "has_secure=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload secure digest artifact
+      if: steps.secure-digest.outputs.has_secure == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name:              digests-${{ steps.platform.outputs.version }}-secure-${{ steps.platform.outputs.platform_key }}
+        path:              /tmp/digests/secure/${{ steps.platform.outputs.platform_key }}.json
+        if-no-files-found: error
+        retention-days:    1
+        overwrite: true
+
+    - name: Build advance image
+      id: bake-advance
+      uses: docker/bake-action@v7
+      env:
+        TAG_SUFFIX:                  ${{ inputs.tag_suffix }}
+        VERSIONS:                    ${{ inputs.version }}
+        VERSIONS_BASE:               ''
+        VERSIONS_SECURE:             ''
+        PLATFORMS:                   ${{ inputs.platform }}
+        PLATFORM_KEY:                ${{ steps.platform.outputs.platform_key }}
+        REPO:                        ${{ inputs.repo }}
+        PUSH_BY_DIGEST:              'true'
+        CACHE_FROM_ENABLED:          ${{ inputs.cache_from_enabled }}
+        GHCR_REPO:                   ${{ steps.ghcr.outputs.repo }}
+        GHCR_WRITABLE:               ${{ steps.check-ghcr.outputs.writable }}
+        DOWNLOADS_DIR:               ${{ steps.preseed.outputs.downloads_dir }}
+        BUILDX_BAKE_ENTITLEMENTS_FS: 0
+      with:
+        source: .
+        files: |
+          docker-bake.hcl
+          ${{ steps.preseed.outputs.bake_overrides_file }}
+        targets:       php-advance
+
+    - name: Extract advance digest
+      id: advance-digest
+      if: steps.bake-advance.outcome == 'success'
+      shell: bash
+      env:
+        PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
+        VERSION:      ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        VER_KEY="${VERSION//./_}"
+        mkdir -p /tmp/digests/advance
+        DIGEST=$(jq -r --arg t "php${VER_KEY}-advance" '.[$t]["containerimage.digest"] // ""' \
+          - <<'__BAKE_METADATA__'
+        ${{ steps.bake-advance.outputs.metadata }}
+        __BAKE_METADATA__
+        )
+        if [[ -n "${DIGEST}" ]]; then
+          jq -n --arg k "${VERSION}-advance" --arg d "${DIGEST}" '{($k): $d}' \
+            > "/tmp/digests/advance/${PLATFORM_KEY}.json"
+          echo "  ${VERSION}-advance: ${DIGEST}"
+          echo "has_advance=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "  ${VERSION}-advance: no digest (stage not pushed for this version)"
+          echo "has_advance=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload advance digest artifact
+      if: steps.advance-digest.outputs.has_advance == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name:              digests-${{ steps.platform.outputs.version }}-advance-${{ steps.platform.outputs.platform_key }}
+        path:              /tmp/digests/advance/${{ steps.platform.outputs.platform_key }}.json
+        if-no-files-found: error
+        retention-days:    1
+        overwrite: true
+
+    # ── Build-done marker ──────────────────────────────────────────────────────
+    # Uploaded unconditionally (success or failure) so the merge job can detect
+    # when all per-platform builds have finished — without querying the jobs API.
+    # Named "build-done-{VERSION}-{platform_key}" so each merge job can count
+    # how many platform builds are complete for its version.
+    - name: Prepare build-done marker
+      if: always()
+      id: build-done-marker
+      shell: bash
+      env:
+        VERSION:      ${{ inputs.version }}
+        PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
+      run: |
+        set -euo pipefail
+        # Use the validated/trimmed platform_key from the Validate step.  If
+        # that step did not produce a key (e.g. because it failed), skip the
+        # marker — the upload step below guards against an empty platform_key.
+        [[ -n "${PLATFORM_KEY}" ]] || exit 0
+        mkdir -p /tmp/build-done
+        printf '%s\n' "${VERSION}" > "/tmp/build-done/${PLATFORM_KEY}.txt"
+        echo "platform_key=${PLATFORM_KEY}" >> "$GITHUB_OUTPUT"
+        echo "version=${VERSION}"           >> "$GITHUB_OUTPUT"
+
+    - name: Upload build-done artifact
+      if: always() && steps.build-done-marker.outputs.platform_key != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name:              build-done-${{ steps.build-done-marker.outputs.version }}-${{ steps.build-done-marker.outputs.platform_key }}
+        path:              /tmp/build-done/${{ steps.build-done-marker.outputs.platform_key }}.txt
+        if-no-files-found: error
+        retention-days:    1
+        overwrite: true

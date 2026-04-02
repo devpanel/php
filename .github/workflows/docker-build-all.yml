@@ -2,17 +2,77 @@ name: Build all Docker images
 
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: >
+          Comma-separated list of platforms to build
+          (e.g. "linux/amd64,linux/arm64").
+          Leave empty to use the PLATFORMS repository variable,
+          falling back to "linux/amd64,linux/arm64".
+        required: false
 
 concurrency:
   group: docker-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # ── Detect all versions and target platforms ────────────────────────────────
+  detect:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      versions:           ${{ steps.detect.outputs.versions }}
+      versions_base:      ${{ steps.detect.outputs.versions_base }}
+      versions_secure:    ${{ steps.detect.outputs.versions_secure }}
+      latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
+      tag_suffix:         ${{ steps.tag-suffix.outputs.tag_suffix }}
+      total_platforms:    ${{ steps.detect.outputs.total_platforms }}
+      # JSON array of {version, stage} objects — one entry per Docker Hub
+      # image that needs a manifest merge.  The single merge job consumes
+      # this whole array, and the merge-manifests action iterates over the
+      # entries internally to merge each image's tags.
+      merge_matrix:       ${{ steps.detect.outputs.merge_matrix }}
+      # JSON array of {version, platform, versions_base, versions_secure}
+      # objects — one entry per PHP-version × platform combination.
+      build_matrix:       ${{ steps.detect.outputs.build_matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Compute tag suffix
+        id: tag-suffix
+        run: |
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            echo "tag_suffix=" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF}" == "refs/heads/develop" ]]; then
+            echo "tag_suffix=-rc" >> "$GITHUB_OUTPUT"
+          else
+            sanitized_ref_name="$(printf '%s' "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's/[^[:alnum:]_.-]/-/g')"
+            echo "tag_suffix=-${sanitized_ref_name}" >> "$GITHUB_OUTPUT"
+          fi
+        shell: bash
+
+      - name: Detect versions
+        id: detect
+        uses: ./.github/actions/detect-versions
+        with:
+          platforms_filter: ${{ inputs.platforms || vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
+
+  # ── Per-version-platform builds (run in parallel, no cache) ─────────────────
   build:
+    needs: detect
+    if: needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != ''
+    name: build (${{ matrix.version }}, ${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect.outputs.build_matrix) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      actions:  write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -21,7 +81,54 @@ jobs:
         uses: ./.github/actions/build-php-images
         with:
           cache_from_enabled: 'false'
+          version:            ${{ matrix.version }}
+          versions_base:      ${{ matrix.versions_base }}
+          versions_secure:    ${{ matrix.versions_secure }}
+          tag_suffix:         ${{ needs.detect.outputs.tag_suffix }}
+          platform:           ${{ matrix.platform }}
+          repo:               ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token:       ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token:         ${{ secrets.GHCR_TOKEN }}
+
+  # ── Single manifest merge job ────────────────────────────────────────────────
+  # One job handles all Docker Hub images (every version × stage combination).
+  # It starts as soon as detect finishes and runs in parallel with every build
+  # job.
+  #
+  # The job polls for "digests-*" artifacts from the build jobs.  Whenever one
+  # or more new platform digests arrive in the same polling cycle they are
+  # batched into a single "docker buildx imagetools create" call per image,
+  # preserving any platform still missing from the current batch via the
+  # previously published Docker Hub manifest.
+  #
+  # Using a single job (rather than a per-image matrix) avoids saturating the
+  # Docker Hub pull rate limit with many concurrent "imagetools inspect" calls
+  # and reduces the number of runners consumed during the build.
+  merge:
+    needs: detect
+    if: needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions:  read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Poll and merge platform manifests
+        uses: ./.github/actions/merge-manifests
+        with:
+          merge_matrix:        ${{ needs.detect.outputs.merge_matrix }}
+          repo:                ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
+          tag_suffix:          ${{ needs.detect.outputs.tag_suffix }}
+          total_platforms:     ${{ needs.detect.outputs.total_platforms }}
+          github_token:        ${{ secrets.GITHUB_TOKEN }}
+          run_id:              ${{ github.run_id }}
+          repository:          ${{ github.repository }}
           dockerhub_username:  ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token:     ${{ secrets.DOCKERHUB_TOKEN }}
-          github_token:        ${{ secrets.GITHUB_TOKEN }}
-          ghcr_token:          ${{ secrets.GHCR_TOKEN }}
