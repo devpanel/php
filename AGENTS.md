@@ -45,9 +45,8 @@ tests/                        # Test and lint scripts
 test.sh                       # Convenience wrapper: runs yaml/shell/dockerfile/build/run suites
 .github/
   workflows/
-    docker-build-on-push.yml  # Triggered on push to main/develop; detects changed versions
-    docker-build-all.yml      # Manual full rebuild (workflow_dispatch, no cache)
-    ci.yml                    # Linting and tests (push + pull_request)
+    docker-build.yml          # Triggered on push to main/develop or workflow_dispatch; detects changed versions and builds images
+    test.yml                  # Linting and tests (push + pull_request)
   actions/
     build-php-images/         # Composite action: detect changed versions and run the Docker build
       action.yml
@@ -129,9 +128,8 @@ Baseline JSON files in `tests/baselines/` track pre-existing lint violations per
 - **`.github/actions/preseed-downloads`** — resolves code-server and Copilot Chat versions, restores/downloads artifacts into `$RUNNER_TEMP/build-downloads/pre-downloaded/`, and exposes `DOWNLOADS_DIR` + SHA256 outputs for Docker builds.
 
 #### Workflows
-- **`docker-build-on-push.yml`** — triggered on pushes to `main` or `develop`; uses `tests/detect-versions.sh` to determine which versions/stages are affected, then calls `.github/actions/build-php-images` with caching enabled.
-- **`docker-build-all.yml`** — manual `workflow_dispatch` trigger to rebuild all images without cache.
-- **`ci.yml`** — runs YAML, shell, and Dockerfile linting plus build/run tests on pushes and pull requests.
+- **`docker-build.yml`** — triggered on pushes to `main` or `develop` and by manual `workflow_dispatch`; detects changed versions, builds images per-platform in parallel, and merges platform-specific digests into multi-arch manifests.
+- **`test.yml`** — runs YAML, shell, and Dockerfile linting plus build/run tests on pushes and pull requests.
 - Production images are tagged without suffix (e.g. `devpanel/php:8.3-base`); `develop` branch builds use the `-rc` suffix.
 - Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Optional: `GHCR_TOKEN` (falls back to `GITHUB_TOKEN` for GHCR pushes).
 

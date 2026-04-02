@@ -1,0 +1,378 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      all_versions:
+        description: >
+          Test all PHP versions regardless of what changed.
+          When false, only versions affected by recent commits are tested.
+        type: boolean
+        default: false
+      no_cache:
+        description: >
+          Disable Docker layer cache for build tests.
+          When false, the cache is used as normal.
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-yaml:
+    name: Lint YAML
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install yamllint
+        run: pip install --quiet yamllint
+
+      - name: Run YAML lint
+        run: bash tests/lint-yaml.sh
+
+  lint-shell:
+    name: Lint Shell
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Run shell lint
+        run: bash tests/lint-shell.sh
+
+  lint-dockerfile:
+    name: Lint Dockerfiles
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run Dockerfile lint
+        run: bash tests/lint-dockerfile.sh
+
+  # ── Find the effective before SHA ───────────────────────────────────────────
+  # For pull_request events the PR base is always the right anchor.  For push
+  # events, use the head SHA of the last *successful* test run on this branch
+  # so that commits covered by cancelled runs are not silently skipped.
+  #
+  # When all_versions is requested via workflow_dispatch the job is skipped
+  # entirely; the empty before_sha output causes the detect job to test every
+  # version rather than diff against a previous commit.
+  prepare:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || inputs.all_versions != true
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      before_sha: ${{ steps.effective_sha.outputs.before_sha }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Compute effective before_sha
+        id: effective_sha
+        uses: ./.github/actions/effective-before-sha
+        with:
+          workflow_files: |
+            ci.yml
+            test.yml
+          current_sha: ${{ github.sha }}
+          ref_name: ${{ github.ref_name }}
+          repository: ${{ github.repository }}
+          github_token: ${{ github.token }}
+          event_name: ${{ github.event_name }}
+          pr_base_sha: ${{ github.event.pull_request.base.sha }}
+
+  # Detect PHP versions to test, compute the lowercase GHCR repo name, and
+  # pre-seed build downloads for ALL detected versions at once.  Running
+  # preseed here (rather than in every parallel build job) means:
+  #   • The codename-detection cache is saved exactly once, avoiding the
+  #     "cache already exists" warnings that occur when N jobs compete.
+  #   • ALL versions are visible to preseed, so the newest PHP version's
+  #     codename becomes the primary tier and older codenames (e.g. Buster
+  #     for PHP 7.4, Bullseye for PHP 8.0) receive proper GLIBC compatibility
+  #     checking and get a downgraded code-server when the latest one does not
+  #     work on their glibc.  When preseed only sees a single old version it
+  #     designates that codename as primary and skips the compatibility check,
+  #     causing the GLIBC_2.34 error seen in CI.
+  # The bake-overrides JSON and pre-downloaded artifacts are both uploaded as
+  # workflow artifacts so each parallel build job can download them directly
+  # without re-running preseed.  Workflow artifacts are guaranteed to persist
+  # for the lifetime of the run; unlike the GHA preseed cache, they cannot be
+  # evicted mid-run.
+  detect:
+    name: Detect versions
+    needs: prepare
+    if: always() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      versions: ${{ steps.versions.outputs.versions }}
+      has_versions: ${{ steps.versions.outputs.has_versions }}
+      ghcr_repo: ${{ steps.ghcr.outputs.repo }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
+
+      - name: Compute GHCR repository (lowercase)
+        id: ghcr
+        env:
+          REPO: ${{ github.repository }}
+        run: echo "repo=ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Detect PHP versions for build test
+        id: versions
+        run: |
+          before_sha="${{ needs.prepare.outputs.before_sha }}"
+          if [[ -n "$before_sha" ]]; then
+            versions_str=$(bash tests/detect-versions.sh --before "$before_sha" --after "${{ github.sha }}" | sort -V | tr '\n' ' ' | sed 's/ $//')
+          else
+            versions_str=$(bash tests/detect-versions.sh | sort -V | tr '\n' ' ' | sed 's/ $//')
+          fi
+          versions_json=$(printf '%s\n' $versions_str | jq -R -s -c '[split("\n")[] | select(length > 0)]')
+          echo "versions=${versions_json}" >> "$GITHUB_OUTPUT"
+          echo "versions_str=${versions_str}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${versions_str}" ]]; then
+            echo "has_versions=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_versions=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pre-seed build downloads
+        id: preseed
+        if: steps.versions.outputs.has_versions == 'true'
+        uses: ./.github/actions/preseed-downloads
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          versions: ${{ steps.versions.outputs.versions_str }}
+
+      - name: Upload preseed bake overrides
+        if: steps.versions.outputs.has_versions == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: preseed-bake-overrides
+          path: ${{ steps.preseed.outputs.bake_overrides_file }}
+          retention-days: 1
+
+      # Upload the flat pre-downloaded/ directory (code-server .deb files and
+      # Copilot Chat VSIX) as a workflow artifact so build jobs can download it
+      # directly.  Using an artifact (rather than the GHA preseed cache) is
+      # more reliable because artifacts are guaranteed to persist for the
+      # lifetime of the workflow run; the GHA cache can be evicted mid-run
+      # and a cache miss would silently produce an empty pre-downloaded/ dir.
+      - name: Upload preseed pre-downloaded artifacts
+        if: steps.versions.outputs.has_versions == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: preseed-pre-downloaded
+          path: ${{ steps.preseed.outputs.downloads_dir }}/pre-downloaded/
+          retention-days: 1
+
+  # One job per PHP version, all on linux/amd64.  Runs after lints and
+  # verification pass and after the detect job has produced the version list.
+  build:
+    name: Build and test PHP ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    needs: [lint-yaml, lint-shell, lint-dockerfile, verify-extension, verify-code-server, detect]
+    if: needs.detect.outputs.has_versions == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.detect.outputs.versions) }}
+    permissions:
+      contents: read
+      packages: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Download the pre-seeded code-server .deb and Copilot Chat VSIX files
+      # that the detect job assembled and uploaded.  Using a workflow artifact
+      # (not the GHA preseed cache) guarantees these files are present for the
+      # lifetime of the run; a cache miss would silently produce an empty
+      # pre-downloaded/ directory and fail the Docker build.
+      - name: Download preseed pre-downloaded artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: preseed-pre-downloaded
+          path: ${{ runner.temp }}/build-downloads/pre-downloaded
+
+      # Download the bake-overrides JSON generated by the detect job's preseed
+      # run.  It contains the correct code-server / Copilot Chat versions and
+      # SHA256 digests for every detected Debian codename, including the
+      # downgraded versions needed for older codenames (Buster / Bullseye).
+      - name: Download preseed bake overrides
+        uses: actions/download-artifact@v8
+        with:
+          name: preseed-bake-overrides
+          path: ${{ runner.temp }}
+
+      - name: Build PHP images
+        env:
+          CACHE_FROM_ENABLED: ${{ inputs.no_cache != true && 'true' || 'false' }}
+          GHCR_REPO: ${{ needs.detect.outputs.ghcr_repo }}
+          PLATFORMS: linux/amd64
+          DOWNLOADS_DIR: ${{ runner.temp }}/build-downloads
+          BAKE_OVERRIDES_FILE: ${{ runner.temp }}/preseed-bake-overrides.json
+        run: bash tests/build-dockerfile.sh --version ${{ matrix.version }}
+
+      - name: Run PHP functional tests
+        run: bash tests/run-dockerfile.sh --version ${{ matrix.version }}
+
+  verify-extension:
+    name: Verify Copilot Chat VSIX
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Get pinned Copilot Chat version
+        id: copilot-version
+        run: |
+          echo "version=$(grep -m1 '^ARG COPILOT_CHAT_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Copilot Chat VSIX
+        id: cache-vsix
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/copilot-chat.vsix
+          key: copilot-chat-vsix-${{ steps.copilot-version.outputs.version }}
+
+      - name: Download Copilot Chat VSIX (cache miss only)
+        if: steps.cache-vsix.outputs.cache-hit != 'true'
+        run: |
+          VERSION="${{ steps.copilot-version.outputs.version }}"
+          VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${VERSION}/vspackage"
+          echo "Downloading GitHub.copilot-chat ${VERSION} from VS Marketplace"
+          curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
+            "${VSIX_URL}" -o "$RUNNER_TEMP/copilot-chat.vsix"
+
+      - name: Verify Copilot Chat VSIX
+        run: |
+          EXPECTED_SHA="$(grep -m1 '^ARG COPILOT_CHAT_VSIX_SHA256=' base/Dockerfile | cut -d= -f2)"
+          if ! od -An -tx1 -N4 "$RUNNER_TEMP/copilot-chat.vsix" | tr -d ' \n' | grep -qi '^504b0304'; then
+            ACTUAL_MAGIC="$(od -An -tx1 -N8 "$RUNNER_TEMP/copilot-chat.vsix" | tr -d ' \n')"
+            echo "Downloaded file is not a valid ZIP (expected magic 504b0304, got: ${ACTUAL_MAGIC})"
+            echo "The Marketplace may have returned a rate-limit/error page or gzip-encoded content."
+            exit 1
+          fi
+          ACTUAL_SHA="$(sha256sum "$RUNNER_TEMP/copilot-chat.vsix" | cut -d' ' -f1)"
+          echo "Computed SHA256: ${ACTUAL_SHA}"
+          if [ -n "${EXPECTED_SHA}" ]; then
+            echo "${EXPECTED_SHA}  $RUNNER_TEMP/copilot-chat.vsix" | sha256sum -c -
+            echo "SHA256 verified."
+          else
+            echo "::warning::COPILOT_CHAT_VSIX_SHA256 is not set in base/Dockerfile."
+            echo "::warning::Set ARG COPILOT_CHAT_VSIX_SHA256=${ACTUAL_SHA} in base/Dockerfile to enable integrity verification."
+          fi
+
+  verify-code-server:
+    name: Verify code-server .deb hashes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Get pinned code-server version
+        id: cs-version
+        run: |
+          echo "version=$(grep -m1 '^ARG CODESERVER_VERSION=' base/Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache code-server .deb files
+        id: cache-debs
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/code-server-debs
+          key: code-server-debs-${{ steps.cs-version.outputs.version }}
+
+      - name: Download pinned code-server .deb files (cache miss only)
+        if: steps.cache-debs.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/code-server-debs"
+          VERSION="${{ steps.cs-version.outputs.version }}"
+          BASE_URL="https://github.com/coder/code-server/releases/download/v${VERSION}"
+          for arch in amd64 arm64; do
+            DEB="code-server_${VERSION}_${arch}.deb"
+            echo "Downloading ${DEB}"
+            curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
+              "${BASE_URL}/${DEB}" -o "$RUNNER_TEMP/code-server-debs/${DEB}"
+          done
+
+      - name: Verify pinned code-server .deb files
+        run: |
+          VERSION="${{ steps.cs-version.outputs.version }}"
+          SHA256_AMD64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_AMD64=' base/Dockerfile | cut -d= -f2)"
+          SHA256_ARM64="$(grep -m1 '^ARG CODESERVER_DEB_SHA256_ARM64=' base/Dockerfile | cut -d= -f2)"
+          for arch in amd64 arm64; do
+            DEB="code-server_${VERSION}_${arch}.deb"
+            ACTUAL_SHA="$(sha256sum "$RUNNER_TEMP/code-server-debs/${DEB}" | cut -d' ' -f1)"
+            echo "${arch} SHA256: ${ACTUAL_SHA}"
+            case "${arch}" in
+              amd64) EXPECTED_SHA="${SHA256_AMD64}" ;;
+              arm64) EXPECTED_SHA="${SHA256_ARM64}" ;;
+            esac
+            ARCH_UPPER="$(echo "${arch}" | tr '[:lower:]' '[:upper:]')"
+            if [ -n "${EXPECTED_SHA}" ]; then
+              echo "${EXPECTED_SHA}  $RUNNER_TEMP/code-server-debs/${DEB}" | sha256sum -c -
+              echo "${arch} SHA256 verified."
+            else
+              echo "::warning::CODESERVER_DEB_SHA256_${ARCH_UPPER} is not set in base/Dockerfile."
+              echo "::warning::Set ARG CODESERVER_DEB_SHA256_${ARCH_UPPER}=${ACTUAL_SHA} in base/Dockerfile to enable integrity verification."
+            fi
+          done
+
+  # Aggregates all jobs for branch protection.  The `build` job is a matrix
+  # and may be skipped entirely when no PHP versions are detected; the other
+  # jobs always run.  Checking result values here lets a single required
+  # status check ("Test") cover the whole workflow.
+  status:
+    name: Test
+    runs-on: ubuntu-latest
+    permissions: {}
+    if: always() && !cancelled()
+    needs:
+      - lint-yaml
+      - lint-shell
+      - lint-dockerfile
+      - verify-extension
+      - verify-code-server
+      - prepare
+      - detect
+      - build
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if echo '${{ toJSON(needs.*.result) }}' | grep -qE '"(failure|cancelled)"'; then
+            exit 1
+          fi
