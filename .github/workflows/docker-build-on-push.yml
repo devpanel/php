@@ -69,12 +69,14 @@ jobs:
           BEFORE_SHA=""
           if [[ -n "$LAST_SUCCESS_SHA" ]]; then
             BEFORE_SHA="$LAST_SUCCESS_SHA"
-          else
-            # No prior successful run found whose commit is reachable from the
-            # current commit (e.g. first run ever, or after a force-push).
-            # Fall back to the push event's own before SHA.
-            BEFORE_SHA="${{ github.event.before }}"
           fi
+          # When LAST_SUCCESS_SHA is empty (no prior successful run found,
+          # e.g. first run ever, after a force-push, or all prior runs failed),
+          # leave BEFORE_SHA empty so the build falls back to a full rebuild of
+          # all versions.  We intentionally do NOT fall back to
+          # github.event.before here: that SHA may correspond to a failed build,
+          # and treating it as "successfully built" would cause the incremental
+          # diff to silently skip rebuilding images that were never published.
 
           echo "before_sha=$BEFORE_SHA" >> "$GITHUB_OUTPUT"
 
