@@ -1,0 +1,10 @@
+---
+extends: default
+rules:
+  # GitHub Actions expressions and long run: blocks routinely exceed 80 chars.
+  line-length: disable
+  # GitHub Actions uses "on:" as a mapping key; allow it alongside true/false.
+  truthy:
+    allowed-values: ["true", "false", "on"]
+  # Workflow files deliberately omit the document-start "---" marker.
+  document-start: disable

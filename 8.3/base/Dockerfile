@@ -1,249 +1,67 @@
-FROM php:8.3-apache
+# syntax=docker/dockerfile:1
+# ─── PHP 8.3 base final image ─────────────────────────────────────────────────
+# Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
+# PHP_VERSION=8.3. Contains ONLY PHP 8.3 specific differences:
+#   - libavif-dev + libpcre2-dev (+ gd build libs) installed, used, removed
+#   - libmagickwand-dev + libmagickcore-dev for imagick: installed, used, removed
+#   - libpspell-dev for pspell: installed, used, removed
+#   - gd configure flags (with avif)
+#   - PECL: igbinary latest (no version pin), imagick latest, xdebug
+#   - Composer 2.7.7 override (common installs 2.3.10)
+FROM common-php-ext AS final
 
-#== System Environments
-ENV USER=www
-ENV GROUP=www
-ENV UID=1000
-ENV GID=1000
-ENV HOME=/home/www
-ENV SHELL=/bin/bash
+# Switch to root for version-specific installation
+ARG DEBIAN_FRONTEND=noninteractive
+USER root
 
-#== Default Environments
-ENV APP_ROOT=/var/www/html
-ENV WEB_ROOT=$APP_ROOT
-ENV PHP_CUSTOM_INI=$APP_ROOT/php.ini
-ENV PHP_EXT_DIR=/usr/local/etc/php/conf.d
+# Install dev libraries needed to build gd, imagick, and pspell for PHP 8.3,
+# build the extensions, then remove the dev libraries and their
+# automatically-added dependencies that are not needed at runtime.
+# libavif-dev enables AVIF image support in gd (PHP 8.1+).
+# libmagickwand-dev and libmagickcore-dev are required to build imagick.
+# See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
+RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
+    && savedAptMark="$(apt-mark showmanual)" \
+    && for i in $(seq 1 3); do \
+      apt-get update \
+        && apt-get install -y --no-install-recommends \
+          libjpeg62-turbo-dev \
+          libpng-dev \
+          libwebp-dev \
+          libfreetype6-dev \
+          libavif-dev \
+          libpcre2-dev \
+          libmagickwand-dev \
+          libmagickcore-dev \
+          libpspell-dev \
+        && break \
+      || { [ "$i" -lt 3 ] && sleep 5; }; \
+    done \
+    && docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp \
+    && docker-php-ext-install -j$(nproc) gd pspell \
+    && pecl install -o -f \
+        igbinary \
+        imagick \
+        xdebug \
+    && docker-php-ext-enable gd igbinary imagick pspell xdebug \
+    && apt-mark auto '.*' > /dev/null \
+    && echo "$savedAptMark" | xargs -r apt-mark manual \
+    && { find /usr/local/lib/php/extensions -name '*.so' \
+            -exec ldd '{}' ';' 2>/dev/null \
+            | awk '/=>/ { print $(NF-1) }' \
+            | grep '^/' \
+            | sort -u \
+            | while IFS= read -r lib; do dpkg-query --search "$(realpath "$lib" 2>/dev/null || echo "$lib")" 2>/dev/null; done \
+            | cut -d: -f1 \
+            | sort -u \
+            | xargs -r apt-mark manual; } || true \
+    && apt-get purge -y --auto-remove \
+        -o APT::AutoRemove::RecommendsImportant=false \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
-ENV PHP_MEMORY_LIMIT=4096M
-ENV PHP_MAX_EXECUTION_TIME=600
-ENV PHP_MAX_INPUT_TIME=600
-ENV PHP_MAX_INPUT_VARS=3000
-ENV PHP_UPLOAD_MAX_FILESIZE=64M
-ENV PHP_POST_MAX_SIZE=64M
-ENV PHP_CLEAR_ENV=false
-
-ENV SERVER_NAME=default
-ENV CODES_PORT=8080
-ENV CODES_WORKING_DIR=$APP_ROOT
-ENV CODES_USER_DATA_DIR=$APP_ROOT/.vscode
-ENV CODES_ENABLE=yes
-
-# Install polimorphing if needed
-RUN apt -y update && apt -y upgrade;
-RUN if [ ! -z "$POLYVER_CUSTOMER_KEY" ]; then \
-  curl -s https://repo.polyverse.io/cli | sh -s install cDDwaMuYf7BtSOt4jfJGl3TsA; \
-  if [ $? -eq 0 ]; then \
-  curl https://repo.polyverse.io/cli | bash -s replace-installed-elf; \
-  fi; fi;
-
-# Install dependencies
-RUN apt-get install -y --no-install-recommends \
-  apt-utils \
-  sendmail-bin \
-  sendmail \
-  sudo \
-  libbz2-dev \
-  libjpeg62-turbo-dev \
-  libpng-dev \
-  libwebp-dev \
-  libfreetype6-dev \
-  libgeoip-dev \
-  wget \
-  libgmp-dev \
-  libmagickwand-dev \
-  libmagickcore-dev \
-  libicu-dev \
-  libldap2-dev \
-  libpspell-dev \
-  libtidy-dev \
-  libxslt1-dev \
-  libyaml-dev \
-  libzip-dev \
-  libmemcached-dev \
-  libpcre2-dev \
-  libssl-dev \
-  zlib1g-dev \
-  zip unzip \
-  git \
-  rsync \
-  ssh \
-  default-mysql-client \
-  && rm -rf /var/lib/apt/lists/*
-
-# Configure the gd library
-RUN docker-php-ext-configure \
-  gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ --with-webp=/usr/include/
-RUN docker-php-ext-configure \
-  opcache --enable-opcache
-
-# Install required PHP extensions
-RUN docker-php-ext-install -j$(nproc) \
-  bcmath \
-  bz2 \
-  calendar \
-  exif \
-  gd \
-  gettext \
-  gmp \
-  intl \
-  mysqli \
-  opcache \
-  pdo_mysql \
-  pspell \
-  shmop \
-  soap \
-  sockets \
-  sysvmsg \
-  sysvsem \
-  sysvshm \
-  tidy \
-  xsl \
-  zip \
-  pcntl
-
-RUN pecl install -o -f \
-  igbinary \
-  league/oauth2-client \
-  redis-5.3.7 \
-  yaml-2.2.2 \
-  memcached-3.2.0
-
-RUN curl -L -o /tmp/imagick.tar.gz https://github.com/Imagick/imagick/archive/7088edc353f53c4bc644573a79cdcd67a726ae16.tar.gz \
-    && tar --strip-components=1 -xf /tmp/imagick.tar.gz \
-    && phpize \
-    && ./configure \
-    && make \
-    && make install \
-    && echo "extension=imagick.so" > /usr/local/etc/php/conf.d/ext-imagick.ini \
-    && rm -rf /tmp/* \
-
-RUN rm -f /usr/local/etc/php/conf.d/*sodium.ini \
-  && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
-  && apt-get remove libsodium* -y  \
-  && mkdir -p /tmp/libsodium  \
-  && curl -sL https://github.com/jedisct1/libsodium/archive/1.0.18-RELEASE.tar.gz | tar xzf - -C  /tmp/libsodium \
-  && cd /tmp/libsodium/libsodium-1.0.18-RELEASE/ \
-  && ./configure \
-  && make && make check \
-  && make install  \
-  && cd / \
-  && rm -rf /tmp/libsodium  \
-  && pecl install -o -f libsodium
-
-RUN docker-php-ext-enable \
-  bcmath \
-  bz2 \
-  calendar \
-  exif \
-  gd \
-  gettext \
-  gmp \
-  igbinary \
-  imagick \
-  intl \
-  mysqli \
-  opcache \
-  pdo_mysql \
-  pspell \
-  redis \
-  shmop \
-  soap \
-  sockets \
-  sodium \
-  sysvmsg \
-  sysvsem \
-  sysvshm \
-  tidy \
-  xsl \
-  yaml \
-  zip \
-  pcntl \
-  memcached
-
-RUN groupadd -g ${GID} ${GROUP} \
-    && useradd --system --shell /bin/bash --uid ${UID} --gid ${GROUP}  --create-home --home-dir /home/${USER} ${USER} \
-    && adduser ${USER} www-data \
-    && apt install -y sudo \
-    && usermod -aG sudo ${USER} \
-    && echo "www    ALL=(ALL:ALL) NOPASSWD:ALL" >> /etc/sudoers
-
-RUN mkdir -p ${APP_ROOT} \
-    && chown -R ${UID}:${GID} ${APP_ROOT}
-
-#== Enable mode_rewrite by default
-RUN a2enmod rewrite remoteip headers
-
-#== Install Codeserver [AMD Chip]
-ARG CODESERVER_VERSION="4.99.4"
-RUN wget -O /tmp/code-server_${CODESERVER_VERSION}_amd64.deb https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb
-RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_amd64.deb \
-    && rm /tmp/code-server_${CODESERVER_VERSION}_amd64.deb
-
-#== Install Codeserver [ARM Chip]
-# ADD https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_arm64.deb /tmp/
-# RUN dpkg -i /tmp/code-server_${CODESERVER_VERSION}_arm64.deb \
-#     && rm /tmp/code-server_${CODESERVER_VERSION}_arm64.deb
-
-
-#== Enable xdebug
-RUN pecl install xdebug
-
-#== Install Composer
-RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.7.7
-RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer2 --version=2.7.7
-RUN curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
-
-#== Install DevPanel CLI client
-COPY bin/devpanel /usr/local/bin/devpanel
-RUN chmod +x /usr/local/bin/devpanel \
-  && devpanel version
-
-
-#== Install Wordpress CLI
-ARG WP_CLI_VERSION=2.9.0
-RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar \
-    && chmod +x wp-cli-${WP_CLI_VERSION}.phar \
-    && mv wp-cli-${WP_CLI_VERSION}.phar /usr/local/bin/wp
-
-WORKDIR ${APP_ROOT}
-COPY drush /drush
-RUN mkdir -p /home/$USER/.config/code-server \
-    && chown -R $USER:$USER /home/$USER/.config/code-server
+# Override Composer with PHP 8.3 version (2.7.7) using self-update
+RUN composer self-update 2.7.7
 
 USER ${USER}
 
-RUN touch /home/$USER/.config/code-server/config.yaml
-RUN sudo chown -R ${USER} /drush
-
-#== Install Drush
-ARG DRUSH_VERSION=8
-RUN composer update --working-dir=/drush/drush8 \
-  && echo "alias drush8=/drush/drush8/vendor/bin/drush" >> ~/.bashrc
-RUN  composer update --working-dir=/drush/drush9 \
-  && echo "alias drush9=/drush/drush9/vendor/bin/drush" >> ~/.bashrc
-RUN  composer update --working-dir=/drush/drush10 \
-  && echo "alias drush10=/drush/drush10/vendor/bin/drush" >> ~/.bashrc
-RUN  composer update --working-dir=/drush/drush11 \
-  && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
-
-
-#== Install Drush backdrop extention
-RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
-  && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
-  && /drush/drush${DRUSH_VERSION}/vendor/bin/drush cc drush
-
-#== Install BEE CLI client
-RUN sudo mkdir /bee && sudo git clone https://github.com/backdrop-contrib/bee.git /bee
-RUN sudo chmod +x /bee/bee.php \
-  && sudo ln -s /bee/bee.php /usr/bin/bee
-
-RUN bash ~/.bashrc
-RUN sudo ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush
-
-#== Start apache.
-COPY templates /templates
-COPY scripts /scripts
-#== Empty APP_ROOT to make container smaller
-RUN sudo rm -rf ${APP_ROOT} && sudo sudo mkdir -p ${APP_ROOT}
-
-CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh" ]

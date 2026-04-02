@@ -1,0 +1,7 @@
+command:
+  sql:
+    options:
+      extra: "--skip-ssl-verify-server-cert"
+    dump:
+      options:
+        extra-dump: "--no-tablespaces"
