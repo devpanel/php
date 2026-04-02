@@ -421,7 +421,7 @@ RUN touch /home/${USER}/.config/code-server/config.yaml
 RUN set -e; for drush_dir in /drush/drush*/; do \
   drush_name=$(basename "$drush_dir"); \
   drush_path=${drush_dir%/}; \
-  composer update --working-dir="$drush_dir"; \
+  composer update --working-dir="$drush_path"; \
   echo "alias $drush_name=$drush_path/vendor/bin/drush" >> ~/.bashrc; \
   done \
   && echo "alias composer2=/usr/local/bin/composer" >> ~/.bashrc
