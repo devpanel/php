@@ -245,14 +245,14 @@ and functional tests for any changed Dockerfiles.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `ci.yml` | push to `main`/`develop`; pull_request (any branch) | Lint, build & functional checks (required) |
-| `docker-build-on-push.yml` | push to `main` or `develop` | Detect changed versions and build images |
-| `docker-build-all.yml` | `workflow_dispatch` | Build all versions unconditionally |
+| `test.yml` | push to `main`/`develop`; pull_request (any branch) | Lint, build & functional checks (required) |
+| `docker-build.yml` | push to `main` or `develop`; `workflow_dispatch` | Detect changed versions and build images |
 
-`ci.yml` runs lint, build, and functional tests in parallel.  Configure branch protection
-rules in GitHub to require all `ci.yml` status checks to pass before pull
+`test.yml` runs lint, build, and functional tests in parallel.  Configure branch protection
+rules in GitHub to require the `Test` workflow checks to pass before pull
 requests to `main` or `develop` can be merged, ensuring no broken Dockerfile
-or script reaches the publish workflows.  See the
+or script reaches the publish workflows.  (`Test` is the check name shown in the
+branch protection UI.)  See the
 [GitHub docs on required status checks](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging)
 for setup instructions.
 
@@ -279,9 +279,8 @@ for setup instructions.
   without pushing.  Functional tests (`tests/run-dockerfile.sh`) then start each
   built image and verify PHP, Apache, Composer, and extensions work.
   Run `./test.sh build run --version <v>` to test a single PHP version quickly.
-- Build workflows are `docker-build-on-push.yml` (push-triggered) and
-  `docker-build-all.yml` (manual dispatch).  Both call the
-  `.github/actions/build-php-images` composite action which performs detect → build.
+- The build workflow is `docker-build.yml`, which handles both push-triggered and manual dispatch
+  builds.  It runs a detect → build (per-platform, parallel) → merge pipeline.
 - The `advance` variant depends on `secure`, which depends on `base`.
   The build chain is enforced via the bake target dependency graph.
 
