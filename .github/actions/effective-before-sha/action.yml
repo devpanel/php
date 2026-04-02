@@ -1,0 +1,141 @@
+name: Compute effective before SHA
+description: >
+  Finds the effective "before" SHA for a push or pull_request event.
+
+  For pull_request events, returns the PR base SHA immediately.
+
+  For push events, queries the given workflow files for the most recent
+  successful run on this branch whose head commit is an ancestor of the
+  current commit (smallest ahead_by distance).  Falls back to
+  event_before when no successful run is found and event_before is
+  provided; otherwise returns an empty string.
+
+  Required GITHUB_TOKEN permissions on the calling job:
+    actions:  read   (list workflow runs)
+    contents: read   (compare commits via the Repos API)
+
+inputs:
+  workflow_files:
+    description: >
+      Space-separated list of workflow filenames to query for successful
+      runs (e.g. "docker-build-on-push.yml docker-build-all.yml").
+      Used only for push events.
+    required: true
+  current_sha:
+    description: The current commit SHA (github.sha).
+    required: true
+  ref_name:
+    description: The branch name (github.ref_name).
+    required: true
+  repository:
+    description: The repository in owner/name format (github.repository).
+    required: true
+  github_token:
+    description: Token used to call the GitHub API (github.token).
+    required: true
+  event_name:
+    description: The triggering event name (github.event_name).
+    required: true
+  pr_base_sha:
+    description: >
+      The PR base commit SHA (github.event.pull_request.base.sha).
+      Required when event_name is "pull_request".
+    required: false
+    default: ''
+  event_before:
+    description: >
+      The SHA immediately before the push (github.event.before).
+      Used as fallback when no successful prior run is found.
+      When omitted, an empty string is returned on fallback instead.
+    required: false
+    default: ''
+
+outputs:
+  before_sha:
+    description: >
+      The effective before SHA to use as the diff anchor.  Empty string
+      when the before commit cannot be determined (new branch with no
+      prior successful run and no event_before fallback provided).
+    value: ${{ steps.compute.outputs.before_sha }}
+  needs_history:
+    description: >
+      "true" if the checkout step should fetch full git history
+      (fetch-depth: 0), "false" if a shallow clone (depth: 1) suffices.
+    value: ${{ steps.compute.outputs.needs_history }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute effective before_sha
+      id: compute
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        WORKFLOW_FILES: ${{ inputs.workflow_files }}
+        CURRENT_SHA: ${{ inputs.current_sha }}
+        REF_NAME: ${{ inputs.ref_name }}
+        REPOSITORY: ${{ inputs.repository }}
+        EVENT_NAME: ${{ inputs.event_name }}
+        PR_BASE_SHA: ${{ inputs.pr_base_sha }}
+        EVENT_BEFORE: ${{ inputs.event_before }}
+      run: |
+        set -euo pipefail
+        ZERO_SHA=0000000000000000000000000000000000000000
+
+        if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+          if [[ -z "${PR_BASE_SHA}" ]]; then
+            echo "::error::Input 'pr_base_sha' is required when event_name is 'pull_request'."
+            exit 1
+          fi
+          echo "before_sha=${PR_BASE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "needs_history=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # For push events, collect head SHAs of successful runs from every
+        # listed workflow file so we have enough candidates to find the
+        # closest reachable ancestor even when recent runs share SHAs.
+        read -ra WF_ARRAY <<< "${WORKFLOW_FILES}"
+        CANDIDATES=$(
+          for wf in "${WF_ARRAY[@]}"; do
+            gh api \
+              "repos/${REPOSITORY}/actions/workflows/${wf}/runs?branch=${REF_NAME}&status=success&per_page=10" \
+              --jq '.workflow_runs[].head_sha // empty' || true
+          done | (grep . || true) | sort -u
+        )
+
+        # Among all candidates, pick the closest reachable ancestor of the
+        # current commit — the one with the smallest ahead_by distance.
+        # This is more correct than using timestamps because it is based on
+        # the actual git ancestry of the branch rather than wall-clock time.
+        LAST_SUCCESS_SHA=""
+        BEST_AHEAD=""
+        while IFS= read -r SHA; do
+          [[ -z "$SHA" || "$SHA" == "${CURRENT_SHA}" ]] && continue
+          COMPARE=$(gh api \
+            "repos/${REPOSITORY}/compare/${SHA}...${CURRENT_SHA}" \
+            --jq '{status: .status, ahead_by: .ahead_by}' 2>/dev/null || true)
+          STATUS=$(printf '%s' "$COMPARE" | jq -r '.status // ""')
+          AHEAD=$(printf '%s' "$COMPARE" | jq -r '.ahead_by // empty')
+          if [[ "$STATUS" == "ahead" || "$STATUS" == "identical" ]] && [[ "$AHEAD" =~ ^[0-9]+$ ]]; then
+            if [[ -z "$BEST_AHEAD" || "$AHEAD" -lt "$BEST_AHEAD" ]]; then
+              BEST_AHEAD="$AHEAD"
+              LAST_SUCCESS_SHA="$SHA"
+            fi
+          fi
+        done <<< "$CANDIDATES"
+
+        if [[ -n "$LAST_SUCCESS_SHA" ]]; then
+          echo "before_sha=${LAST_SUCCESS_SHA}" >> "$GITHUB_OUTPUT"
+          echo "needs_history=true" >> "$GITHUB_OUTPUT"
+        elif [[ -n "${EVENT_BEFORE}" ]]; then
+          echo "before_sha=${EVENT_BEFORE}" >> "$GITHUB_OUTPUT"
+          if [[ "${EVENT_BEFORE}" != "${ZERO_SHA}" ]]; then
+            echo "needs_history=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_history=false" >> "$GITHUB_OUTPUT"
+          fi
+        else
+          echo "before_sha=" >> "$GITHUB_OUTPUT"
+          echo "needs_history=false" >> "$GITHUB_OUTPUT"
+        fi
