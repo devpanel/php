@@ -418,15 +418,6 @@ RUN touch /home/${USER}/.config/code-server/config.yaml
 # Bash alias for Composer 2.  The binary is installed as root above;
 # the alias is set here (as the app user) to keep it in ~/.bashrc.
 # composer1 is directly accessible as /usr/local/bin/composer1.
-RUN set -e; for drush_dir in /drush/drush*; do \
-  drush_name=$(basename "$drush_dir"); \
-  composer update --working-dir="$drush_dir"; \
-  echo "alias $drush_name=$drush_dir/vendor/bin/drush" >> ~/.bashrc; \
-  done \
-  && echo "alias composer2=/usr/local/bin/composer" >> ~/.bashrc
-
-RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
-    && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
-    && /drush/drush${DRUSH_VERSION}/vendor/bin/drush cc drush
+RUN echo "alias composer2=/usr/local/bin/composer" >> ~/.bashrc
 
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh"]

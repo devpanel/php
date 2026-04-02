@@ -69,13 +69,18 @@ RUN rm -f /usr/local/bin/wp \
     && chmod +x wp-cli-2.4.0.phar \
     && mv wp-cli-2.4.0.phar /usr/local/bin/wp
 
-# Overlay 7.4-specific drush files: drush7 (PHP 7.4 only).
-# Docker COPY merges so common drush8/9/10/11 are preserved.
-COPY drush /drush
-RUN chown -R ${USER}:${GROUP} /drush
-
 USER ${USER}
 
-# drush7 setup (7.4 only)
-RUN composer update --working-dir=/drush/drush7 \
-    && echo "alias drush7=/drush/drush7/vendor/bin/drush" >> ~/.bashrc
+# Overlay version-specific Drush files. Docker COPY merges so common
+# drush8/9/10/11 are preserved.
+COPY drush /drush
+
+RUN set -e; for drush_dir in /drush/drush*; do \
+  drush_name=$(basename "$drush_dir"); \
+  composer update --working-dir="$drush_dir"; \
+  echo "alias $drush_name=$drush_dir/vendor/bin/drush" >> ~/.bashrc; \
+  done
+
+RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
+    && unzip 1.x-1.x.zip -d "/drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop" \
+    && "/drush/drush${DRUSH_VERSION}/vendor/bin/drush" cc drush

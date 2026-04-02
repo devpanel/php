@@ -64,3 +64,16 @@ RUN composer self-update
 
 USER ${USER}
 
+# Overlay version-specific Drush files. Docker COPY merges so common
+# drush8/9/10/11 are preserved.
+COPY drush /drush
+
+RUN set -e; for drush_dir in /drush/drush*; do \
+  drush_name=$(basename "$drush_dir"); \
+  composer update --working-dir="$drush_dir"; \
+  echo "alias $drush_name=$drush_dir/vendor/bin/drush" >> ~/.bashrc; \
+  done
+
+RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
+    && unzip 1.x-1.x.zip -d "/drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop" \
+    && "/drush/drush${DRUSH_VERSION}/vendor/bin/drush" cc drush
