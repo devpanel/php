@@ -258,6 +258,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
         && apt-get install -f -y --no-install-recommends \
         && apt-get install -y --fix-missing --no-install-recommends \
           apt-utils \
+          libedit2 \
           sendmail-bin \
           sendmail \
           sudo \
