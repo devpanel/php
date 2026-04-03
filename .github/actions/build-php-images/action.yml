@@ -428,13 +428,13 @@ runs:
       uses: ./.github/actions/preseed-downloads
       with:
         github_token: ${{ inputs.github_token }}
+        versions:     ${{ steps.detect.outputs.versions }}
 
     - name: Build and push images
       if: steps.detect.outputs.versions != '' && steps.detect.outputs.latest_php_version != ''
       uses: docker/bake-action@v7
       env:
         TAG_SUFFIX:                  ${{ steps.detect.outputs.tag_suffix }}
-        LATEST_PHP_VERSION:          ${{ steps.detect.outputs.latest_php_version }}
         VERSIONS:                    ${{ steps.detect.outputs.versions }}
         VERSIONS_BASE:               ${{ steps.detect.outputs.versions_base }}
         VERSIONS_SECURE:             ${{ steps.detect.outputs.versions_secure }}
@@ -443,13 +443,10 @@ runs:
         GHCR_REPO:                   ${{ steps.ghcr.outputs.repo }}
         GHCR_WRITABLE:               ${{ steps.check-ghcr.outputs.writable }}
         DOWNLOADS_DIR:               ${{ steps.preseed.outputs.downloads_dir }}
-        CODESERVER_VERSION:          ${{ steps.preseed.outputs.codeserver_version }}
-        CODESERVER_DEB_SHA256_AMD64: ${{ steps.preseed.outputs.codeserver_deb_sha256_amd64 }}
-        CODESERVER_DEB_SHA256_ARM64: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64 }}
-        COPILOT_CHAT_VERSION:        ${{ steps.preseed.outputs.copilot_chat_version }}
-        COPILOT_CHAT_VSIX_SHA256:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256 }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
       with:
         source: .
-        files: docker-bake.hcl
+        files: |
+          docker-bake.hcl
+          ${{ steps.preseed.outputs.bake_overrides_file }}
         push:  true

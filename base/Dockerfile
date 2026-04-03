@@ -1,14 +1,13 @@
 # syntax=docker/dockerfile:1
 # ─── Artifact downloader ───────────────────────────────────────────────────
-# Uses php:${LATEST_PHP_VERSION}-apache as base so that its OS layers are
-# identical to those of the highest PHP version we build.  Downloads large,
-# version-independent binaries (code-server, libsodium) shared across all
-# PHP version builds via Docker Bake's named-context mechanism.
+# Uses php:${PHP_VERSION}-apache as base so that downloads are fetched inside
+# the same OS environment as the PHP version being built.  The Debian release
+# is detected at CI time from the actual PHP image (via VERSION_CODENAME in
+# /etc/os-release); each version gets the newest code-server it can support.
 #
 # This stage is referenced by every {version}/base/Dockerfile through the
 # 'common-downloader' named context in docker-bake.hcl.  It is cached in
-# GitHub Actions (type=gha) but never pushed to Docker Hub.
-ARG LATEST_PHP_VERSION=8.3
+# the GitHub Container Registry but never pushed to Docker Hub.
 ARG PHP_VERSION=8.3
 
 # ─── Pre-downloaded artifacts context ─────────────────────────────────────────
@@ -22,7 +21,7 @@ ARG PHP_VERSION=8.3
 FROM alpine:3 AS downloads
 RUN mkdir -p /pre-downloaded
 
-FROM php:${LATEST_PHP_VERSION}-apache AS downloader
+FROM php:${PHP_VERSION}-apache AS downloader
 
 ARG CODESERVER_VERSION=4.99.4
 ARG CODESERVER_DEB_SHA256_AMD64=74c107b33643ed11223263b86431530fbc9c9f7c8202997579a6f0c41b4cb102
