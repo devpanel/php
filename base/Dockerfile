@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 # ─── Artifact downloader ───────────────────────────────────────────────────
 # Uses php:${PHP_VERSION}-apache as base so that downloads are fetched inside
-# the same OS environment as the PHP version being built.  PHP 7.4 and 8.0
-# run on Debian 11 (Bullseye); PHP 8.1+ run on Debian 12 (Bookworm).  Each
-# version therefore gets the newest code-server it can actually support.
+# the same OS environment as the PHP version being built.  The Debian release
+# is detected at CI time from the actual PHP image (via VERSION_CODENAME in
+# /etc/os-release); each version gets the newest code-server it can support.
 #
 # This stage is referenced by every {version}/base/Dockerfile through the
 # 'common-downloader' named context in docker-bake.hcl.  It is cached in
