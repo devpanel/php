@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# .githooks/pre-push — Git pre-push hook.
+#
+# Runs lint checks only on files that were changed in the local commits
+# being pushed, so you get fast feedback without linting the whole repo.
+#
+# Activated automatically after running:  ./setup-hooks.sh
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+TESTS_DIR="${REPO_ROOT}/tests"
+
+# Collect the range of commits being pushed.
+# Input lines from git: "<local_ref> <local_sha> <remote_ref> <remote_sha>"
+CHANGED_FILES=()
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  batch=()
+  if [[ "$remote_sha" == "0000000000000000000000000000000000000000" ]]; then
+    # New branch — choose the closest reachable ancestor among likely base
+    # branches so we diff against where the branch was actually forked.
+    default_remote_ref="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || true)"
+    candidate_refs=()
+    if [[ -n "$default_remote_ref" ]]; then
+      candidate_refs+=("$default_remote_ref")
+    fi
+    if git show-ref --verify --quiet refs/remotes/origin/develop; then
+      candidate_refs+=("origin/develop")
+    fi
+    if git show-ref --verify --quiet refs/remotes/origin/main; then
+      candidate_refs+=("origin/main")
+    fi
+
+    merge_base=""
+    best_ahead=""
+    for candidate_ref in "${candidate_refs[@]+"${candidate_refs[@]}"}"; do
+      candidate_base="$(git merge-base "$local_sha" "$candidate_ref" 2>/dev/null || true)"
+      [[ -n "$candidate_base" ]] || continue
+
+      ahead_count="$(git rev-list --count "${candidate_base}..${local_sha}" 2>/dev/null || true)"
+      [[ "$ahead_count" =~ ^[0-9]+$ ]] || continue
+
+      if [[ -z "$best_ahead" || "$ahead_count" -lt "$best_ahead" ]]; then
+        best_ahead="$ahead_count"
+        merge_base="$candidate_base"
+      fi
+    done
+
+    if [[ -n "$merge_base" ]]; then
+      while IFS= read -r file; do
+        batch+=("$file")
+      done < <(git diff --name-only "$merge_base" "$local_sha" 2>/dev/null || true)
+    else
+      while IFS= read -r file; do
+        batch+=("$file")
+      done < <(git diff --name-only HEAD~1 "$local_sha" 2>/dev/null || true)
+    fi
+  else
+    while IFS= read -r file; do
+      batch+=("$file")
+    done < <(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null || true)
+  fi
+  CHANGED_FILES+=("${batch[@]}")
+done
+
+# Deduplicate.
+if [[ ${#CHANGED_FILES[@]} -gt 0 ]]; then
+  deduped=()
+  while IFS= read -r file; do
+    deduped+=("$file")
+  done < <(printf '%s\n' "${CHANGED_FILES[@]}" | sort -u)
+  CHANGED_FILES=("${deduped[@]}")
+fi
+
+if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
+  exit 0
+fi
+
+# Categorise changed files.
+SH_FILES=()
+DOCKER_FILES=()
+YAML_FILES=()
+
+for f in "${CHANGED_FILES[@]}"; do
+  full="${REPO_ROOT}/${f}"
+  [[ -f "$full" ]] || continue
+  case "$f" in
+    *.sh | .githooks/*)  SH_FILES+=("$full") ;;
+    */Dockerfile)      DOCKER_FILES+=("$full") ;;
+    .github/workflows/*.yml | .github/workflows/*.yaml) YAML_FILES+=("$full") ;;
+    .yamllint.yml)
+      _wf=()
+      while IFS= read -r file; do
+        _wf+=("$file")
+      done < <(find "${REPO_ROOT}/.github/workflows" -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null)
+      YAML_FILES+=("${_wf[@]+"${_wf[@]}"}")
+      ;;
+  esac
+done
+
+FAILED=0
+
+run_if_nonempty() {
+  local label="$1"; local script="$2"; shift 2
+  local files=("$@")
+  if [[ ${#files[@]} -gt 0 ]]; then
+    echo "pre-push: running $label lint on ${#files[@]} file(s)…"
+    bash "$script" --files "${files[@]}" || FAILED=1
+  fi
+}
+
+run_if_nonempty "shell"      "${TESTS_DIR}/lint-shell.sh"      "${SH_FILES[@]+"${SH_FILES[@]}"}"
+run_if_nonempty "Dockerfile" "${TESTS_DIR}/lint-dockerfile.sh" "${DOCKER_FILES[@]+"${DOCKER_FILES[@]}"}"
+run_if_nonempty "YAML"       "${TESTS_DIR}/lint-yaml.sh"       "${YAML_FILES[@]+"${YAML_FILES[@]}"}"
+
+# Build + run tests run only when DEVPANEL_BUILD_ON_PUSH=1 is set, because a
+# full Docker image build can take several minutes.  CI always runs both.
+# Use detect-versions.sh to determine which PHP versions are affected —
+# this handles docker-bake.hcl and shared base/secure/advance/ changes in
+# addition to per-version Dockerfile changes.
+if [[ "${DEVPANEL_BUILD_ON_PUSH:-0}" == "1" ]]; then
+  _affected=()
+  while IFS= read -r version; do
+    _affected+=("$version")
+  done < <(
+    bash "${TESTS_DIR}/detect-versions.sh" --files "${CHANGED_FILES[@]}"
+  )
+  if [[ ${#_affected[@]} -gt 0 ]]; then
+    echo "pre-push: running Docker build tests for PHP version(s): ${_affected[*]}…"
+    bash "${TESTS_DIR}/build-dockerfile.sh" --files "${CHANGED_FILES[@]}" || FAILED=1
+    echo "pre-push: running Docker functional tests for PHP version(s): ${_affected[*]}…"
+    bash "${TESTS_DIR}/run-dockerfile.sh" --files "${CHANGED_FILES[@]}" || FAILED=1
+  fi
+fi
+
+if [[ $FAILED -ne 0 ]]; then
+  echo "pre-push: checks failed — push aborted." >&2
+  exit 1
+fi

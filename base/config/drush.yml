@@ -1,0 +1,11 @@
+command:
+  site:
+    install:
+      options:
+        extra: "--skip-ssl-verify-server-cert"
+  sql:
+    options:
+      extra: "--skip-ssl-verify-server-cert"
+    dump:
+      options:
+        extra-dump: "--no-tablespaces --skip-ssl-verify-server-cert"
