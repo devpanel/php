@@ -58,3 +58,14 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
 USER ${USER}
+
+RUN set -e; for drush_dir in /drush/drush*; do \
+  drush_name=$(basename "$drush_dir"); \
+  composer update --working-dir="$drush_dir"; \
+  echo "alias $drush_name=$drush_dir/vendor/bin/drush" >> ~/.bashrc; \
+  done
+
+ARG DRUSH_VERSION=8
+RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
+    && unzip 1.x-1.x.zip -d "/drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop" \
+    && "/drush/drush${DRUSH_VERSION}/vendor/bin/drush" cc drush

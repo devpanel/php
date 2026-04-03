@@ -64,3 +64,12 @@ RUN composer self-update
 
 USER ${USER}
 
+# Overlay version-specific Drush files. Docker COPY merges so common
+# drush8/9/10/11 are preserved.
+COPY --chown=${USER}:${GROUP} drush /drush
+
+RUN set -e; for drush_dir in /drush/drush*; do \
+  drush_name=$(basename "$drush_dir"); \
+  composer update --working-dir="$drush_dir"; \
+  echo "alias $drush_name=$drush_dir/vendor/bin/drush" >> ~/.bashrc; \
+  done
