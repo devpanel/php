@@ -444,19 +444,10 @@ runs:
         GHCR_REPO:                   ${{ steps.ghcr.outputs.repo }}
         GHCR_WRITABLE:               ${{ steps.check-ghcr.outputs.writable }}
         DOWNLOADS_DIR:               ${{ steps.preseed.outputs.downloads_dir }}
-        CODESERVER_VERSION:          ${{ steps.preseed.outputs.codeserver_version }}
-        CODESERVER_DEB_SHA256_AMD64: ${{ steps.preseed.outputs.codeserver_deb_sha256_amd64 }}
-        CODESERVER_DEB_SHA256_ARM64: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64 }}
-        COPILOT_CHAT_VERSION:        ${{ steps.preseed.outputs.copilot_chat_version }}
-        COPILOT_CHAT_VSIX_SHA256:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256 }}
-        CODESERVER_VERSION_BULLSEYE:          ${{ steps.preseed.outputs.codeserver_version_bullseye }}
-        CODESERVER_DEB_SHA256_AMD64_BULLSEYE: ${{ steps.preseed.outputs.codeserver_deb_sha256_amd64_bullseye }}
-        CODESERVER_DEB_SHA256_ARM64_BULLSEYE: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64_bullseye }}
-        COPILOT_CHAT_VERSION_BULLSEYE:        ${{ steps.preseed.outputs.copilot_chat_version_bullseye }}
-        COPILOT_CHAT_VSIX_SHA256_BULLSEYE:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256_bullseye }}
-        VERSIONS_BULLSEYE:                    ${{ steps.preseed.outputs.versions_bullseye }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
       with:
         source: .
-        files: docker-bake.hcl
+        files: |
+          docker-bake.hcl
+          ${{ steps.preseed.outputs.bake_overrides_file }}
         push:  true

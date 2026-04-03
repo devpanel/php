@@ -1,25 +1,21 @@
 name: Pre-seed build downloads
 description: >
-  Resolve the latest compatible code-server and Copilot Chat versions for each
-  Debian tier, restore previously downloaded files from the actions/cache, and
-  download them on a cache miss.  Files are placed in a pre-downloaded/
-  subdirectory of the output directory so that docker-bake.hcl can pass the
-  parent directory as the 'downloads' named context and the Dockerfile can
-  bind-mount source=/pre-downloaded.
+  Detect which Debian codename each PHP version runs on, resolve the latest
+  compatible code-server and Copilot Chat versions for each detected codename,
+  restore previously downloaded files from the actions/cache, and download
+  them on a cache miss.  Produces a JSON bake-override file that maps each
+  phpX_Y-downloader target to the correct versions and SHA256 digests for
+  its Debian tier.
+
+  Files are placed in a pre-downloaded/ subdirectory of the output directory
+  so that docker-bake.hcl can pass the parent directory as the 'downloads'
+  named context and the Dockerfile can bind-mount source=/pre-downloaded.
 
   Debian tiers are detected automatically by pulling each PHP version's base
   image (php:<version>-apache) and reading its VERSION_CODENAME from
   /etc/os-release.  Versions sharing a codename are grouped together and
   tested against the actual PHP image for that group — no hardcoded version
   lists or image names.
-
-  Two code-server sets are resolved:
-    bookworm  — latest stable release (works on Debian 12 / Bookworm images)
-    bullseye  — latest release that runs on Debian 11 / Bullseye PHP images,
-                verified by ldd-testing against the actual php:<ver>-apache
-                image for that group
-  When the latest release already works on Bullseye both sets resolve to the
-  same version and only one set of artifacts is downloaded.
 
 inputs:
   github_token:
@@ -38,43 +34,12 @@ outputs:
       Path to the directory whose pre-downloaded/ subdirectory contains the
       pre-seeded artifacts.  Pass as DOWNLOADS_DIR to docker buildx bake.
     value: ${{ steps.set-dir.outputs.downloads_dir }}
-  codeserver_version:
-    description: Resolved Bookworm code-server version (e.g. 4.100.0)
-    value: ${{ steps.resolve.outputs.codeserver_version }}
-  copilot_chat_version:
-    description: Resolved Bookworm Copilot Chat version (e.g. 0.27.0)
-    value: ${{ steps.resolve.outputs.copilot_chat_version }}
-  codeserver_deb_sha256_amd64:
-    description: SHA256 of the Bookworm code-server amd64 .deb.
-    value: ${{ steps.sha256.outputs.codeserver_deb_sha256_amd64 }}
-  codeserver_deb_sha256_arm64:
-    description: SHA256 of the Bookworm code-server arm64 .deb.
-    value: ${{ steps.sha256.outputs.codeserver_deb_sha256_arm64 }}
-  copilot_chat_vsix_sha256:
-    description: SHA256 of the Bookworm Copilot Chat VSIX.
-    value: ${{ steps.sha256.outputs.copilot_chat_vsix_sha256 }}
-  codeserver_version_bullseye:
-    description: Resolved Bullseye-compatible code-server version (e.g. 4.99.4)
-    value: ${{ steps.resolve.outputs.codeserver_version_bullseye }}
-  copilot_chat_version_bullseye:
-    description: Resolved Bullseye-compatible Copilot Chat version (e.g. 0.26.7)
-    value: ${{ steps.resolve.outputs.copilot_chat_version_bullseye }}
-  codeserver_deb_sha256_amd64_bullseye:
-    description: SHA256 of the Bullseye code-server amd64 .deb.
-    value: ${{ steps.sha256.outputs.codeserver_deb_sha256_amd64_bullseye }}
-  codeserver_deb_sha256_arm64_bullseye:
-    description: SHA256 of the Bullseye code-server arm64 .deb.
-    value: ${{ steps.sha256.outputs.codeserver_deb_sha256_arm64_bullseye }}
-  copilot_chat_vsix_sha256_bullseye:
-    description: SHA256 of the Bullseye Copilot Chat VSIX.
-    value: ${{ steps.sha256.outputs.copilot_chat_vsix_sha256_bullseye }}
-  versions_bullseye:
+  bake_overrides_file:
     description: >
-      Space-separated list of PHP versions detected to be running on Debian 11
-      (Bullseye), e.g. "7.4 8.0".  Detected dynamically from the PHP images;
-      empty if no version in the build matrix uses Bullseye.
-      Pass as VERSIONS_BULLSEYE to docker buildx bake.
-    value: ${{ steps.detect-codenames.outputs.versions_bullseye }}
+      Path to a JSON bake-override file that maps each phpX_Y-downloader target
+      to the code-server and Copilot Chat versions and SHA256 digests resolved
+      for its Debian tier.  Pass to docker buildx bake as an additional --file.
+    value: ${{ steps.assemble.outputs.bake_overrides_file }}
 
 runs:
   using: composite
@@ -84,197 +49,126 @@ runs:
       shell: bash
       run: echo "downloads_dir=${{ runner.temp }}/build-downloads" >> "$GITHUB_OUTPUT"
 
-    - name: Detect Debian codenames from PHP base images
-      id: detect-codenames
-      shell: bash
-      run: |
-        set -euo pipefail
-        VERSIONS="${{ inputs.versions }}"
-
-        # Pull all PHP base images and detect each version's Debian codename.
-        # This avoids hardcoding which PHP versions run on which Debian release.
-        declare -A codename_for  # version → codename
-        declare -A versions_for  # codename → space-separated versions (oldest first)
-        declare -A image_for     # codename → first (oldest) php:<ver>-apache image
-
-        for ver in $VERSIONS; do
-          image="php:${ver}-apache"
-          echo "Pulling ${image} to detect Debian codename..." >&2
-          docker pull --quiet "$image" >&2
-          codename=$(docker run --rm "$image" sh -c '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-unknown}"')
-          echo "  php:${ver}-apache → ${codename}" >&2
-          codename_for[$ver]="$codename"
-          if [ -z "${versions_for[$codename]+x}" ]; then
-            versions_for[$codename]="$ver"
-            image_for[$codename]="$image"
-          else
-            versions_for[$codename]="${versions_for[$codename]} $ver"
-          fi
-        done
-
-        # Identify the Bullseye group (if any).
-        VERSIONS_BULLSEYE="${versions_for[bullseye]:-}"
-        BULLSEYE_TEST_IMAGE="${image_for[bullseye]:-}"
-        echo "Detected codename groups:" >&2
-        for cn in "${!versions_for[@]}"; do
-          echo "  ${cn}: ${versions_for[$cn]}" >&2
-        done
-
-        echo "versions_bullseye=${VERSIONS_BULLSEYE}"     >> "$GITHUB_OUTPUT"
-        echo "bullseye_test_image=${BULLSEYE_TEST_IMAGE}" >> "$GITHUB_OUTPUT"
-
-    - name: Resolve artifact versions
-      id: resolve
+    - name: Detect Debian codenames and resolve artifact versions
+      id: detect-and-resolve
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
+        VERSIONS="${{ inputs.versions }}"
+        RESOLVE_ENV="$RUNNER_TEMP/preseed-resolve.env"
 
-        BULLSEYE_TEST_IMAGE="${{ steps.detect-codenames.outputs.bullseye_test_image }}"
-        VERSIONS_BULLSEYE="${{ steps.detect-codenames.outputs.versions_bullseye }}"
-
-        # ── Compatibility helpers ────────────────────────────────────────────
-        # Check whether a code-server .deb runs cleanly on a given PHP/distro image.
-        # Extracts the .deb on the runner host (dpkg-deb is available on ubuntu-latest),
-        # then runs ldd on the bundled Node binary inside the target container.
-        # Returns 0 if all libraries resolve, 1 if any are missing or the package
-        # cannot be extracted/inspected.
+        # ── Compatibility helpers ─────────────────────────────────────────────
+        # Returns 0 if the .deb's bundled node binary resolves all shared libs
+        # on the target image, 1 if extraction fails or any lib is missing.
         check_deb_on_image() {
           local deb="$1" image="$2"
           local tmp_dir
           tmp_dir=$(mktemp -d)
           if ! dpkg-deb -x "$deb" "$tmp_dir" 2>/dev/null; then
-            echo "  WARNING: failed to extract .deb; treating package as incompatible" >&2
+            echo "  WARNING: failed to extract .deb; treating as incompatible" >&2
             rm -rf "$tmp_dir"
             return 1
           fi
-          # Find the main Node binary (architecture-specific native binary).
           local node_bin
           node_bin=$(find "$tmp_dir" -name "node" ! -name "*.js" -perm /111 -type f | head -1)
           if [ -z "$node_bin" ]; then
-            echo "  WARNING: no node binary found in .deb; treating package as incompatible" >&2
+            echo "  WARNING: no node binary found in .deb; treating as incompatible" >&2
             rm -rf "$tmp_dir"
             return 1
           fi
-          # Run ldd inside the target container.  Any "not found" lines indicate
-          # that the binary requires a library (e.g. a newer GLIBC) not present in
-          # that image, making the package incompatible.
           local result=0
-          if ! docker run --rm \
-               -v "${node_bin}:/tmp/node:ro" \
-               --entrypoint sh \
-               "$image" \
-               -c 'missing=$(ldd /tmp/node 2>&1 | grep "not found"); [ -z "$missing" ] || { echo "$missing" >&2; exit 1; }'; then
-            result=1
-          fi
+          docker run --rm \
+            -v "${node_bin}:/tmp/node:ro" \
+            --entrypoint sh \
+            "$image" \
+            -c 'missing=$(ldd /tmp/node 2>&1 | grep "not found"); [ -z "$missing" ] || { echo "$missing" >&2; exit 1; }' \
+            || result=1
           rm -rf "$tmp_dir"
           return $result
         }
 
-        # Check whether a Copilot Chat VSIX runs cleanly on a given PHP/distro image.
-        # Extracts the VSIX on the runner host, then runs ldd on each .node file
-        # inside a container based on the target image.
+        # Returns 0 if all .node files in the VSIX resolve all shared libs on
+        # the target image, 1 if extraction fails or any lib is missing.
         check_vsix_on_image() {
           local vsix="$1" image="$2"
           local tmp_dir result=0
           tmp_dir=$(mktemp -d)
           if ! unzip -q "$vsix" -d "$tmp_dir" 2>/dev/null; then
-            echo "  WARNING: failed to extract VSIX; treating artifact as incompatible" >&2
+            echo "  WARNING: failed to extract VSIX; treating as incompatible" >&2
             rm -rf "$tmp_dir"
             return 1
           fi
           while IFS= read -r node_file; do
-            if ! docker run --rm \
-                 -v "${node_file}:/tmp/check.node:ro" \
-                 --entrypoint sh \
-                 "$image" \
-                 -c 'missing=$(ldd /tmp/check.node 2>&1 | grep "not found"); [ -z "$missing" ] || { echo "$missing" >&2; exit 1; }'; then
-              result=1
-              break
-            fi
+            docker run --rm \
+              -v "${node_file}:/tmp/check.node:ro" \
+              --entrypoint sh \
+              "$image" \
+              -c 'missing=$(ldd /tmp/check.node 2>&1 | grep "not found"); [ -z "$missing" ] || { echo "$missing" >&2; exit 1; }' \
+              || { result=1; break; }
           done < <(find "$tmp_dir" -name "*.node" -type f 2>/dev/null)
           rm -rf "$tmp_dir"
           return $result
         }
-        # ────────────────────────────────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────────────────
 
-        # Fetch the list of stable code-server major-4 releases once.
+        # ── Step 1: Detect Debian codename for each PHP version ───────────────
+        declare -A CODENAME_FOR   # PHP version → Debian codename
+        declare -A IMAGE_FOR      # Debian codename → representative php:<ver>-apache image
+        declare -A VERSIONS_FOR   # Debian codename → space-separated PHP versions
+
+        for ver in $VERSIONS; do
+          image="php:${ver}-apache"
+          echo "Pulling ${image} to detect Debian codename..." >&2
+          docker pull --quiet "$image" >&2
+          codename=$(docker run --rm "$image" sh -c \
+            '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-}"')
+          # Validate: Debian codenames are purely lowercase ASCII letters.
+          if [ -z "$codename" ] || ! printf '%s' "$codename" | grep -qE '^[a-z]+$'; then
+            echo "ERROR: unexpected VERSION_CODENAME '${codename}' from ${image}" >&2
+            echo "       Expected a lowercase-only string like 'bookworm' or 'bullseye'." >&2
+            exit 1
+          fi
+          echo "  php:${ver}-apache → ${codename}" >&2
+          CODENAME_FOR[$ver]="$codename"
+          if [ -z "${VERSIONS_FOR[$codename]+x}" ]; then
+            VERSIONS_FOR[$codename]="$ver"
+            IMAGE_FOR[$codename]="$image"
+          else
+            VERSIONS_FOR[$codename]="${VERSIONS_FOR[$codename]} $ver"
+          fi
+        done
+
+        echo "Detected codename groups:" >&2
+        for cn in "${!VERSIONS_FOR[@]}"; do
+          echo "  ${cn}: PHP ${VERSIONS_FOR[$cn]} (test image: ${IMAGE_FOR[$cn]})" >&2
+        done
+
+        # The primary (most-capable) codename: codename of the LAST PHP version
+        # in the input list, assumed to correspond to the newest Debian release.
+        PRIMARY_CODENAME=""
+        for ver in $VERSIONS; do
+          PRIMARY_CODENAME="${CODENAME_FOR[$ver]}"
+        done
+        [ -n "$PRIMARY_CODENAME" ] || {
+          echo "ERROR: no PHP versions were processed; 'versions' input may be empty" >&2
+          exit 1
+        }
+        [ "${#VERSIONS_FOR[@]}" -gt 0 ] || {
+          echo "ERROR: no Debian codenames were detected; 'versions' input may be empty" >&2
+          exit 1
+        }
+        PRIMARY_IMAGE="${IMAGE_FOR[$PRIMARY_CODENAME]}"
+        echo "Primary codename: ${PRIMARY_CODENAME} (representative image: ${PRIMARY_IMAGE})" >&2
+
+        # ── Step 2: Fetch upstream release data once ──────────────────────────
         CODESERVER_RELEASES_JSON=$(curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
           -H 'Accept: application/vnd.github+json' \
           -H "Authorization: Bearer ${GITHUB_TOKEN}" \
           -H 'X-GitHub-Api-Version: 2022-11-28' \
           'https://api.github.com/repos/coder/code-server/releases?per_page=100')
 
-        # ── Bookworm code-server: pick the absolute latest stable v4 ─────────
-        CODESERVER_VERSION=$(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
-          first(
-            .[] |
-            select(.draft==false and .prerelease==false) |
-            select(.tag_name | test("^v?4\\.[0-9]+\\.[0-9]+([-+].*)?$")) |
-            .tag_name | ltrimstr("v")
-          ) // ""
-        ')
-        [ -n "$CODESERVER_VERSION" ] || { echo "Failed to detect Bookworm code-server version" >&2; exit 1; }
-        echo "Bookworm code-server: ${CODESERVER_VERSION}" >&2
-
-        # Download the Bookworm amd64 .deb — reused for the Bullseye compatibility check.
-        curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
-          "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb" \
-          -o "$RUNNER_TEMP/code-server-bookworm-amd64.deb"
-        head -c 8 "$RUNNER_TEMP/code-server-bookworm-amd64.deb" | grep -qF '!<arch>' || \
-          { echo "ERROR: code-server_${CODESERVER_VERSION}_amd64.deb failed format validation (not a valid .deb archive)" >&2; exit 1; }
-
-        # ── Bullseye code-server ─────────────────────────────────────────────
-        # If no Bullseye PHP versions exist in the build matrix (BULLSEYE_TEST_IMAGE
-        # is empty), skip Bullseye compat checking — all versions use Bookworm.
-        if [ -z "$BULLSEYE_TEST_IMAGE" ]; then
-          CODESERVER_VERSION_BULLSEYE="$CODESERVER_VERSION"
-          cp "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "$RUNNER_TEMP/code-server-bullseye-amd64.deb"
-          echo "No Bullseye PHP versions in build matrix; Bullseye code-server = Bookworm" >&2
-        # Test the Bookworm version first against the detected Bullseye PHP image.
-        elif check_deb_on_image "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "$BULLSEYE_TEST_IMAGE"; then
-          CODESERVER_VERSION_BULLSEYE="$CODESERVER_VERSION"
-          cp "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "$RUNNER_TEMP/code-server-bullseye-amd64.deb"
-          echo "Bullseye code-server = Bookworm (${CODESERVER_VERSION_BULLSEYE} runs on ${BULLSEYE_TEST_IMAGE})" >&2
-        else
-          echo "Bookworm code-server ${CODESERVER_VERSION} does not run on ${BULLSEYE_TEST_IMAGE}; searching for compatible version..." >&2
-          CODESERVER_VERSION_BULLSEYE=""
-          while IFS= read -r candidate; do
-            [ "$candidate" = "$CODESERVER_VERSION" ] && continue
-            echo "Checking code-server ${candidate} on ${BULLSEYE_TEST_IMAGE}..." >&2
-            TMP_DEB=$(mktemp --suffix=.deb)
-            if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
-                 "https://github.com/coder/code-server/releases/download/v${candidate}/code-server_${candidate}_amd64.deb" \
-                 -o "$TMP_DEB" 2>/dev/null \
-               && head -c 8 "$TMP_DEB" | grep -qF '!<arch>' \
-               && check_deb_on_image "$TMP_DEB" "$BULLSEYE_TEST_IMAGE"; then
-              CODESERVER_VERSION_BULLSEYE="$candidate"
-              mv "$TMP_DEB" "$RUNNER_TEMP/code-server-bullseye-amd64.deb"
-              echo "  Selected Bullseye code-server: ${CODESERVER_VERSION_BULLSEYE}" >&2
-              break
-            else
-              echo "  code-server ${candidate} does not run on ${BULLSEYE_TEST_IMAGE}, trying older release..." >&2
-              rm -f "$TMP_DEB"
-            fi
-          done < <(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
-            [.[] |
-            select(.draft==false and .prerelease==false) |
-            select(.tag_name | test("^v?4\\.[0-9]+\\.[0-9]+([-+].*)?$")) |
-            .tag_name | ltrimstr("v")] | .[]')
-          [ -n "$CODESERVER_VERSION_BULLSEYE" ] || {
-            echo "Failed to detect a ${BULLSEYE_TEST_IMAGE}-compatible code-server version" >&2; exit 1;
-          }
-        fi
-
-        # Derive VS Code versions (code-server 4.X.Y bundles VS Code 1.X.Y).
-        VSCODE_VERSION_BOOKWORM="$(printf '%s' "$CODESERVER_VERSION" | sed 's/^[0-9][0-9]*\./1./')"
-        VSCODE_VERSION_BULLSEYE="$(printf '%s' "$CODESERVER_VERSION_BULLSEYE" | sed 's/^[0-9][0-9]*\./1./')"
-
-        # ── Copilot Chat ─────────────────────────────────────────────────────
-        # Fetch all Copilot Chat versions from the VS Marketplace once.
-        # Stable versions have a patch component of at most 9 digits
-        # (excludes 10-digit YYYYMMDDNN pre-releases).
         MARKETPLACE_JSON=$(curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
           -X POST \
           -H 'Content-Type: application/json' \
@@ -282,8 +176,8 @@ runs:
           -d '{"filters":[{"criteria":[{"filterType":7,"value":"GitHub.copilot-chat"}],"pageSize":100}],"flags":17}' \
           'https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery')
 
-        # Emit stable Copilot Chat versions compatible with a given VS Code version,
-        # sorted newest first.
+        # Emits stable Copilot Chat versions compatible with the given VS Code
+        # version, sorted newest-first.
         copilot_candidates_for_vscode() {
           local vscode="$1"
           printf '%s' "$MARKETPLACE_JSON" | jq -r \
@@ -303,268 +197,333 @@ runs:
             '
         }
 
-        # Bookworm Copilot Chat: pick the latest version compatible with the
-        # Bookworm VS Code engine.
-        COPILOT_CHAT_VERSION=$(copilot_candidates_for_vscode "$VSCODE_VERSION_BOOKWORM" | head -1)
-        [ -n "$COPILOT_CHAT_VERSION" ] || { echo "Failed to detect Bookworm Copilot Chat version" >&2; exit 1; }
-        echo "Bookworm Copilot Chat: ${COPILOT_CHAT_VERSION}" >&2
+        # ── Step 3: Resolve code-server for the primary codename ──────────────
+        CS_VERSION_PRIMARY=$(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
+          first(
+            .[] |
+            select(.draft==false and .prerelease==false) |
+            select(.tag_name | test("^v?4\\.[0-9]+\\.[0-9]+([-+].*)?$")) |
+            .tag_name | ltrimstr("v")
+          ) // ""
+        ')
+        [ -n "$CS_VERSION_PRIMARY" ] || {
+          echo "ERROR: failed to detect latest stable code-server version" >&2; exit 1
+        }
+        echo "Primary (${PRIMARY_CODENAME}) code-server: ${CS_VERSION_PRIMARY}" >&2
+
+        # Download primary amd64 .deb (reused for compat testing on other codenames).
+        curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
+          "https://github.com/coder/code-server/releases/download/v${CS_VERSION_PRIMARY}/code-server_${CS_VERSION_PRIMARY}_amd64.deb" \
+          -o "$RUNNER_TEMP/cs-${PRIMARY_CODENAME}-amd64.deb"
+        head -c 8 "$RUNNER_TEMP/cs-${PRIMARY_CODENAME}-amd64.deb" | grep -qF '!<arch>' || {
+          echo "ERROR: code-server_${CS_VERSION_PRIMARY}_amd64.deb failed format validation" >&2; exit 1
+        }
+
+        # ── Step 4: Resolve Copilot Chat for the primary codename ─────────────
+        VSCODE_PRIMARY="$(printf '%s' "$CS_VERSION_PRIMARY" | sed 's/^[0-9][0-9]*\./1./')"
+        CC_VERSION_PRIMARY=$(copilot_candidates_for_vscode "$VSCODE_PRIMARY" | head -1)
+        [ -n "$CC_VERSION_PRIMARY" ] || {
+          echo "ERROR: failed to detect Copilot Chat version for ${PRIMARY_CODENAME}" >&2; exit 1
+        }
+        echo "Primary (${PRIMARY_CODENAME}) Copilot Chat: ${CC_VERSION_PRIMARY}" >&2
+
+        # Download primary VSIX.
         curl -fsSL --compressed --retry 3 --retry-all-errors --connect-timeout 30 \
-          "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage" \
-          -o "$RUNNER_TEMP/copilot-chat-bookworm.vsix"
-        od -An -N4 -tx1 "$RUNNER_TEMP/copilot-chat-bookworm.vsix" | tr -d ' \n' | grep -q '^504b0304' || \
-          { echo "ERROR: copilot-chat-${COPILOT_CHAT_VERSION}.vsix failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
+          "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${CC_VERSION_PRIMARY}/vspackage" \
+          -o "$RUNNER_TEMP/cc-${PRIMARY_CODENAME}.vsix"
+        od -An -N4 -tx1 "$RUNNER_TEMP/cc-${PRIMARY_CODENAME}.vsix" | tr -d ' \n' | grep -q '^504b0304' || {
+          echo "ERROR: copilot-chat-${CC_VERSION_PRIMARY}.vsix failed format validation" >&2; exit 1
+        }
 
-        # Bullseye Copilot Chat: latest version compatible with the Bullseye VS Code
-        # engine that also runs on the detected Bullseye PHP image.
-        COPILOT_CHAT_VERSION_BULLSEYE=""
-        if [ -z "$BULLSEYE_TEST_IMAGE" ]; then
-          # No Bullseye PHP versions — same as Bookworm.
-          COPILOT_CHAT_VERSION_BULLSEYE="$COPILOT_CHAT_VERSION"
-          cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$RUNNER_TEMP/copilot-chat-bullseye.vsix"
-          echo "No Bullseye PHP versions; Bullseye Copilot Chat = Bookworm" >&2
-        elif [ "$CODESERVER_VERSION_BULLSEYE" = "$CODESERVER_VERSION" ] \
-           && check_vsix_on_image "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$BULLSEYE_TEST_IMAGE"; then
-          # Fast path: if Bullseye code-server == Bookworm AND the Bookworm VSIX runs
-          # on the Bullseye PHP image, reuse the Bookworm VSIX.
-          COPILOT_CHAT_VERSION_BULLSEYE="$COPILOT_CHAT_VERSION"
-          cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$RUNNER_TEMP/copilot-chat-bullseye.vsix"
-          echo "Bullseye Copilot Chat = Bookworm (${COPILOT_CHAT_VERSION_BULLSEYE} runs on ${BULLSEYE_TEST_IMAGE})" >&2
-        else
-          while IFS= read -r candidate; do
-            echo "Checking Copilot Chat ${candidate} on ${BULLSEYE_TEST_IMAGE}..." >&2
-            TMP_VSIX=$(mktemp --suffix=.vsix)
-            CC_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${candidate}/vspackage"
-            # Reuse already-downloaded Bookworm VSIX when candidate matches.
-            if [ "$candidate" = "$COPILOT_CHAT_VERSION" ] \
-               && [ -f "$RUNNER_TEMP/copilot-chat-bookworm.vsix" ]; then
-              cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$TMP_VSIX"
-            else
-              curl -fsSL --compressed --retry 3 --retry-all-errors --connect-timeout 30 \
-                "${CC_URL}" -o "$TMP_VSIX" 2>/dev/null || { rm -f "$TMP_VSIX"; continue; }
-              # Validate the ZIP magic before running ldd checks.
-              od -An -N4 -tx1 "$TMP_VSIX" | tr -d ' \n' | grep -q '^504b0304' || { rm -f "$TMP_VSIX"; continue; }
-            fi
-            if check_vsix_on_image "$TMP_VSIX" "$BULLSEYE_TEST_IMAGE"; then
-              COPILOT_CHAT_VERSION_BULLSEYE="$candidate"
-              mv "$TMP_VSIX" "$RUNNER_TEMP/copilot-chat-bullseye.vsix"
-              echo "  Selected Bullseye Copilot Chat: ${COPILOT_CHAT_VERSION_BULLSEYE}" >&2
-              break
-            else
-              echo "  Copilot Chat ${candidate} does not run on ${BULLSEYE_TEST_IMAGE}, trying older version..." >&2
-              rm -f "$TMP_VSIX"
-            fi
-          done < <(copilot_candidates_for_vscode "$VSCODE_VERSION_BULLSEYE")
-          [ -n "$COPILOT_CHAT_VERSION_BULLSEYE" ] || {
-            echo "Failed to detect a ${BULLSEYE_TEST_IMAGE}-compatible Copilot Chat version" >&2; exit 1;
-          }
-        fi
+        # ── Step 5: Resolve for each non-primary codename ─────────────────────
+        declare -A CS_VERSION_FOR   # codename → resolved code-server version
+        declare -A CC_VERSION_FOR   # codename → resolved Copilot Chat version
+        CS_VERSION_FOR[$PRIMARY_CODENAME]="$CS_VERSION_PRIMARY"
+        CC_VERSION_FOR[$PRIMARY_CODENAME]="$CC_VERSION_PRIMARY"
 
-        echo "codeserver_version=${CODESERVER_VERSION}"                         >> "$GITHUB_OUTPUT"
-        echo "copilot_chat_version=${COPILOT_CHAT_VERSION}"                     >> "$GITHUB_OUTPUT"
-        echo "codeserver_version_bullseye=${CODESERVER_VERSION_BULLSEYE}"       >> "$GITHUB_OUTPUT"
-        echo "copilot_chat_version_bullseye=${COPILOT_CHAT_VERSION_BULLSEYE}"   >> "$GITHUB_OUTPUT"
-        echo "Resolved Bookworm: code-server=${CODESERVER_VERSION}  VS Code=${VSCODE_VERSION_BOOKWORM}  copilot-chat=${COPILOT_CHAT_VERSION}"
-        echo "Resolved Bullseye: code-server=${CODESERVER_VERSION_BULLSEYE}  VS Code=${VSCODE_VERSION_BULLSEYE}  copilot-chat=${COPILOT_CHAT_VERSION_BULLSEYE}"
+        for codename in "${!VERSIONS_FOR[@]}"; do
+          [ "$codename" = "$PRIMARY_CODENAME" ] && continue
+          test_image="${IMAGE_FOR[$codename]}"
+          echo "Resolving artifacts for ${codename} (test image: ${test_image})..." >&2
 
-    # ── Cache steps ──────────────────────────────────────────────────────────
-    # Cache code-server .deb files and Copilot Chat VSIXs separately so that
-    # a version bump in one artifact does not invalidate the other's cache.
-    # Bookworm and Bullseye artifacts are cached under distinct keys to prevent
-    # key collisions when both tiers resolve to the same version.
-    - name: Cache Bookworm code-server debs
-      id: cache-cs-bookworm
-      uses: actions/cache@v5
-      with:
-        path: ${{ runner.temp }}/code-server-debs-bookworm
-        key: code-server-debs-bookworm-${{ steps.resolve.outputs.codeserver_version }}
-
-    - name: Cache Bullseye code-server debs
-      id: cache-cs-bullseye
-      uses: actions/cache@v5
-      with:
-        path: ${{ runner.temp }}/code-server-debs-bullseye
-        key: code-server-debs-bullseye-${{ steps.resolve.outputs.codeserver_version_bullseye }}
-
-    - name: Cache Bookworm Copilot Chat VSIX
-      id: cache-cc-bookworm
-      uses: actions/cache@v5
-      with:
-        path: ${{ runner.temp }}/copilot-chat-bookworm.vsix
-        key: copilot-chat-vsix-bookworm-${{ steps.resolve.outputs.copilot_chat_version }}
-
-    - name: Cache Bullseye Copilot Chat VSIX
-      id: cache-cc-bullseye
-      uses: actions/cache@v5
-      with:
-        path: ${{ runner.temp }}/copilot-chat-bullseye.vsix
-        key: copilot-chat-vsix-bullseye-${{ steps.resolve.outputs.copilot_chat_version_bullseye }}
-
-    # ── Download steps ───────────────────────────────────────────────────────
-    - name: Download Bookworm code-server debs (cache miss)
-      if: steps.cache-cs-bookworm.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        set -euo pipefail
-        CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
-        mkdir -p "${{ runner.temp }}/code-server-debs-bookworm"
-        for ARCH in amd64 arm64; do
-          DEB="code-server_${CODESERVER_VERSION}_${ARCH}.deb"
-          TARGET="${{ runner.temp }}/code-server-debs-bookworm/${DEB}"
-          # Reuse the amd64 .deb pre-downloaded during the resolve step.
-          if [ "$ARCH" = "amd64" ] && [ -f "$RUNNER_TEMP/code-server-bookworm-amd64.deb" ]; then
-            echo "Reusing ${DEB} from resolve step"
-            cp "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "$TARGET"
-            head -c 8 "$TARGET" | grep -qF '!<arch>' || \
-              { echo "ERROR: ${DEB} failed format validation (not a valid .deb archive)" >&2; exit 1; }
+          # ── code-server ────────────────────────────────────────────────────
+          if check_deb_on_image "$RUNNER_TEMP/cs-${PRIMARY_CODENAME}-amd64.deb" "$test_image"; then
+            CS_VERSION_FOR[$codename]="$CS_VERSION_PRIMARY"
+            cp "$RUNNER_TEMP/cs-${PRIMARY_CODENAME}-amd64.deb" \
+               "$RUNNER_TEMP/cs-${codename}-amd64.deb"
+            echo "  ${codename} code-server = ${CS_VERSION_PRIMARY} (primary version works)" >&2
           else
-            echo "Downloading ${DEB}"
-            curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
-              "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/${DEB}" \
-              -o "$TARGET"
-            head -c 8 "$TARGET" | grep -qF '!<arch>' || \
-              { echo "ERROR: ${DEB} failed format validation (not a valid .deb archive)" >&2; exit 1; }
+            echo "  Primary code-server ${CS_VERSION_PRIMARY} incompatible with ${test_image}; searching..." >&2
+            CS_VERSION_FOR[$codename]=""
+            while IFS= read -r candidate; do
+              [ "$candidate" = "$CS_VERSION_PRIMARY" ] && continue
+              echo "  Checking code-server ${candidate} on ${test_image}..." >&2
+              TMP_DEB=$(mktemp --suffix=.deb)
+              if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
+                   "https://github.com/coder/code-server/releases/download/v${candidate}/code-server_${candidate}_amd64.deb" \
+                   -o "$TMP_DEB" 2>/dev/null \
+                 && head -c 8 "$TMP_DEB" | grep -qF '!<arch>' \
+                 && check_deb_on_image "$TMP_DEB" "$test_image"; then
+                CS_VERSION_FOR[$codename]="$candidate"
+                mv "$TMP_DEB" "$RUNNER_TEMP/cs-${codename}-amd64.deb"
+                echo "  Selected ${codename} code-server: ${candidate}" >&2
+                break
+              else
+                rm -f "$TMP_DEB"
+              fi
+            done < <(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
+              [.[] |
+              select(.draft==false and .prerelease==false) |
+              select(.tag_name | test("^v?4\\.[0-9]+\\.[0-9]+([-+].*)?$")) |
+              .tag_name | ltrimstr("v")] | .[]')
+            [ -n "${CS_VERSION_FOR[$codename]}" ] || {
+              echo "ERROR: no compatible code-server version found for ${test_image}" >&2; exit 1
+            }
+          fi
+
+          # ── Copilot Chat ───────────────────────────────────────────────────
+          if [ "${CS_VERSION_FOR[$codename]}" = "$CS_VERSION_PRIMARY" ] \
+             && check_vsix_on_image "$RUNNER_TEMP/cc-${PRIMARY_CODENAME}.vsix" "$test_image"; then
+            CC_VERSION_FOR[$codename]="$CC_VERSION_PRIMARY"
+            cp "$RUNNER_TEMP/cc-${PRIMARY_CODENAME}.vsix" \
+               "$RUNNER_TEMP/cc-${codename}.vsix"
+            echo "  ${codename} Copilot Chat = ${CC_VERSION_PRIMARY} (primary VSIX works)" >&2
+          else
+            VSCODE_THIS="$(printf '%s' "${CS_VERSION_FOR[$codename]}" | sed 's/^[0-9][0-9]*\./1./')"
+            CC_VERSION_FOR[$codename]=""
+            while IFS= read -r candidate; do
+              echo "  Checking Copilot Chat ${candidate} on ${test_image}..." >&2
+              TMP_VSIX=$(mktemp --suffix=.vsix)
+              if [ "$candidate" = "$CC_VERSION_PRIMARY" ] \
+                 && [ -f "$RUNNER_TEMP/cc-${PRIMARY_CODENAME}.vsix" ]; then
+                cp "$RUNNER_TEMP/cc-${PRIMARY_CODENAME}.vsix" "$TMP_VSIX"
+              else
+                curl -fsSL --compressed --retry 3 --retry-all-errors --connect-timeout 30 \
+                  "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${candidate}/vspackage" \
+                  -o "$TMP_VSIX" 2>/dev/null || { rm -f "$TMP_VSIX"; continue; }
+                od -An -N4 -tx1 "$TMP_VSIX" | tr -d ' \n' | grep -q '^504b0304' \
+                  || { rm -f "$TMP_VSIX"; continue; }
+              fi
+              if check_vsix_on_image "$TMP_VSIX" "$test_image"; then
+                CC_VERSION_FOR[$codename]="$candidate"
+                mv "$TMP_VSIX" "$RUNNER_TEMP/cc-${codename}.vsix"
+                echo "  Selected ${codename} Copilot Chat: ${candidate}" >&2
+                break
+              else
+                rm -f "$TMP_VSIX"
+              fi
+            done < <(copilot_candidates_for_vscode "$VSCODE_THIS")
+            [ -n "${CC_VERSION_FOR[$codename]}" ] || {
+              echo "ERROR: no compatible Copilot Chat version found for ${test_image}" >&2; exit 1
+            }
           fi
         done
 
-    - name: Download Bullseye code-server debs (cache miss)
-      if: steps.cache-cs-bullseye.outputs.cache-hit != 'true'
+        # ── Step 6: Write resolve.env and compute cache key ───────────────────
+        # The env file is sourced by subsequent steps to access codename mappings
+        # and resolved versions without re-running docker or API calls.
+        # Variable names use the codename as a suffix (e.g. CS_VERSION_bookworm);
+        # Debian codenames consist solely of lowercase ASCII letters, so they are
+        # always valid bash identifier suffixes.
+        {
+          printf 'PRIMARY_CODENAME=%s\n' "$PRIMARY_CODENAME"
+          # Space-separated sorted unique codenames — quoted so sourcing is safe.
+          printf 'UNIQUE_CODENAMES="%s"\n' \
+            "$(echo "${!VERSIONS_FOR[@]}" | tr ' ' '\n' | sort | tr '\n' ' ' | xargs)"
+          # Per-PHP-version codename mapping.
+          for ver in $VERSIONS; do
+            key="$(echo "$ver" | tr '.' '_')"
+            printf 'CODENAME_%s=%s\n' "$key" "${CODENAME_FOR[$ver]}"
+          done
+          # Per-codename resolved versions.
+          for cn in "${!VERSIONS_FOR[@]}"; do
+            printf 'CS_VERSION_%s=%s\n' "$cn" "${CS_VERSION_FOR[$cn]}"
+            printf 'CC_VERSION_%s=%s\n' "$cn" "${CC_VERSION_FOR[$cn]}"
+          done
+        } > "$RESOLVE_ENV"
+
+        # Cache key: deterministic SHA256 of all (codename, cs_version, cc_version) tuples.
+        CACHE_KEY=$(
+          for cn in $(echo "${!VERSIONS_FOR[@]}" | tr ' ' '\n' | sort); do
+            printf '%s=%s,%s;' "$cn" "${CS_VERSION_FOR[$cn]}" "${CC_VERSION_FOR[$cn]}"
+          done | sha256sum | awk '{print $1}'
+        )
+
+        echo "cache_key=${CACHE_KEY}"       >> "$GITHUB_OUTPUT"
+        echo "resolve_env=${RESOLVE_ENV}"   >> "$GITHUB_OUTPUT"
+
+        echo "Resolved versions per Debian codename:"
+        for cn in $(echo "${!VERSIONS_FOR[@]}" | tr ' ' '\n' | sort); do
+          echo "  ${cn}: code-server=${CS_VERSION_FOR[$cn]}  copilot-chat=${CC_VERSION_FOR[$cn]}"
+        done
+
+    # ── Cache step ────────────────────────────────────────────────────────────
+    # A single cache entry covers all detected Debian tiers.  The key is a
+    # hash of every (codename, cs_version, cc_version) tuple, so the cache is
+    # invalidated if any resolved version changes for any tier.
+    - name: Cache preseed artifacts
+      id: cache
+      uses: actions/cache@v5
+      with:
+        path: ${{ runner.temp }}/preseed-artifacts
+        key: preseed-${{ steps.detect-and-resolve.outputs.cache_key }}
+
+    # ── Download step ─────────────────────────────────────────────────────────
+    # Runs only on cache miss.  Loops over all detected Debian codenames and
+    # downloads the resolved code-server .deb files and Copilot Chat VSIX into
+    # per-codename subdirectories of preseed-artifacts/.
+    - name: Download artifacts for all detected Debian tiers (cache miss)
+      if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
-        CODESERVER_VERSION_BULLSEYE="${{ steps.resolve.outputs.codeserver_version_bullseye }}"
-        CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
-        mkdir -p "${{ runner.temp }}/code-server-debs-bullseye"
-        for ARCH in amd64 arm64; do
-          DEB="code-server_${CODESERVER_VERSION_BULLSEYE}_${ARCH}.deb"
-          TARGET="${{ runner.temp }}/code-server-debs-bullseye/${DEB}"
-          # When bullseye == bookworm, copy from the already-downloaded Bookworm debs.
-          if [ "$CODESERVER_VERSION_BULLSEYE" = "$CODESERVER_VERSION" ] \
-             && [ -f "${{ runner.temp }}/code-server-debs-bookworm/${DEB}" ]; then
-            echo "Bullseye == Bookworm; copying ${DEB} from Bookworm debs"
-            cp "${{ runner.temp }}/code-server-debs-bookworm/${DEB}" "$TARGET"
-          # Reuse the amd64 .deb pre-downloaded during the resolve step.
-          elif [ "$ARCH" = "amd64" ] && [ -f "$RUNNER_TEMP/code-server-bullseye-amd64.deb" ]; then
-            echo "Reusing ${DEB} from resolve step"
-            cp "$RUNNER_TEMP/code-server-bullseye-amd64.deb" "$TARGET"
-            head -c 8 "$TARGET" | grep -qF '!<arch>' || \
-              { echo "ERROR: ${DEB} failed format validation (not a valid .deb archive)" >&2; exit 1; }
+        VERSIONS="${{ inputs.versions }}"
+        # shellcheck source=/dev/null
+        source "${{ steps.detect-and-resolve.outputs.resolve_env }}"
+
+        for cn in $UNIQUE_CODENAMES; do
+          cs_ver_var="CS_VERSION_${cn}"
+          cc_ver_var="CC_VERSION_${cn}"
+          cs_ver="${!cs_ver_var}"
+          cc_ver="${!cc_ver_var}"
+          ARTIFACT_DIR="${{ runner.temp }}/preseed-artifacts/${cn}"
+          mkdir -p "$ARTIFACT_DIR"
+
+          # ── code-server .deb files ──────────────────────────────────────────
+          for ARCH in amd64 arm64; do
+            DEB="code-server_${cs_ver}_${ARCH}.deb"
+            TARGET="${ARTIFACT_DIR}/${DEB}"
+            # Reuse the amd64 .deb pre-downloaded during the resolve step.
+            RESOLVE_DEB="$RUNNER_TEMP/cs-${cn}-amd64.deb"
+            if [ "$ARCH" = "amd64" ] && [ -f "$RESOLVE_DEB" ]; then
+              echo "Reusing ${DEB} from resolve step (${cn})"
+              [ "$RESOLVE_DEB" != "$TARGET" ] && cp "$RESOLVE_DEB" "$TARGET"
+              head -c 8 "$TARGET" | grep -qF '!<arch>' || {
+                echo "ERROR: ${DEB} failed format validation" >&2; exit 1
+              }
+            else
+              echo "Downloading ${DEB} (${cn})"
+              curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
+                "https://github.com/coder/code-server/releases/download/v${cs_ver}/${DEB}" \
+                -o "$TARGET"
+              head -c 8 "$TARGET" | grep -qF '!<arch>' || {
+                echo "ERROR: ${DEB} failed format validation" >&2; exit 1
+              }
+            fi
+          done
+
+          # ── Copilot Chat VSIX ───────────────────────────────────────────────
+          VSIX="copilot-chat-${cc_ver}.vsix"
+          TARGET="${ARTIFACT_DIR}/${VSIX}"
+          RESOLVE_VSIX="$RUNNER_TEMP/cc-${cn}.vsix"
+          if [ -f "$RESOLVE_VSIX" ]; then
+            echo "Reusing ${VSIX} from resolve step (${cn})"
+            [ "$RESOLVE_VSIX" != "$TARGET" ] && cp "$RESOLVE_VSIX" "$TARGET"
+            od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || {
+              echo "ERROR: ${VSIX} failed format validation" >&2; exit 1
+            }
           else
-            echo "Downloading ${DEB}"
-            curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
-              "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION_BULLSEYE}/${DEB}" \
+            echo "Downloading ${VSIX} (${cn})"
+            curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
+              "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${cc_ver}/vspackage" \
               -o "$TARGET"
-            head -c 8 "$TARGET" | grep -qF '!<arch>' || \
-              { echo "ERROR: ${DEB} failed format validation (not a valid .deb archive)" >&2; exit 1; }
+            od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || {
+              echo "ERROR: ${VSIX} failed format validation" >&2; exit 1
+            }
           fi
         done
 
-    - name: Download Bookworm Copilot Chat VSIX (cache miss)
-      if: steps.cache-cc-bookworm.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        set -euo pipefail
-        COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
-        TARGET="${{ runner.temp }}/copilot-chat-bookworm.vsix"
-        # Reuse the VSIX pre-downloaded during the resolve step.
-        if [ -f "$RUNNER_TEMP/copilot-chat-bookworm.vsix" ]; then
-          echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION}.vsix from resolve step"
-          [ "$RUNNER_TEMP/copilot-chat-bookworm.vsix" = "$TARGET" ] || \
-            cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$TARGET"
-          od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || \
-            { echo "ERROR: Reused VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
-        else
-          echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
-          curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
-            "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage" \
-            -o "$TARGET"
-          od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || \
-            { echo "ERROR: Downloaded VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
-        fi
-
-    - name: Download Bullseye Copilot Chat VSIX (cache miss)
-      if: steps.cache-cc-bullseye.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        set -euo pipefail
-        COPILOT_CHAT_VERSION_BULLSEYE="${{ steps.resolve.outputs.copilot_chat_version_bullseye }}"
-        COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
-        TARGET="${{ runner.temp }}/copilot-chat-bullseye.vsix"
-        # When bullseye == bookworm, copy from the already-downloaded Bookworm VSIX.
-        if [ "$COPILOT_CHAT_VERSION_BULLSEYE" = "$COPILOT_CHAT_VERSION" ] \
-           && [ -f "${{ runner.temp }}/copilot-chat-bookworm.vsix" ]; then
-          echo "Bullseye == Bookworm; copying copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix from Bookworm"
-          cp "${{ runner.temp }}/copilot-chat-bookworm.vsix" "$TARGET"
-        # Reuse the VSIX pre-downloaded during the resolve step.
-        elif [ -f "$RUNNER_TEMP/copilot-chat-bullseye.vsix" ]; then
-          echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix from resolve step"
-          [ "$RUNNER_TEMP/copilot-chat-bullseye.vsix" = "$TARGET" ] || \
-            cp "$RUNNER_TEMP/copilot-chat-bullseye.vsix" "$TARGET"
-          od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || \
-            { echo "ERROR: Reused VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
-        else
-          echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix"
-          curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
-            "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION_BULLSEYE}/vspackage" \
-            -o "$TARGET"
-          od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || \
-            { echo "ERROR: Downloaded VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
-        fi
-
-    - name: Assemble pre-downloaded directory
+    # ── Assemble step ─────────────────────────────────────────────────────────
+    # Copies unique artifacts to pre-downloaded/, computes SHA256 digests, and
+    # generates the JSON bake-override file that maps each phpX_Y-downloader
+    # target to the resolved versions and hashes for its Debian tier.
+    - name: Assemble pre-downloaded directory and generate bake overrides
       id: assemble
       shell: bash
       run: |
         set -euo pipefail
-        CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
-        CODESERVER_VERSION_BULLSEYE="${{ steps.resolve.outputs.codeserver_version_bullseye }}"
-        COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
-        COPILOT_CHAT_VERSION_BULLSEYE="${{ steps.resolve.outputs.copilot_chat_version_bullseye }}"
+        VERSIONS="${{ inputs.versions }}"
+        # shellcheck source=/dev/null
+        source "${{ steps.detect-and-resolve.outputs.resolve_env }}"
+
         PRE_DOWNLOADED_DIR="${{ steps.set-dir.outputs.downloads_dir }}/pre-downloaded"
+        BAKE_OVERRIDES_FILE="${{ runner.temp }}/preseed-bake-overrides.json"
         mkdir -p "$PRE_DOWNLOADED_DIR"
 
-        # Bookworm artifacts
-        for ARCH in amd64 arm64; do
-          cp "${{ runner.temp }}/code-server-debs-bookworm/code-server_${CODESERVER_VERSION}_${ARCH}.deb" \
-             "$PRE_DOWNLOADED_DIR/"
-        done
-        cp "${{ runner.temp }}/copilot-chat-bookworm.vsix" \
-           "$PRE_DOWNLOADED_DIR/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
+        # ── Copy unique artifacts to pre-downloaded/ ───────────────────────────
+        # Track already-copied filenames to avoid duplicating files when two
+        # codenames resolve to the same code-server or Copilot Chat version.
+        declare -A COPIED
+        for cn in $UNIQUE_CODENAMES; do
+          cs_ver_var="CS_VERSION_${cn}"
+          cc_ver_var="CC_VERSION_${cn}"
+          cs_ver="${!cs_ver_var}"
+          cc_ver="${!cc_ver_var}"
+          ARTIFACT_DIR="${{ runner.temp }}/preseed-artifacts/${cn}"
 
-        # Bullseye artifacts (only copy when versions differ from Bookworm)
-        if [ "$CODESERVER_VERSION_BULLSEYE" != "$CODESERVER_VERSION" ]; then
           for ARCH in amd64 arm64; do
-            cp "${{ runner.temp }}/code-server-debs-bullseye/code-server_${CODESERVER_VERSION_BULLSEYE}_${ARCH}.deb" \
-               "$PRE_DOWNLOADED_DIR/"
+            DEB="code-server_${cs_ver}_${ARCH}.deb"
+            if [ -z "${COPIED[$DEB]+x}" ]; then
+              cp "${ARTIFACT_DIR}/${DEB}" "${PRE_DOWNLOADED_DIR}/"
+              COPIED[$DEB]=1
+            fi
           done
-        fi
-        if [ "$COPILOT_CHAT_VERSION_BULLSEYE" != "$COPILOT_CHAT_VERSION" ]; then
-          cp "${{ runner.temp }}/copilot-chat-bullseye.vsix" \
-             "$PRE_DOWNLOADED_DIR/copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix"
-        fi
 
-    - name: Compute SHA256 of pre-seeded downloads
-      id: sha256
-      shell: bash
-      run: |
-        set -euo pipefail
-        CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
-        CODESERVER_VERSION_BULLSEYE="${{ steps.resolve.outputs.codeserver_version_bullseye }}"
-        COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
-        COPILOT_CHAT_VERSION_BULLSEYE="${{ steps.resolve.outputs.copilot_chat_version_bullseye }}"
-        PRE_DOWNLOADED_DIR="${{ steps.set-dir.outputs.downloads_dir }}/pre-downloaded"
+          VSIX="copilot-chat-${cc_ver}.vsix"
+          if [ -z "${COPIED[$VSIX]+x}" ]; then
+            cp "${ARTIFACT_DIR}/${VSIX}" "${PRE_DOWNLOADED_DIR}/"
+            COPIED[$VSIX]=1
+          fi
+        done
 
-        AMD64_SHA=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION}_amd64.deb"              | awk '{print $1}')
-        ARM64_SHA=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION}_arm64.deb"              | awk '{print $1}')
-        VSIX_SHA=$(sha256sum  "${PRE_DOWNLOADED_DIR}/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"                | awk '{print $1}')
-        AMD64_SHA_B=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION_BULLSEYE}_amd64.deb"   | awk '{print $1}')
-        ARM64_SHA_B=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION_BULLSEYE}_arm64.deb"   | awk '{print $1}')
-        VSIX_SHA_B=$(sha256sum  "${PRE_DOWNLOADED_DIR}/copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix"     | awk '{print $1}')
+        # ── Compute SHA256 digests ─────────────────────────────────────────────
+        declare -A CS_SHA256_AMD64_FOR
+        declare -A CS_SHA256_ARM64_FOR
+        declare -A CC_SHA256_FOR
 
-        echo "codeserver_deb_sha256_amd64=${AMD64_SHA}"                  >> "$GITHUB_OUTPUT"
-        echo "codeserver_deb_sha256_arm64=${ARM64_SHA}"                  >> "$GITHUB_OUTPUT"
-        echo "copilot_chat_vsix_sha256=${VSIX_SHA}"                      >> "$GITHUB_OUTPUT"
-        echo "codeserver_deb_sha256_amd64_bullseye=${AMD64_SHA_B}"       >> "$GITHUB_OUTPUT"
-        echo "codeserver_deb_sha256_arm64_bullseye=${ARM64_SHA_B}"       >> "$GITHUB_OUTPUT"
-        echo "copilot_chat_vsix_sha256_bullseye=${VSIX_SHA_B}"           >> "$GITHUB_OUTPUT"
-        echo "SHA256 Bookworm: amd64=${AMD64_SHA}  arm64=${ARM64_SHA}  copilot-chat=${VSIX_SHA}"
-        echo "SHA256 Bullseye: amd64=${AMD64_SHA_B}  arm64=${ARM64_SHA_B}  copilot-chat=${VSIX_SHA_B}"
+        for cn in $UNIQUE_CODENAMES; do
+          cs_ver_var="CS_VERSION_${cn}"
+          cc_ver_var="CC_VERSION_${cn}"
+          cs_ver="${!cs_ver_var}"
+          cc_ver="${!cc_ver_var}"
+
+          CS_SHA256_AMD64_FOR[$cn]=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${cs_ver}_amd64.deb" | awk '{print $1}')
+          CS_SHA256_ARM64_FOR[$cn]=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${cs_ver}_arm64.deb" | awk '{print $1}')
+          CC_SHA256_FOR[$cn]=$(sha256sum "${PRE_DOWNLOADED_DIR}/copilot-chat-${cc_ver}.vsix" | awk '{print $1}')
+
+          echo "${cn}: code-server-amd64=${CS_SHA256_AMD64_FOR[$cn]}  arm64=${CS_SHA256_ARM64_FOR[$cn]}  copilot-chat=${CC_SHA256_FOR[$cn]}"
+        done
+
+        # ── Generate JSON bake override file ───────────────────────────────────
+        # One entry per PHP version, each pointing to the resolved versions and
+        # SHA256 digests for its detected Debian codename.
+        {
+          printf '{"target":{'
+          first=true
+          for ver in $VERSIONS; do
+            key="$(echo "$ver" | tr '.' '_')"
+            codename_var="CODENAME_${key}"
+            cn="${!codename_var}"
+            cs_ver_var="CS_VERSION_${cn}"
+            cc_ver_var="CC_VERSION_${cn}"
+            cs_ver="${!cs_ver_var}"
+            cc_ver="${!cc_ver_var}"
+            amd64_sha="${CS_SHA256_AMD64_FOR[$cn]}"
+            arm64_sha="${CS_SHA256_ARM64_FOR[$cn]}"
+            vsix_sha="${CC_SHA256_FOR[$cn]}"
+            $first || printf ','
+            first=false
+            printf '"%s":{"args":{' "php${key}-downloader"
+            printf '"CODESERVER_VERSION":"%s",'           "$cs_ver"
+            printf '"CODESERVER_DEB_SHA256_AMD64":"%s",'  "$amd64_sha"
+            printf '"CODESERVER_DEB_SHA256_ARM64":"%s",'  "$arm64_sha"
+            printf '"COPILOT_CHAT_VERSION":"%s",'         "$cc_ver"
+            printf '"COPILOT_CHAT_VSIX_SHA256":"%s"'      "$vsix_sha"
+            printf '}}'
+          done
+          printf '}}'
+        } > "$BAKE_OVERRIDES_FILE"
+
+        echo "Generated bake overrides:"
+        cat "$BAKE_OVERRIDES_FILE"
+        echo "bake_overrides_file=${BAKE_OVERRIDES_FILE}" >> "$GITHUB_OUTPUT"
