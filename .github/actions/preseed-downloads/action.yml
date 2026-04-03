@@ -410,10 +410,12 @@ runs:
         for ARCH in amd64 arm64; do
           DEB="code-server_${CODESERVER_VERSION}_${ARCH}.deb"
           TARGET="${{ runner.temp }}/code-server-debs-bookworm/${DEB}"
-          # Reuse the amd64 .deb pre-downloaded and validated during the resolve step.
+          # Reuse the amd64 .deb pre-downloaded during the resolve step.
           if [ "$ARCH" = "amd64" ] && [ -f "$RUNNER_TEMP/code-server-bookworm-amd64.deb" ]; then
             echo "Reusing ${DEB} from resolve step"
             cp "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "$TARGET"
+            head -c 8 "$TARGET" | grep -qF '!<arch>' || \
+              { echo "ERROR: ${DEB} failed format validation (not a valid .deb archive)" >&2; exit 1; }
           else
             echo "Downloading ${DEB}"
             curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
@@ -440,10 +442,12 @@ runs:
              && [ -f "${{ runner.temp }}/code-server-debs-bookworm/${DEB}" ]; then
             echo "Bullseye == Bookworm; copying ${DEB} from Bookworm debs"
             cp "${{ runner.temp }}/code-server-debs-bookworm/${DEB}" "$TARGET"
-          # Reuse the amd64 .deb pre-downloaded and validated during the resolve step.
+          # Reuse the amd64 .deb pre-downloaded during the resolve step.
           elif [ "$ARCH" = "amd64" ] && [ -f "$RUNNER_TEMP/code-server-bullseye-amd64.deb" ]; then
             echo "Reusing ${DEB} from resolve step"
             cp "$RUNNER_TEMP/code-server-bullseye-amd64.deb" "$TARGET"
+            head -c 8 "$TARGET" | grep -qF '!<arch>' || \
+              { echo "ERROR: ${DEB} failed format validation (not a valid .deb archive)" >&2; exit 1; }
           else
             echo "Downloading ${DEB}"
             curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
@@ -461,10 +465,12 @@ runs:
         set -euo pipefail
         COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
         TARGET="${{ runner.temp }}/copilot-chat-bookworm.vsix"
-        # Reuse the VSIX pre-downloaded and validated during the resolve step.
+        # Reuse the VSIX pre-downloaded during the resolve step.
         if [ -f "$RUNNER_TEMP/copilot-chat-bookworm.vsix" ]; then
           echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION}.vsix from resolve step"
           cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$TARGET"
+          od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || \
+            { echo "ERROR: Reused VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
         else
           echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
           curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
@@ -487,10 +493,12 @@ runs:
            && [ -f "${{ runner.temp }}/copilot-chat-bookworm.vsix" ]; then
           echo "Bullseye == Bookworm; copying copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix from Bookworm"
           cp "${{ runner.temp }}/copilot-chat-bookworm.vsix" "$TARGET"
-        # Reuse the VSIX pre-downloaded and validated during the resolve step.
+        # Reuse the VSIX pre-downloaded during the resolve step.
         elif [ -f "$RUNNER_TEMP/copilot-chat-bullseye.vsix" ]; then
           echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix from resolve step"
           cp "$RUNNER_TEMP/copilot-chat-bullseye.vsix" "$TARGET"
+          od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || \
+            { echo "ERROR: Reused VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
         else
           echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix"
           curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
