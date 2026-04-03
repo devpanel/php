@@ -70,6 +70,7 @@ RUN set -e; for drush_dir in /drush/drush*; do \
   echo "alias $drush_name=$drush_dir/vendor/bin/drush" >> ~/.bashrc; \
   done
 
+ARG DRUSH_VERSION=8
 RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
     && unzip 1.x-1.x.zip -d "/drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop" \
     && "/drush/drush${DRUSH_VERSION}/vendor/bin/drush" cc drush
