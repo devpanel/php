@@ -73,7 +73,7 @@ USER ${USER}
 
 # Overlay version-specific Drush files. Docker COPY merges so common
 # drush8/9/10/11 are preserved.
-COPY drush /drush
+COPY --chown=${USER}:${GROUP} drush /drush
 
 RUN set -e; for drush_dir in /drush/drush*; do \
   drush_name=$(basename "$drush_dir"); \
