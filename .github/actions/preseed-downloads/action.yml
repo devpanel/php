@@ -60,8 +60,11 @@ runs:
         RESOLVE_ENV="$RUNNER_TEMP/preseed-resolve.env"
 
         # ── Compatibility helpers ─────────────────────────────────────────────
-        # Returns 0 if the .deb's bundled node binary resolves all shared libs
-        # on the target image, 1 if extraction fails or any lib is missing.
+        # Returns 0 if the .deb's bundled node binary AND all native .node
+        # addons resolve all shared libs on the target image, 1 if extraction
+        # fails or any lib is missing.  Checking only the main node binary is
+        # insufficient because bundled native addons (e.g. argon2.glibc.node)
+        # may require a newer GLIBC than the node binary itself.
         check_deb_on_image() {
           local deb="$1" image="$2"
           local tmp_dir
@@ -79,12 +82,25 @@ runs:
             return 1
           fi
           local result=0
+          # Check the main node binary.
           docker run --rm \
             -v "${node_bin}:/tmp/node:ro" \
             --entrypoint sh \
             "$image" \
             -c 'missing=$(ldd /tmp/node 2>&1 | grep "not found"); [ -z "$missing" ] || { echo "$missing" >&2; exit 1; }' \
             || result=1
+          # Also check all bundled native .node addons: they may require a
+          # newer GLIBC than the main node binary (e.g. argon2.glibc.node).
+          if [ "$result" -eq 0 ]; then
+            while IFS= read -r node_addon; do
+              docker run --rm \
+                -v "${node_addon}:/tmp/check.node:ro" \
+                --entrypoint sh \
+                "$image" \
+                -c 'missing=$(ldd /tmp/check.node 2>&1 | grep "not found"); [ -z "$missing" ] || { echo "$missing" >&2; exit 1; }' \
+                || { result=1; break; }
+            done < <(find "$tmp_dir" -name "*.node" -type f 2>/dev/null)
+          fi
           rm -rf "$tmp_dir"
           return $result
         }
