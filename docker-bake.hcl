@@ -14,11 +14,11 @@
 #   TAG_SUFFIX                    Image tag suffix                             ("" on main, "-rc" on develop)
 #   VERSIONS                      Space-separated PHP version dirs             ("7.4 8.0 8.1 8.2 8.3")
 #   LATEST_PHP_VERSION            Highest PHP version dir in the repo          (8.3)
-#   CODESERVER_VERSION            code-server version for modern PHP (8.1+) ("" = Dockerfile default) ("")
-#   COPILOT_CHAT_VERSION          Copilot Chat VSIX version for modern PHP ("" = Dockerfile default) ("")
-#   CODESERVER_VERSION_LEGACY     code-server version for legacy PHP (7.4, 8.0) ("" = Dockerfile default) ("")
-#   COPILOT_CHAT_VERSION_LEGACY   Copilot Chat VSIX version for legacy PHP ("" = Dockerfile default) ("")
-#   VERSIONS_LEGACY               PHP versions on Debian 11 that use the legacy code-server ("7.4 8.0")
+#   CODESERVER_VERSION            code-server version for Bookworm PHP (8.1+) ("" = Dockerfile default) ("")
+#   COPILOT_CHAT_VERSION          Copilot Chat VSIX version for Bookworm PHP ("" = Dockerfile default) ("")
+#   CODESERVER_VERSION_BULLSEYE   code-server version for Bullseye PHP (7.4, 8.0) ("" = Dockerfile default) ("")
+#   COPILOT_CHAT_VERSION_BULLSEYE Copilot Chat VSIX version for Bullseye PHP ("" = Dockerfile default) ("")
+#   VERSIONS_BULLSEYE             PHP versions on Debian 11 that use the Bullseye code-server ("7.4 8.0")
 #   CORERULESET_VERSION           ModSecurity CRS version                      (3.3.5)
 #   CACHE_FROM_ENABLED            Read from GHA/GHCR cache ("true"/"false")    ("true")
 #   PLATFORMS                     Comma-separated target platforms             ("linux/amd64,linux/arm64")
@@ -64,20 +64,20 @@ variable "CODESERVER_DEB_SHA256_AMD64"   { default = ""                         
 variable "CODESERVER_DEB_SHA256_ARM64"   { default = ""                                                     }
 variable "COPILOT_CHAT_VERSION"          { default = ""                                                     }
 variable "COPILOT_CHAT_VSIX_SHA256"      { default = ""                                                     }
-# Legacy versions: PHP 7.4 and 8.0 run on Debian 11 (Bullseye) and may not be
+# Bullseye versions: PHP 7.4 and 8.0 run on Debian 11 (Bullseye) and may not be
 # able to run the latest code-server if it requires a newer GLIBC.  CI resolves
-# compatible versions by testing the .deb in a real Bullseye Docker container and
+# compatible versions by testing the .deb inside the actual PHP base image and
 # passes them separately so each PHP version's downloader gets the best it can use.
 # When empty, the Dockerfile defaults are used (always set to a Bullseye-compatible
 # version).
-variable "CODESERVER_VERSION_LEGACY"          { default = ""                        }
-variable "CODESERVER_DEB_SHA256_AMD64_LEGACY" { default = ""                        }
-variable "CODESERVER_DEB_SHA256_ARM64_LEGACY" { default = ""                        }
-variable "COPILOT_CHAT_VERSION_LEGACY"        { default = ""                        }
-variable "COPILOT_CHAT_VSIX_SHA256_LEGACY"    { default = ""                        }
-# VERSIONS_LEGACY: PHP versions on Debian 11 (Bullseye) whose per-version
-# downloader receives the legacy code-server build args instead of the modern ones.
-variable "VERSIONS_LEGACY"                   { default = "7.4 8.0"               }
+variable "CODESERVER_VERSION_BULLSEYE"          { default = ""                        }
+variable "CODESERVER_DEB_SHA256_AMD64_BULLSEYE" { default = ""                        }
+variable "CODESERVER_DEB_SHA256_ARM64_BULLSEYE" { default = ""                        }
+variable "COPILOT_CHAT_VERSION_BULLSEYE"        { default = ""                        }
+variable "COPILOT_CHAT_VSIX_SHA256_BULLSEYE"    { default = ""                        }
+# VERSIONS_BULLSEYE: PHP versions on Debian 11 (Bullseye) whose per-version
+# downloader receives the Bullseye code-server build args instead of the Bookworm ones.
+variable "VERSIONS_BULLSEYE"                   { default = "7.4 8.0"               }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 # DOWNLOADS_DIR: path to a directory whose pre-downloaded/ subdirectory contains
 # pre-seeded build artifacts (code-server .deb files and Copilot Chat VSIX).
@@ -116,20 +116,21 @@ function "ver_key" {
 }
 
 # downloader_args: returns the merged build-arg map for a per-version downloader
-# target.  Versions in VERSIONS_LEGACY (Debian 11 / Bullseye) receive the legacy
-# code-server and Copilot Chat versions; all other versions receive the modern ones.
-# When a *_LEGACY variable is empty the Dockerfile default is used, which is always
-# set to a version that works on Debian 11.
+# target.  Versions in VERSIONS_BULLSEYE (Debian 11 / Bullseye) receive the
+# Bullseye-compatible code-server and Copilot Chat versions; all other versions
+# receive the Bookworm (modern) ones.
+# When a *_BULLSEYE variable is empty the Dockerfile default is used, which is
+# always set to a version that works on Debian 11.
 function "downloader_args" {
   params = [version]
   result = merge(
     { PHP_VERSION = version },
-    contains(split(" ", trimspace(VERSIONS_LEGACY)), version) ? merge(
-      CODESERVER_VERSION_LEGACY          != "" ? { CODESERVER_VERSION          = CODESERVER_VERSION_LEGACY          } : {},
-      CODESERVER_DEB_SHA256_AMD64_LEGACY != "" ? { CODESERVER_DEB_SHA256_AMD64 = CODESERVER_DEB_SHA256_AMD64_LEGACY } : {},
-      CODESERVER_DEB_SHA256_ARM64_LEGACY != "" ? { CODESERVER_DEB_SHA256_ARM64 = CODESERVER_DEB_SHA256_ARM64_LEGACY } : {},
-      COPILOT_CHAT_VERSION_LEGACY        != "" ? { COPILOT_CHAT_VERSION        = COPILOT_CHAT_VERSION_LEGACY        } : {},
-      COPILOT_CHAT_VSIX_SHA256_LEGACY    != "" ? { COPILOT_CHAT_VSIX_SHA256    = COPILOT_CHAT_VSIX_SHA256_LEGACY    } : {}
+    contains(split(" ", trimspace(VERSIONS_BULLSEYE)), version) ? merge(
+      CODESERVER_VERSION_BULLSEYE          != "" ? { CODESERVER_VERSION          = CODESERVER_VERSION_BULLSEYE          } : {},
+      CODESERVER_DEB_SHA256_AMD64_BULLSEYE != "" ? { CODESERVER_DEB_SHA256_AMD64 = CODESERVER_DEB_SHA256_AMD64_BULLSEYE } : {},
+      CODESERVER_DEB_SHA256_ARM64_BULLSEYE != "" ? { CODESERVER_DEB_SHA256_ARM64 = CODESERVER_DEB_SHA256_ARM64_BULLSEYE } : {},
+      COPILOT_CHAT_VERSION_BULLSEYE        != "" ? { COPILOT_CHAT_VERSION        = COPILOT_CHAT_VERSION_BULLSEYE        } : {},
+      COPILOT_CHAT_VSIX_SHA256_BULLSEYE    != "" ? { COPILOT_CHAT_VSIX_SHA256    = COPILOT_CHAT_VSIX_SHA256_BULLSEYE    } : {}
     ) : merge(
       CODESERVER_VERSION          != "" ? { CODESERVER_VERSION          = CODESERVER_VERSION          } : {},
       CODESERVER_DEB_SHA256_AMD64 != "" ? { CODESERVER_DEB_SHA256_AMD64 = CODESERVER_DEB_SHA256_AMD64 } : {},
@@ -219,9 +220,9 @@ function "cache_to_registry" {
 # Each PHP version has its own downloader that runs inside php:${PHP_VERSION}-apache.
 # PHP 7.4 and 8.0 use Debian 11 (Bullseye); PHP 8.1+ use Debian 12 (Bookworm).
 # Each downloader therefore fetches the newest code-server its OS can support.
-# Versions in VERSIONS_LEGACY receive the legacy code-server build args (resolved
-# by CI by testing with a real Bullseye container); all other versions receive
-# the modern ones.  When *_LEGACY variables are empty the Dockerfile defaults
+# Versions in VERSIONS_BULLSEYE receive the Bullseye code-server build args (resolved
+# by CI by testing inside the actual PHP base image); all other versions receive
+# the Bookworm ones.  When *_BULLSEYE variables are empty the Dockerfile defaults
 # (which are always Bullseye-compatible) are used.
 #
 # Matrix generates one target per version: php7_4-downloader, php8_0-downloader, ...

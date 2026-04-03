@@ -7,9 +7,10 @@ description: >
   parent directory as the 'downloads' named context and the Dockerfile can
   bind-mount source=/pre-downloaded.
   Two tiers are resolved:
-    modern  — latest stable release (for PHP 8.1+, Debian 12 / Bookworm)
-    legacy  — latest release whose binaries run successfully on Debian 11 / Bullseye,
-              verified by running ldd inside a real debian:bullseye container
+    bookworm  — latest stable release (for PHP 8.1+, Debian 12 / Bookworm)
+    bullseye  — latest release whose binaries run successfully on the actual
+                PHP Bullseye base image (php:7.4-apache), verified by running
+                ldd inside that container
   When the latest release already runs on Bullseye both tiers resolve to the
   same version and only one set of artifacts is downloaded.
 
@@ -25,35 +26,35 @@ outputs:
       pre-seeded artifacts.  Pass as DOWNLOADS_DIR to docker buildx bake.
     value: ${{ steps.set-dir.outputs.downloads_dir }}
   codeserver_version:
-    description: Resolved modern code-server version (e.g. 4.100.0)
+    description: Resolved Bookworm code-server version (e.g. 4.100.0)
     value: ${{ steps.resolve.outputs.codeserver_version }}
   copilot_chat_version:
-    description: Resolved modern Copilot Chat version (e.g. 0.27.0)
+    description: Resolved Bookworm Copilot Chat version (e.g. 0.27.0)
     value: ${{ steps.resolve.outputs.copilot_chat_version }}
   codeserver_deb_sha256_amd64:
-    description: SHA256 of the modern code-server amd64 .deb.
+    description: SHA256 of the Bookworm code-server amd64 .deb.
     value: ${{ steps.sha256.outputs.codeserver_deb_sha256_amd64 }}
   codeserver_deb_sha256_arm64:
-    description: SHA256 of the modern code-server arm64 .deb.
+    description: SHA256 of the Bookworm code-server arm64 .deb.
     value: ${{ steps.sha256.outputs.codeserver_deb_sha256_arm64 }}
   copilot_chat_vsix_sha256:
-    description: SHA256 of the modern Copilot Chat VSIX.
+    description: SHA256 of the Bookworm Copilot Chat VSIX.
     value: ${{ steps.sha256.outputs.copilot_chat_vsix_sha256 }}
-  codeserver_version_legacy:
-    description: Resolved legacy code-server version (Bullseye-compatible, e.g. 4.99.4)
-    value: ${{ steps.resolve.outputs.codeserver_version_legacy }}
-  copilot_chat_version_legacy:
-    description: Resolved legacy Copilot Chat version (Bullseye-compatible, e.g. 0.26.7)
-    value: ${{ steps.resolve.outputs.copilot_chat_version_legacy }}
-  codeserver_deb_sha256_amd64_legacy:
-    description: SHA256 of the legacy code-server amd64 .deb.
-    value: ${{ steps.sha256.outputs.codeserver_deb_sha256_amd64_legacy }}
-  codeserver_deb_sha256_arm64_legacy:
-    description: SHA256 of the legacy code-server arm64 .deb.
-    value: ${{ steps.sha256.outputs.codeserver_deb_sha256_arm64_legacy }}
-  copilot_chat_vsix_sha256_legacy:
-    description: SHA256 of the legacy Copilot Chat VSIX.
-    value: ${{ steps.sha256.outputs.copilot_chat_vsix_sha256_legacy }}
+  codeserver_version_bullseye:
+    description: Resolved Bullseye-compatible code-server version (e.g. 4.99.4)
+    value: ${{ steps.resolve.outputs.codeserver_version_bullseye }}
+  copilot_chat_version_bullseye:
+    description: Resolved Bullseye-compatible Copilot Chat version (e.g. 0.26.7)
+    value: ${{ steps.resolve.outputs.copilot_chat_version_bullseye }}
+  codeserver_deb_sha256_amd64_bullseye:
+    description: SHA256 of the Bullseye code-server amd64 .deb.
+    value: ${{ steps.sha256.outputs.codeserver_deb_sha256_amd64_bullseye }}
+  codeserver_deb_sha256_arm64_bullseye:
+    description: SHA256 of the Bullseye code-server arm64 .deb.
+    value: ${{ steps.sha256.outputs.codeserver_deb_sha256_arm64_bullseye }}
+  copilot_chat_vsix_sha256_bullseye:
+    description: SHA256 of the Bullseye Copilot Chat VSIX.
+    value: ${{ steps.sha256.outputs.copilot_chat_vsix_sha256_bullseye }}
 
 runs:
   using: composite
@@ -63,10 +64,13 @@ runs:
       shell: bash
       run: echo "downloads_dir=${{ runner.temp }}/build-downloads" >> "$GITHUB_OUTPUT"
 
-    - name: Pull Debian base images for compatibility testing
+    - name: Pull PHP base images for compatibility testing
       shell: bash
       run: |
-        docker pull --quiet debian:bullseye
+        # Pull the oldest Bullseye-based PHP image as the canonical test image.
+        # This is the same image used by the per-version downloader stage and is
+        # therefore the most accurate compatibility test target.
+        docker pull --quiet php:7.4-apache
 
     - name: Resolve artifact versions
       id: resolve
@@ -77,30 +81,31 @@ runs:
         set -euo pipefail
 
         # ── Compatibility helpers ────────────────────────────────────────────
-        # Check whether a code-server .deb runs cleanly on a given distro image.
+        # Check whether a code-server .deb runs cleanly on a given PHP/distro image.
         # Extracts the .deb on the runner host (dpkg-deb is available on ubuntu-latest),
-        # then runs ldd on the bundled Node binary inside the target distro container.
-        # Returns 0 if all libraries resolve, 1 if any are missing.
-        check_deb_on_distro() {
+        # then runs ldd on the bundled Node binary inside the target container.
+        # Returns 0 if all libraries resolve, 1 if any are missing or the package
+        # cannot be extracted/inspected.
+        check_deb_on_image() {
           local deb="$1" image="$2"
           local tmp_dir
           tmp_dir=$(mktemp -d)
           if ! dpkg-deb -x "$deb" "$tmp_dir" 2>/dev/null; then
-            echo "  WARNING: failed to extract .deb; skipping compatibility check" >&2
+            echo "  WARNING: failed to extract .deb; treating package as incompatible" >&2
             rm -rf "$tmp_dir"
-            return 0
+            return 1
           fi
           # Find the main Node binary (architecture-specific native binary).
           local node_bin
           node_bin=$(find "$tmp_dir" -name "node" ! -name "*.js" -perm /111 -type f | head -1)
           if [ -z "$node_bin" ]; then
-            echo "  WARNING: no node binary found in .deb; skipping compatibility check" >&2
+            echo "  WARNING: no node binary found in .deb; treating package as incompatible" >&2
             rm -rf "$tmp_dir"
-            return 0
+            return 1
           fi
-          # Run ldd inside the target distro container.  Any "not found" lines indicate
+          # Run ldd inside the target container.  Any "not found" lines indicate
           # that the binary requires a library (e.g. a newer GLIBC) not present in that
-          # distro, making the package incompatible.
+          # image, making the package incompatible.
           local result=0
           if ! docker run --rm \
                -v "${node_bin}:/tmp/node:ro" \
@@ -113,17 +118,17 @@ runs:
           return $result
         }
 
-        # Check whether a Copilot Chat VSIX runs cleanly on a given distro image.
+        # Check whether a Copilot Chat VSIX runs cleanly on a given PHP/distro image.
         # Extracts the VSIX on the runner host, then runs ldd on each .node file
-        # inside a container based on the target distro image.
-        check_vsix_on_distro() {
+        # inside a container based on the target image.
+        check_vsix_on_image() {
           local vsix="$1" image="$2"
           local tmp_dir result=0
           tmp_dir=$(mktemp -d)
           if ! unzip -q "$vsix" -d "$tmp_dir" 2>/dev/null; then
-            echo "  WARNING: failed to extract VSIX; skipping compatibility check" >&2
+            echo "  WARNING: failed to extract VSIX; treating artifact as incompatible" >&2
             rm -rf "$tmp_dir"
-            return 0
+            return 1
           fi
           while IFS= read -r node_file; do
             if ! docker run --rm \
@@ -147,7 +152,7 @@ runs:
           -H 'X-GitHub-Api-Version: 2022-11-28' \
           'https://api.github.com/repos/coder/code-server/releases?per_page=100')
 
-        # ── Modern code-server: pick the absolute latest stable v4 ───────────
+        # ── Bookworm code-server: pick the absolute latest stable v4 ─────────
         CODESERVER_VERSION=$(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
           first(
             .[] |
@@ -156,38 +161,41 @@ runs:
             .tag_name | ltrimstr("v")
           ) // ""
         ')
-        [ -n "$CODESERVER_VERSION" ] || { echo "Failed to detect modern code-server version" >&2; exit 1; }
-        echo "Modern code-server: ${CODESERVER_VERSION}" >&2
+        [ -n "$CODESERVER_VERSION" ] || { echo "Failed to detect Bookworm code-server version" >&2; exit 1; }
+        echo "Bookworm code-server: ${CODESERVER_VERSION}" >&2
 
-        # Download the modern amd64 .deb — reused for the Bullseye compatibility check.
+        # Download the Bookworm amd64 .deb — reused for the Bullseye compatibility check.
         curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
           "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb" \
-          -o "$RUNNER_TEMP/code-server-modern-amd64.deb"
+          -o "$RUNNER_TEMP/code-server-bookworm-amd64.deb"
+        head -c 8 "$RUNNER_TEMP/code-server-bookworm-amd64.deb" | grep -qF '!<arch>' || \
+          { echo "ERROR: code-server_${CODESERVER_VERSION}_amd64.deb failed format validation (not a valid .deb archive)" >&2; exit 1; }
 
-        # ── Legacy code-server: latest version whose binaries run on Bullseye ─
-        # Test the modern version first.  If it runs on Bullseye, legacy == modern
+        # ── Bullseye code-server: latest version whose binaries run on php:7.4-apache
+        # Test the Bookworm version first.  If it runs on Bullseye, bullseye == bookworm
         # (fast path, no extra download needed).
-        if check_deb_on_distro "$RUNNER_TEMP/code-server-modern-amd64.deb" "debian:bullseye"; then
-          CODESERVER_VERSION_LEGACY="$CODESERVER_VERSION"
-          cp "$RUNNER_TEMP/code-server-modern-amd64.deb" "$RUNNER_TEMP/code-server-legacy-amd64.deb"
-          echo "Legacy code-server = modern (${CODESERVER_VERSION_LEGACY} runs on Bullseye)" >&2
+        if check_deb_on_image "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "php:7.4-apache"; then
+          CODESERVER_VERSION_BULLSEYE="$CODESERVER_VERSION"
+          cp "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "$RUNNER_TEMP/code-server-bullseye-amd64.deb"
+          echo "Bullseye code-server = Bookworm (${CODESERVER_VERSION_BULLSEYE} runs on php:7.4-apache)" >&2
         else
-          echo "Modern code-server ${CODESERVER_VERSION} does not run on Bullseye; searching for compatible version..." >&2
-          CODESERVER_VERSION_LEGACY=""
+          echo "Bookworm code-server ${CODESERVER_VERSION} does not run on php:7.4-apache; searching for compatible version..." >&2
+          CODESERVER_VERSION_BULLSEYE=""
           while IFS= read -r candidate; do
             [ "$candidate" = "$CODESERVER_VERSION" ] && continue
-            echo "Checking code-server ${candidate} on debian:bullseye..." >&2
+            echo "Checking code-server ${candidate} on php:7.4-apache..." >&2
             TMP_DEB=$(mktemp --suffix=.deb)
             if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
                  "https://github.com/coder/code-server/releases/download/v${candidate}/code-server_${candidate}_amd64.deb" \
                  -o "$TMP_DEB" 2>/dev/null \
-               && check_deb_on_distro "$TMP_DEB" "debian:bullseye"; then
-              CODESERVER_VERSION_LEGACY="$candidate"
-              mv "$TMP_DEB" "$RUNNER_TEMP/code-server-legacy-amd64.deb"
-              echo "  Selected legacy code-server: ${CODESERVER_VERSION_LEGACY}" >&2
+               && head -c 8 "$TMP_DEB" | grep -qF '!<arch>' \
+               && check_deb_on_image "$TMP_DEB" "php:7.4-apache"; then
+              CODESERVER_VERSION_BULLSEYE="$candidate"
+              mv "$TMP_DEB" "$RUNNER_TEMP/code-server-bullseye-amd64.deb"
+              echo "  Selected Bullseye code-server: ${CODESERVER_VERSION_BULLSEYE}" >&2
               break
             else
-              echo "  code-server ${candidate} does not run on Bullseye, trying older release..." >&2
+              echo "  code-server ${candidate} does not run on php:7.4-apache, trying older release..." >&2
               rm -f "$TMP_DEB"
             fi
           done < <(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
@@ -195,14 +203,14 @@ runs:
             select(.draft==false and .prerelease==false) |
             select(.tag_name | test("^v?4\\.[0-9]+\\.[0-9]+([-+].*)?$")) |
             .tag_name | ltrimstr("v")] | .[]')
-          [ -n "$CODESERVER_VERSION_LEGACY" ] || {
+          [ -n "$CODESERVER_VERSION_BULLSEYE" ] || {
             echo "Failed to detect a Bullseye-compatible code-server version" >&2; exit 1;
           }
         fi
 
         # Derive VS Code versions (code-server 4.X.Y bundles VS Code 1.X.Y).
-        VSCODE_VERSION_MODERN="$(printf '%s' "$CODESERVER_VERSION" | sed 's/^[0-9][0-9]*\./1./')"
-        VSCODE_VERSION_LEGACY="$(printf '%s' "$CODESERVER_VERSION_LEGACY" | sed 's/^[0-9][0-9]*\./1./')"
+        VSCODE_VERSION_BOOKWORM="$(printf '%s' "$CODESERVER_VERSION" | sed 's/^[0-9][0-9]*\./1./')"
+        VSCODE_VERSION_BULLSEYE="$(printf '%s' "$CODESERVER_VERSION_BULLSEYE" | sed 's/^[0-9][0-9]*\./1./')"
 
         # ── Copilot Chat ─────────────────────────────────────────────────────
         # Fetch all Copilot Chat versions from the VS Marketplace once.
@@ -236,106 +244,111 @@ runs:
             '
         }
 
-        # Modern Copilot Chat: pick the latest version compatible with the modern
+        # Bookworm Copilot Chat: pick the latest version compatible with the Bookworm
         # VS Code engine.  No Bullseye compatibility check needed for Bookworm.
-        COPILOT_CHAT_VERSION=$(copilot_candidates_for_vscode "$VSCODE_VERSION_MODERN" | head -1)
-        [ -n "$COPILOT_CHAT_VERSION" ] || { echo "Failed to detect modern Copilot Chat version" >&2; exit 1; }
-        echo "Modern Copilot Chat: ${COPILOT_CHAT_VERSION}" >&2
+        COPILOT_CHAT_VERSION=$(copilot_candidates_for_vscode "$VSCODE_VERSION_BOOKWORM" | head -1)
+        [ -n "$COPILOT_CHAT_VERSION" ] || { echo "Failed to detect Bookworm Copilot Chat version" >&2; exit 1; }
+        echo "Bookworm Copilot Chat: ${COPILOT_CHAT_VERSION}" >&2
         curl -fsSL --compressed --retry 3 --retry-all-errors --connect-timeout 30 \
           "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage" \
-          -o "$RUNNER_TEMP/copilot-chat-modern.vsix"
+          -o "$RUNNER_TEMP/copilot-chat-bookworm.vsix"
+        od -An -N4 -tx1 "$RUNNER_TEMP/copilot-chat-bookworm.vsix" | tr -d ' \n' | grep -q '^504b0304' || \
+          { echo "ERROR: copilot-chat-${COPILOT_CHAT_VERSION}.vsix failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
 
-        # Legacy Copilot Chat: pick the latest version compatible with the legacy VS
-        # Code engine that also runs on Bullseye.  Fast path: if legacy code-server ==
-        # modern AND the modern VSIX runs on Bullseye, legacy == modern.
-        COPILOT_CHAT_VERSION_LEGACY=""
-        if [ "$CODESERVER_VERSION_LEGACY" = "$CODESERVER_VERSION" ] \
-           && check_vsix_on_distro "$RUNNER_TEMP/copilot-chat-modern.vsix" "debian:bullseye"; then
-          COPILOT_CHAT_VERSION_LEGACY="$COPILOT_CHAT_VERSION"
-          cp "$RUNNER_TEMP/copilot-chat-modern.vsix" "$RUNNER_TEMP/copilot-chat-legacy.vsix"
-          echo "Legacy Copilot Chat = modern (${COPILOT_CHAT_VERSION_LEGACY} runs on Bullseye)" >&2
+        # Bullseye Copilot Chat: pick the latest version compatible with the Bullseye VS
+        # Code engine that also runs on php:7.4-apache.  Fast path: if bullseye code-server ==
+        # bookworm AND the bookworm VSIX runs on php:7.4-apache, bullseye == bookworm.
+        COPILOT_CHAT_VERSION_BULLSEYE=""
+        if [ "$CODESERVER_VERSION_BULLSEYE" = "$CODESERVER_VERSION" ] \
+           && check_vsix_on_image "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "php:7.4-apache"; then
+          COPILOT_CHAT_VERSION_BULLSEYE="$COPILOT_CHAT_VERSION"
+          cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$RUNNER_TEMP/copilot-chat-bullseye.vsix"
+          echo "Bullseye Copilot Chat = Bookworm (${COPILOT_CHAT_VERSION_BULLSEYE} runs on php:7.4-apache)" >&2
         else
           while IFS= read -r candidate; do
-            echo "Checking Copilot Chat ${candidate} on debian:bullseye..." >&2
+            echo "Checking Copilot Chat ${candidate} on php:7.4-apache..." >&2
             TMP_VSIX=$(mktemp --suffix=.vsix)
             CC_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${candidate}/vspackage"
-            # Reuse already-downloaded modern VSIX when candidate matches.
+            # Reuse already-downloaded Bookworm VSIX when candidate matches.
             if [ "$candidate" = "$COPILOT_CHAT_VERSION" ] \
-               && [ -f "$RUNNER_TEMP/copilot-chat-modern.vsix" ]; then
-              cp "$RUNNER_TEMP/copilot-chat-modern.vsix" "$TMP_VSIX"
+               && [ -f "$RUNNER_TEMP/copilot-chat-bookworm.vsix" ]; then
+              cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$TMP_VSIX"
             else
               curl -fsSL --compressed --retry 3 --retry-all-errors --connect-timeout 30 \
                 "${CC_URL}" -o "$TMP_VSIX" 2>/dev/null || { rm -f "$TMP_VSIX"; continue; }
+              # Validate the ZIP magic before running ldd checks.
+              od -An -N4 -tx1 "$TMP_VSIX" | tr -d ' \n' | grep -q '^504b0304' || { rm -f "$TMP_VSIX"; continue; }
             fi
-            if check_vsix_on_distro "$TMP_VSIX" "debian:bullseye"; then
-              COPILOT_CHAT_VERSION_LEGACY="$candidate"
-              mv "$TMP_VSIX" "$RUNNER_TEMP/copilot-chat-legacy.vsix"
-              echo "  Selected legacy Copilot Chat: ${COPILOT_CHAT_VERSION_LEGACY}" >&2
+            if check_vsix_on_image "$TMP_VSIX" "php:7.4-apache"; then
+              COPILOT_CHAT_VERSION_BULLSEYE="$candidate"
+              mv "$TMP_VSIX" "$RUNNER_TEMP/copilot-chat-bullseye.vsix"
+              echo "  Selected Bullseye Copilot Chat: ${COPILOT_CHAT_VERSION_BULLSEYE}" >&2
               break
             else
-              echo "  Copilot Chat ${candidate} does not run on Bullseye, trying older version..." >&2
+              echo "  Copilot Chat ${candidate} does not run on php:7.4-apache, trying older version..." >&2
               rm -f "$TMP_VSIX"
             fi
-          done < <(copilot_candidates_for_vscode "$VSCODE_VERSION_LEGACY")
-          [ -n "$COPILOT_CHAT_VERSION_LEGACY" ] || {
+          done < <(copilot_candidates_for_vscode "$VSCODE_VERSION_BULLSEYE")
+          [ -n "$COPILOT_CHAT_VERSION_BULLSEYE" ] || {
             echo "Failed to detect a Bullseye-compatible Copilot Chat version" >&2; exit 1;
           }
         fi
 
-        echo "codeserver_version=${CODESERVER_VERSION}"                   >> "$GITHUB_OUTPUT"
-        echo "copilot_chat_version=${COPILOT_CHAT_VERSION}"               >> "$GITHUB_OUTPUT"
-        echo "codeserver_version_legacy=${CODESERVER_VERSION_LEGACY}"     >> "$GITHUB_OUTPUT"
-        echo "copilot_chat_version_legacy=${COPILOT_CHAT_VERSION_LEGACY}" >> "$GITHUB_OUTPUT"
-        echo "Resolved modern: code-server=${CODESERVER_VERSION}  VS Code=${VSCODE_VERSION_MODERN}  copilot-chat=${COPILOT_CHAT_VERSION}"
-        echo "Resolved legacy: code-server=${CODESERVER_VERSION_LEGACY}  VS Code=${VSCODE_VERSION_LEGACY}  copilot-chat=${COPILOT_CHAT_VERSION_LEGACY}"
+        echo "codeserver_version=${CODESERVER_VERSION}"                         >> "$GITHUB_OUTPUT"
+        echo "copilot_chat_version=${COPILOT_CHAT_VERSION}"                     >> "$GITHUB_OUTPUT"
+        echo "codeserver_version_bullseye=${CODESERVER_VERSION_BULLSEYE}"       >> "$GITHUB_OUTPUT"
+        echo "copilot_chat_version_bullseye=${COPILOT_CHAT_VERSION_BULLSEYE}"   >> "$GITHUB_OUTPUT"
+        echo "Resolved Bookworm: code-server=${CODESERVER_VERSION}  VS Code=${VSCODE_VERSION_BOOKWORM}  copilot-chat=${COPILOT_CHAT_VERSION}"
+        echo "Resolved Bullseye: code-server=${CODESERVER_VERSION_BULLSEYE}  VS Code=${VSCODE_VERSION_BULLSEYE}  copilot-chat=${COPILOT_CHAT_VERSION_BULLSEYE}"
 
     # ── Cache steps ──────────────────────────────────────────────────────────
     # Cache code-server .deb files and Copilot Chat VSIXs separately so that
     # a version bump in one artifact does not invalidate the other's cache.
-    # Modern and legacy artifacts are cached independently.
-    - name: Cache modern code-server debs
-      id: cache-cs-modern
+    # Bookworm and Bullseye artifacts are cached under distinct keys to prevent
+    # conflicts when both tiers resolve to the same version.
+    - name: Cache Bookworm code-server debs
+      id: cache-cs-bookworm
       uses: actions/cache@v5
       with:
-        path: ${{ runner.temp }}/code-server-debs-modern
-        key: code-server-debs-${{ steps.resolve.outputs.codeserver_version }}
+        path: ${{ runner.temp }}/code-server-debs-bookworm
+        key: code-server-debs-bookworm-${{ steps.resolve.outputs.codeserver_version }}
 
-    - name: Cache legacy code-server debs
-      id: cache-cs-legacy
+    - name: Cache Bullseye code-server debs
+      id: cache-cs-bullseye
       uses: actions/cache@v5
       with:
-        path: ${{ runner.temp }}/code-server-debs-legacy
-        key: code-server-debs-${{ steps.resolve.outputs.codeserver_version_legacy }}
+        path: ${{ runner.temp }}/code-server-debs-bullseye
+        key: code-server-debs-bullseye-${{ steps.resolve.outputs.codeserver_version_bullseye }}
 
-    - name: Cache modern Copilot Chat VSIX
-      id: cache-cc-modern
+    - name: Cache Bookworm Copilot Chat VSIX
+      id: cache-cc-bookworm
       uses: actions/cache@v5
       with:
-        path: ${{ runner.temp }}/copilot-chat-modern.vsix
-        key: copilot-chat-vsix-${{ steps.resolve.outputs.copilot_chat_version }}
+        path: ${{ runner.temp }}/copilot-chat-bookworm.vsix
+        key: copilot-chat-vsix-bookworm-${{ steps.resolve.outputs.copilot_chat_version }}
 
-    - name: Cache legacy Copilot Chat VSIX
-      id: cache-cc-legacy
+    - name: Cache Bullseye Copilot Chat VSIX
+      id: cache-cc-bullseye
       uses: actions/cache@v5
       with:
-        path: ${{ runner.temp }}/copilot-chat-legacy.vsix
-        key: copilot-chat-vsix-${{ steps.resolve.outputs.copilot_chat_version_legacy }}
+        path: ${{ runner.temp }}/copilot-chat-bullseye.vsix
+        key: copilot-chat-vsix-bullseye-${{ steps.resolve.outputs.copilot_chat_version_bullseye }}
 
     # ── Download steps ───────────────────────────────────────────────────────
-    - name: Download modern code-server debs (cache miss)
-      if: steps.cache-cs-modern.outputs.cache-hit != 'true'
+    - name: Download Bookworm code-server debs (cache miss)
+      if: steps.cache-cs-bookworm.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
         CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
-        mkdir -p "${{ runner.temp }}/code-server-debs-modern"
+        mkdir -p "${{ runner.temp }}/code-server-debs-bookworm"
         for ARCH in amd64 arm64; do
           DEB="code-server_${CODESERVER_VERSION}_${ARCH}.deb"
-          TARGET="${{ runner.temp }}/code-server-debs-modern/${DEB}"
-          # Reuse the amd64 .deb pre-downloaded during the resolve step.
-          if [ "$ARCH" = "amd64" ] && [ -f "$RUNNER_TEMP/code-server-modern-amd64.deb" ]; then
+          TARGET="${{ runner.temp }}/code-server-debs-bookworm/${DEB}"
+          # Reuse the amd64 .deb pre-downloaded and validated during the resolve step.
+          if [ "$ARCH" = "amd64" ] && [ -f "$RUNNER_TEMP/code-server-bookworm-amd64.deb" ]; then
             echo "Reusing ${DEB} from resolve step"
-            cp "$RUNNER_TEMP/code-server-modern-amd64.deb" "$TARGET"
+            cp "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "$TARGET"
           else
             echo "Downloading ${DEB}"
             curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
@@ -346,47 +359,47 @@ runs:
           fi
         done
 
-    - name: Download legacy code-server debs (cache miss)
-      if: steps.cache-cs-legacy.outputs.cache-hit != 'true'
+    - name: Download Bullseye code-server debs (cache miss)
+      if: steps.cache-cs-bullseye.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
-        CODESERVER_VERSION_LEGACY="${{ steps.resolve.outputs.codeserver_version_legacy }}"
+        CODESERVER_VERSION_BULLSEYE="${{ steps.resolve.outputs.codeserver_version_bullseye }}"
         CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
-        mkdir -p "${{ runner.temp }}/code-server-debs-legacy"
+        mkdir -p "${{ runner.temp }}/code-server-debs-bullseye"
         for ARCH in amd64 arm64; do
-          DEB="code-server_${CODESERVER_VERSION_LEGACY}_${ARCH}.deb"
-          TARGET="${{ runner.temp }}/code-server-debs-legacy/${DEB}"
-          # When legacy == modern, copy from the already-downloaded modern debs.
-          if [ "$CODESERVER_VERSION_LEGACY" = "$CODESERVER_VERSION" ] \
-             && [ -f "${{ runner.temp }}/code-server-debs-modern/${DEB}" ]; then
-            echo "Legacy == modern; copying ${DEB} from modern debs"
-            cp "${{ runner.temp }}/code-server-debs-modern/${DEB}" "$TARGET"
-          # Reuse the amd64 .deb pre-downloaded during the resolve step.
-          elif [ "$ARCH" = "amd64" ] && [ -f "$RUNNER_TEMP/code-server-legacy-amd64.deb" ]; then
+          DEB="code-server_${CODESERVER_VERSION_BULLSEYE}_${ARCH}.deb"
+          TARGET="${{ runner.temp }}/code-server-debs-bullseye/${DEB}"
+          # When bullseye == bookworm, copy from the already-downloaded bookworm debs.
+          if [ "$CODESERVER_VERSION_BULLSEYE" = "$CODESERVER_VERSION" ] \
+             && [ -f "${{ runner.temp }}/code-server-debs-bookworm/${DEB}" ]; then
+            echo "Bullseye == Bookworm; copying ${DEB} from Bookworm debs"
+            cp "${{ runner.temp }}/code-server-debs-bookworm/${DEB}" "$TARGET"
+          # Reuse the amd64 .deb pre-downloaded and validated during the resolve step.
+          elif [ "$ARCH" = "amd64" ] && [ -f "$RUNNER_TEMP/code-server-bullseye-amd64.deb" ]; then
             echo "Reusing ${DEB} from resolve step"
-            cp "$RUNNER_TEMP/code-server-legacy-amd64.deb" "$TARGET"
+            cp "$RUNNER_TEMP/code-server-bullseye-amd64.deb" "$TARGET"
           else
             echo "Downloading ${DEB}"
             curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
-              "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION_LEGACY}/${DEB}" \
+              "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION_BULLSEYE}/${DEB}" \
               -o "$TARGET"
             head -c 8 "$TARGET" | grep -qF '!<arch>' || \
               { echo "ERROR: ${DEB} failed format validation (not a valid .deb archive)" >&2; exit 1; }
           fi
         done
 
-    - name: Download modern Copilot Chat VSIX (cache miss)
-      if: steps.cache-cc-modern.outputs.cache-hit != 'true'
+    - name: Download Bookworm Copilot Chat VSIX (cache miss)
+      if: steps.cache-cc-bookworm.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
         COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
-        TARGET="${{ runner.temp }}/copilot-chat-modern.vsix"
-        # Reuse the VSIX pre-downloaded during the resolve step.
-        if [ -f "$RUNNER_TEMP/copilot-chat-modern.vsix" ]; then
+        TARGET="${{ runner.temp }}/copilot-chat-bookworm.vsix"
+        # Reuse the VSIX pre-downloaded and validated during the resolve step.
+        if [ -f "$RUNNER_TEMP/copilot-chat-bookworm.vsix" ]; then
           echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION}.vsix from resolve step"
-          cp "$RUNNER_TEMP/copilot-chat-modern.vsix" "$TARGET"
+          cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$TARGET"
         else
           echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
           curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
@@ -396,27 +409,27 @@ runs:
             { echo "ERROR: Downloaded VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
         fi
 
-    - name: Download legacy Copilot Chat VSIX (cache miss)
-      if: steps.cache-cc-legacy.outputs.cache-hit != 'true'
+    - name: Download Bullseye Copilot Chat VSIX (cache miss)
+      if: steps.cache-cc-bullseye.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
-        COPILOT_CHAT_VERSION_LEGACY="${{ steps.resolve.outputs.copilot_chat_version_legacy }}"
+        COPILOT_CHAT_VERSION_BULLSEYE="${{ steps.resolve.outputs.copilot_chat_version_bullseye }}"
         COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
-        TARGET="${{ runner.temp }}/copilot-chat-legacy.vsix"
-        # When legacy == modern, copy from the already-downloaded modern VSIX.
-        if [ "$COPILOT_CHAT_VERSION_LEGACY" = "$COPILOT_CHAT_VERSION" ] \
-           && [ -f "${{ runner.temp }}/copilot-chat-modern.vsix" ]; then
-          echo "Legacy == modern; copying copilot-chat-${COPILOT_CHAT_VERSION_LEGACY}.vsix from modern"
-          cp "${{ runner.temp }}/copilot-chat-modern.vsix" "$TARGET"
-        # Reuse the VSIX pre-downloaded during the resolve step.
-        elif [ -f "$RUNNER_TEMP/copilot-chat-legacy.vsix" ]; then
-          echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION_LEGACY}.vsix from resolve step"
-          cp "$RUNNER_TEMP/copilot-chat-legacy.vsix" "$TARGET"
+        TARGET="${{ runner.temp }}/copilot-chat-bullseye.vsix"
+        # When bullseye == bookworm, copy from the already-downloaded Bookworm VSIX.
+        if [ "$COPILOT_CHAT_VERSION_BULLSEYE" = "$COPILOT_CHAT_VERSION" ] \
+           && [ -f "${{ runner.temp }}/copilot-chat-bookworm.vsix" ]; then
+          echo "Bullseye == Bookworm; copying copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix from Bookworm"
+          cp "${{ runner.temp }}/copilot-chat-bookworm.vsix" "$TARGET"
+        # Reuse the VSIX pre-downloaded and validated during the resolve step.
+        elif [ -f "$RUNNER_TEMP/copilot-chat-bullseye.vsix" ]; then
+          echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix from resolve step"
+          cp "$RUNNER_TEMP/copilot-chat-bullseye.vsix" "$TARGET"
         else
-          echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION_LEGACY}.vsix"
+          echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix"
           curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
-            "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION_LEGACY}/vspackage" \
+            "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION_BULLSEYE}/vspackage" \
             -o "$TARGET"
           od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || \
             { echo "ERROR: Downloaded VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
@@ -428,30 +441,30 @@ runs:
       run: |
         set -euo pipefail
         CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
-        CODESERVER_VERSION_LEGACY="${{ steps.resolve.outputs.codeserver_version_legacy }}"
+        CODESERVER_VERSION_BULLSEYE="${{ steps.resolve.outputs.codeserver_version_bullseye }}"
         COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
-        COPILOT_CHAT_VERSION_LEGACY="${{ steps.resolve.outputs.copilot_chat_version_legacy }}"
+        COPILOT_CHAT_VERSION_BULLSEYE="${{ steps.resolve.outputs.copilot_chat_version_bullseye }}"
         PRE_DOWNLOADED_DIR="${{ steps.set-dir.outputs.downloads_dir }}/pre-downloaded"
         mkdir -p "$PRE_DOWNLOADED_DIR"
 
-        # Modern artifacts
+        # Bookworm artifacts
         for ARCH in amd64 arm64; do
-          cp "${{ runner.temp }}/code-server-debs-modern/code-server_${CODESERVER_VERSION}_${ARCH}.deb" \
+          cp "${{ runner.temp }}/code-server-debs-bookworm/code-server_${CODESERVER_VERSION}_${ARCH}.deb" \
              "$PRE_DOWNLOADED_DIR/"
         done
-        cp "${{ runner.temp }}/copilot-chat-modern.vsix" \
+        cp "${{ runner.temp }}/copilot-chat-bookworm.vsix" \
            "$PRE_DOWNLOADED_DIR/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
 
-        # Legacy artifacts (only copy when versions differ from modern)
-        if [ "$CODESERVER_VERSION_LEGACY" != "$CODESERVER_VERSION" ]; then
+        # Bullseye artifacts (only copy when versions differ from Bookworm)
+        if [ "$CODESERVER_VERSION_BULLSEYE" != "$CODESERVER_VERSION" ]; then
           for ARCH in amd64 arm64; do
-            cp "${{ runner.temp }}/code-server-debs-legacy/code-server_${CODESERVER_VERSION_LEGACY}_${ARCH}.deb" \
+            cp "${{ runner.temp }}/code-server-debs-bullseye/code-server_${CODESERVER_VERSION_BULLSEYE}_${ARCH}.deb" \
                "$PRE_DOWNLOADED_DIR/"
           done
         fi
-        if [ "$COPILOT_CHAT_VERSION_LEGACY" != "$COPILOT_CHAT_VERSION" ]; then
-          cp "${{ runner.temp }}/copilot-chat-legacy.vsix" \
-             "$PRE_DOWNLOADED_DIR/copilot-chat-${COPILOT_CHAT_VERSION_LEGACY}.vsix"
+        if [ "$COPILOT_CHAT_VERSION_BULLSEYE" != "$COPILOT_CHAT_VERSION" ]; then
+          cp "${{ runner.temp }}/copilot-chat-bullseye.vsix" \
+             "$PRE_DOWNLOADED_DIR/copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix"
         fi
 
     - name: Compute SHA256 of pre-seeded downloads
@@ -460,23 +473,23 @@ runs:
       run: |
         set -euo pipefail
         CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
-        CODESERVER_VERSION_LEGACY="${{ steps.resolve.outputs.codeserver_version_legacy }}"
+        CODESERVER_VERSION_BULLSEYE="${{ steps.resolve.outputs.codeserver_version_bullseye }}"
         COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
-        COPILOT_CHAT_VERSION_LEGACY="${{ steps.resolve.outputs.copilot_chat_version_legacy }}"
+        COPILOT_CHAT_VERSION_BULLSEYE="${{ steps.resolve.outputs.copilot_chat_version_bullseye }}"
         PRE_DOWNLOADED_DIR="${{ steps.set-dir.outputs.downloads_dir }}/pre-downloaded"
 
-        AMD64_SHA=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION}_amd64.deb"          | awk '{print $1}')
-        ARM64_SHA=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION}_arm64.deb"          | awk '{print $1}')
-        VSIX_SHA=$(sha256sum  "${PRE_DOWNLOADED_DIR}/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"            | awk '{print $1}')
-        AMD64_SHA_L=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION_LEGACY}_amd64.deb" | awk '{print $1}')
-        ARM64_SHA_L=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION_LEGACY}_arm64.deb" | awk '{print $1}')
-        VSIX_SHA_L=$(sha256sum  "${PRE_DOWNLOADED_DIR}/copilot-chat-${COPILOT_CHAT_VERSION_LEGACY}.vsix"   | awk '{print $1}')
+        AMD64_SHA=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION}_amd64.deb"              | awk '{print $1}')
+        ARM64_SHA=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION}_arm64.deb"              | awk '{print $1}')
+        VSIX_SHA=$(sha256sum  "${PRE_DOWNLOADED_DIR}/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"                | awk '{print $1}')
+        AMD64_SHA_B=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION_BULLSEYE}_amd64.deb"   | awk '{print $1}')
+        ARM64_SHA_B=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION_BULLSEYE}_arm64.deb"   | awk '{print $1}')
+        VSIX_SHA_B=$(sha256sum  "${PRE_DOWNLOADED_DIR}/copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix"     | awk '{print $1}')
 
-        echo "codeserver_deb_sha256_amd64=${AMD64_SHA}"               >> "$GITHUB_OUTPUT"
-        echo "codeserver_deb_sha256_arm64=${ARM64_SHA}"               >> "$GITHUB_OUTPUT"
-        echo "copilot_chat_vsix_sha256=${VSIX_SHA}"                   >> "$GITHUB_OUTPUT"
-        echo "codeserver_deb_sha256_amd64_legacy=${AMD64_SHA_L}"      >> "$GITHUB_OUTPUT"
-        echo "codeserver_deb_sha256_arm64_legacy=${ARM64_SHA_L}"      >> "$GITHUB_OUTPUT"
-        echo "copilot_chat_vsix_sha256_legacy=${VSIX_SHA_L}"          >> "$GITHUB_OUTPUT"
-        echo "SHA256 modern: amd64=${AMD64_SHA}  arm64=${ARM64_SHA}  copilot-chat=${VSIX_SHA}"
-        echo "SHA256 legacy: amd64=${AMD64_SHA_L}  arm64=${ARM64_SHA_L}  copilot-chat=${VSIX_SHA_L}"
+        echo "codeserver_deb_sha256_amd64=${AMD64_SHA}"                  >> "$GITHUB_OUTPUT"
+        echo "codeserver_deb_sha256_arm64=${ARM64_SHA}"                  >> "$GITHUB_OUTPUT"
+        echo "copilot_chat_vsix_sha256=${VSIX_SHA}"                      >> "$GITHUB_OUTPUT"
+        echo "codeserver_deb_sha256_amd64_bullseye=${AMD64_SHA_B}"       >> "$GITHUB_OUTPUT"
+        echo "codeserver_deb_sha256_arm64_bullseye=${ARM64_SHA_B}"       >> "$GITHUB_OUTPUT"
+        echo "copilot_chat_vsix_sha256_bullseye=${VSIX_SHA_B}"           >> "$GITHUB_OUTPUT"
+        echo "SHA256 Bookworm: amd64=${AMD64_SHA}  arm64=${ARM64_SHA}  copilot-chat=${VSIX_SHA}"
+        echo "SHA256 Bullseye: amd64=${AMD64_SHA_B}  arm64=${ARM64_SHA_B}  copilot-chat=${VSIX_SHA_B}"
