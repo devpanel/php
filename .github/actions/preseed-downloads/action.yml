@@ -1,17 +1,17 @@
 name: Pre-seed build downloads
 description: >
   Resolve the latest compatible code-server and Copilot Chat versions for each
-  GLIBC tier, restore previously downloaded files from the actions/cache, and
+  Debian tier, restore previously downloaded files from the actions/cache, and
   download them on a cache miss.  Files are placed in a pre-downloaded/
   subdirectory of the output directory so that docker-bake.hcl can pass the
   parent directory as the 'downloads' named context and the Dockerfile can
   bind-mount source=/pre-downloaded.
   Two tiers are resolved:
-    modern  — latest stable release (for PHP 8.1+, Debian 12 / GLIBC 2.35)
-    legacy  — latest release whose native modules do not require GLIBC > 2.31
-              (for PHP 7.4 and 8.0, which run on Debian 11 / Bullseye)
-  When the latest release is already GLIBC 2.31-compatible both tiers resolve
-  to the same version and only one set of artifacts is downloaded.
+    modern  — latest stable release (for PHP 8.1+, Debian 12 / Bookworm)
+    legacy  — latest release whose binaries run successfully on Debian 11 / Bullseye,
+              verified by running ldd inside a real debian:bullseye container
+  When the latest release already runs on Bullseye both tiers resolve to the
+  same version and only one set of artifacts is downloaded.
 
 inputs:
   github_token:
@@ -40,10 +40,10 @@ outputs:
     description: SHA256 of the modern Copilot Chat VSIX.
     value: ${{ steps.sha256.outputs.copilot_chat_vsix_sha256 }}
   codeserver_version_legacy:
-    description: Resolved legacy code-server version (GLIBC 2.31-compatible, e.g. 4.99.4)
+    description: Resolved legacy code-server version (Bullseye-compatible, e.g. 4.99.4)
     value: ${{ steps.resolve.outputs.codeserver_version_legacy }}
   copilot_chat_version_legacy:
-    description: Resolved legacy Copilot Chat version (GLIBC 2.31-compatible, e.g. 0.26.7)
+    description: Resolved legacy Copilot Chat version (Bullseye-compatible, e.g. 0.26.7)
     value: ${{ steps.resolve.outputs.copilot_chat_version_legacy }}
   codeserver_deb_sha256_amd64_legacy:
     description: SHA256 of the legacy code-server amd64 .deb.
@@ -63,6 +63,11 @@ runs:
       shell: bash
       run: echo "downloads_dir=${{ runner.temp }}/build-downloads" >> "$GITHUB_OUTPUT"
 
+    - name: Pull Debian base images for compatibility testing
+      shell: bash
+      run: |
+        docker pull --quiet debian:bullseye
+
     - name: Resolve artifact versions
       id: resolve
       shell: bash
@@ -71,72 +76,65 @@ runs:
       run: |
         set -euo pipefail
 
-        # GLIBC_LEGACY: maximum GLIBC version supported by Debian 11 (Bullseye),
-        # which is the base OS for PHP 7.4 and 8.0 images.
-        GLIBC_LEGACY="2.31"
-
-        # ── GLIBC compatibility helpers ──────────────────────────────────────
-        # Returns 0 (true) if version string $1 is strictly greater than $2.
-        version_gt() {
-          [ "$1" != "$2" ] && \
-            [ "$(printf '%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]
-        }
-
-        # Check one ELF .node file: fail (return 1) if its highest required
-        # GLIBC symbol version exceeds $2 (min_glibc argument).
-        check_node_file_glibc() {
-          local f="$1" min_glibc="$2"
-          if ! command -v readelf >/dev/null 2>&1; then
-            echo "  WARNING: readelf not available; skipping GLIBC check for $(basename "$f")" >&2
-            return 0
-          fi
-          local max_req
-          max_req=$(readelf -V "$f" 2>/dev/null \
-            | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' \
-            | sed 's/GLIBC_//' \
-            | sort -V | tail -1)
-          if [ -n "$max_req" ] && version_gt "$max_req" "$min_glibc"; then
-            echo "  $(basename "$f"): requires GLIBC ${max_req} > ${min_glibc}" >&2
-            return 1
-          fi
-          return 0
-        }
-
-        # Check all *.node files in a directory against $2 (min_glibc).
-        check_dir_node_files_glibc() {
-          local dir="$1" min_glibc="$2" result=0
-          while IFS= read -r f; do
-            check_node_file_glibc "$f" "$min_glibc" || { result=1; break; }
-          done < <(find "$dir" -name "*.node" -type f 2>/dev/null)
-          return $result
-        }
-
-        # Check all *.node files inside a VSIX (ZIP) against $2 (min_glibc).
-        check_vsix_glibc() {
-          local vsix="$1" min_glibc="$2"
-          local tmp_dir result=0
+        # ── Compatibility helpers ────────────────────────────────────────────
+        # Check whether a code-server .deb runs cleanly on a given distro image.
+        # Extracts the .deb on the runner host (dpkg-deb is available on ubuntu-latest),
+        # then runs ldd on the bundled Node binary inside the target distro container.
+        # Returns 0 if all libraries resolve, 1 if any are missing.
+        check_deb_on_distro() {
+          local deb="$1" image="$2"
+          local tmp_dir
           tmp_dir=$(mktemp -d)
-          if ! unzip -q "$vsix" -d "$tmp_dir" 2>/dev/null; then
-            echo "  WARNING: failed to extract VSIX; skipping GLIBC check" >&2
+          if ! dpkg-deb -x "$deb" "$tmp_dir" 2>/dev/null; then
+            echo "  WARNING: failed to extract .deb; skipping compatibility check" >&2
             rm -rf "$tmp_dir"
             return 0
           fi
-          check_dir_node_files_glibc "$tmp_dir" "$min_glibc" || result=1
+          # Find the main Node binary (architecture-specific native binary).
+          local node_bin
+          node_bin=$(find "$tmp_dir" -name "node" ! -name "*.js" -perm /111 -type f | head -1)
+          if [ -z "$node_bin" ]; then
+            echo "  WARNING: no node binary found in .deb; skipping compatibility check" >&2
+            rm -rf "$tmp_dir"
+            return 0
+          fi
+          # Run ldd inside the target distro container.  Any "not found" lines indicate
+          # that the binary requires a library (e.g. a newer GLIBC) not present in that
+          # distro, making the package incompatible.
+          local result=0
+          if ! docker run --rm \
+               -v "${node_bin}:/tmp/node:ro" \
+               --entrypoint sh \
+               "$image" \
+               -c 'missing=$(ldd /tmp/node 2>&1 | grep "not found"); [ -z "$missing" ] || { echo "$missing" >&2; exit 1; }'; then
+            result=1
+          fi
           rm -rf "$tmp_dir"
           return $result
         }
 
-        # Check all *.node files inside a .deb against $2 (min_glibc).
-        check_deb_glibc() {
-          local deb="$1" min_glibc="$2"
+        # Check whether a Copilot Chat VSIX runs cleanly on a given distro image.
+        # Extracts the VSIX on the runner host, then runs ldd on each .node file
+        # inside a container based on the target distro image.
+        check_vsix_on_distro() {
+          local vsix="$1" image="$2"
           local tmp_dir result=0
           tmp_dir=$(mktemp -d)
-          if ! dpkg-deb -x "$deb" "$tmp_dir" 2>/dev/null; then
-            echo "  WARNING: failed to extract .deb; skipping GLIBC check" >&2
+          if ! unzip -q "$vsix" -d "$tmp_dir" 2>/dev/null; then
+            echo "  WARNING: failed to extract VSIX; skipping compatibility check" >&2
             rm -rf "$tmp_dir"
             return 0
           fi
-          check_dir_node_files_glibc "$tmp_dir" "$min_glibc" || result=1
+          while IFS= read -r node_file; do
+            if ! docker run --rm \
+                 -v "${node_file}:/tmp/check.node:ro" \
+                 --entrypoint sh \
+                 "$image" \
+                 -c 'missing=$(ldd /tmp/check.node 2>&1 | grep "not found"); [ -z "$missing" ] || { echo "$missing" >&2; exit 1; }'; then
+              result=1
+              break
+            fi
+          done < <(find "$tmp_dir" -name "*.node" -type f 2>/dev/null)
           rm -rf "$tmp_dir"
           return $result
         }
@@ -145,7 +143,7 @@ runs:
         # Fetch the list of stable code-server major-4 releases once.
         CODESERVER_RELEASES_JSON=$(curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
           -H 'Accept: application/vnd.github+json' \
-          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H "Authorization: ******" \
           -H 'X-GitHub-Api-Version: 2022-11-28' \
           'https://api.github.com/repos/coder/code-server/releases?per_page=100')
 
@@ -161,34 +159,35 @@ runs:
         [ -n "$CODESERVER_VERSION" ] || { echo "Failed to detect modern code-server version" >&2; exit 1; }
         echo "Modern code-server: ${CODESERVER_VERSION}" >&2
 
-        # ── Legacy code-server: latest GLIBC ${GLIBC_LEGACY}-compatible ──────
-        # Download the modern amd64 .deb first; if it is already compatible with
-        # GLIBC ${GLIBC_LEGACY} then legacy == modern and no extra download is needed.
+        # Download the modern amd64 .deb — reused for the Bullseye compatibility check.
         curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
           "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb" \
           -o "$RUNNER_TEMP/code-server-modern-amd64.deb"
 
-        if check_deb_glibc "$RUNNER_TEMP/code-server-modern-amd64.deb" "$GLIBC_LEGACY"; then
+        # ── Legacy code-server: latest version whose binaries run on Bullseye ─
+        # Test the modern version first.  If it runs on Bullseye, legacy == modern
+        # (fast path, no extra download needed).
+        if check_deb_on_distro "$RUNNER_TEMP/code-server-modern-amd64.deb" "debian:bullseye"; then
           CODESERVER_VERSION_LEGACY="$CODESERVER_VERSION"
           cp "$RUNNER_TEMP/code-server-modern-amd64.deb" "$RUNNER_TEMP/code-server-legacy-amd64.deb"
-          echo "Legacy code-server = modern (${CODESERVER_VERSION_LEGACY} is GLIBC ${GLIBC_LEGACY}-compatible)" >&2
+          echo "Legacy code-server = modern (${CODESERVER_VERSION_LEGACY} runs on Bullseye)" >&2
         else
-          echo "Modern code-server ${CODESERVER_VERSION} requires GLIBC > ${GLIBC_LEGACY}; searching for legacy-compatible version..." >&2
+          echo "Modern code-server ${CODESERVER_VERSION} does not run on Bullseye; searching for compatible version..." >&2
           CODESERVER_VERSION_LEGACY=""
           while IFS= read -r candidate; do
             [ "$candidate" = "$CODESERVER_VERSION" ] && continue
-            echo "Checking code-server ${candidate} (GLIBC <= ${GLIBC_LEGACY} required)..." >&2
+            echo "Checking code-server ${candidate} on debian:bullseye..." >&2
             TMP_DEB=$(mktemp --suffix=.deb)
             if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
                  "https://github.com/coder/code-server/releases/download/v${candidate}/code-server_${candidate}_amd64.deb" \
                  -o "$TMP_DEB" 2>/dev/null \
-               && check_deb_glibc "$TMP_DEB" "$GLIBC_LEGACY"; then
+               && check_deb_on_distro "$TMP_DEB" "debian:bullseye"; then
               CODESERVER_VERSION_LEGACY="$candidate"
               mv "$TMP_DEB" "$RUNNER_TEMP/code-server-legacy-amd64.deb"
               echo "  Selected legacy code-server: ${CODESERVER_VERSION_LEGACY}" >&2
               break
             else
-              echo "  code-server ${candidate} requires GLIBC > ${GLIBC_LEGACY}, trying older release..." >&2
+              echo "  code-server ${candidate} does not run on Bullseye, trying older release..." >&2
               rm -f "$TMP_DEB"
             fi
           done < <(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
@@ -197,7 +196,7 @@ runs:
             select(.tag_name | test("^v?4\\.[0-9]+\\.[0-9]+([-+].*)?$")) |
             .tag_name | ltrimstr("v")] | .[]')
           [ -n "$CODESERVER_VERSION_LEGACY" ] || {
-            echo "Failed to detect a GLIBC ${GLIBC_LEGACY}-compatible code-server version" >&2; exit 1;
+            echo "Failed to detect a Bullseye-compatible code-server version" >&2; exit 1;
           }
         fi
 
@@ -238,7 +237,7 @@ runs:
         }
 
         # Modern Copilot Chat: pick the latest version compatible with the modern
-        # VS Code engine.  No GLIBC check — Debian 12 ships GLIBC 2.35.
+        # VS Code engine.  No Bullseye compatibility check needed for Bookworm.
         COPILOT_CHAT_VERSION=$(copilot_candidates_for_vscode "$VSCODE_VERSION_MODERN" | head -1)
         [ -n "$COPILOT_CHAT_VERSION" ] || { echo "Failed to detect modern Copilot Chat version" >&2; exit 1; }
         echo "Modern Copilot Chat: ${COPILOT_CHAT_VERSION}" >&2
@@ -246,22 +245,21 @@ runs:
           "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage" \
           -o "$RUNNER_TEMP/copilot-chat-modern.vsix"
 
-        # Legacy Copilot Chat: pick the latest version compatible with the legacy
-        # VS Code engine AND GLIBC ${GLIBC_LEGACY}.
-        # Fast path: if legacy code-server == modern AND the modern Copilot Chat
-        # VSIX is already GLIBC ${GLIBC_LEGACY}-compatible, legacy == modern.
+        # Legacy Copilot Chat: pick the latest version compatible with the legacy VS
+        # Code engine that also runs on Bullseye.  Fast path: if legacy code-server ==
+        # modern AND the modern VSIX runs on Bullseye, legacy == modern.
         COPILOT_CHAT_VERSION_LEGACY=""
         if [ "$CODESERVER_VERSION_LEGACY" = "$CODESERVER_VERSION" ] \
-           && check_vsix_glibc "$RUNNER_TEMP/copilot-chat-modern.vsix" "$GLIBC_LEGACY"; then
+           && check_vsix_on_distro "$RUNNER_TEMP/copilot-chat-modern.vsix" "debian:bullseye"; then
           COPILOT_CHAT_VERSION_LEGACY="$COPILOT_CHAT_VERSION"
           cp "$RUNNER_TEMP/copilot-chat-modern.vsix" "$RUNNER_TEMP/copilot-chat-legacy.vsix"
-          echo "Legacy Copilot Chat = modern (${COPILOT_CHAT_VERSION_LEGACY} is GLIBC ${GLIBC_LEGACY}-compatible)" >&2
+          echo "Legacy Copilot Chat = modern (${COPILOT_CHAT_VERSION_LEGACY} runs on Bullseye)" >&2
         else
           while IFS= read -r candidate; do
-            echo "Checking Copilot Chat ${candidate} (GLIBC <= ${GLIBC_LEGACY} required)..." >&2
+            echo "Checking Copilot Chat ${candidate} on debian:bullseye..." >&2
             TMP_VSIX=$(mktemp --suffix=.vsix)
             CC_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${candidate}/vspackage"
-            # Reuse already-downloaded modern VSIX when it matches the candidate.
+            # Reuse already-downloaded modern VSIX when candidate matches.
             if [ "$candidate" = "$COPILOT_CHAT_VERSION" ] \
                && [ -f "$RUNNER_TEMP/copilot-chat-modern.vsix" ]; then
               cp "$RUNNER_TEMP/copilot-chat-modern.vsix" "$TMP_VSIX"
@@ -269,18 +267,18 @@ runs:
               curl -fsSL --compressed --retry 3 --retry-all-errors --connect-timeout 30 \
                 "${CC_URL}" -o "$TMP_VSIX" 2>/dev/null || { rm -f "$TMP_VSIX"; continue; }
             fi
-            if check_vsix_glibc "$TMP_VSIX" "$GLIBC_LEGACY"; then
+            if check_vsix_on_distro "$TMP_VSIX" "debian:bullseye"; then
               COPILOT_CHAT_VERSION_LEGACY="$candidate"
               mv "$TMP_VSIX" "$RUNNER_TEMP/copilot-chat-legacy.vsix"
               echo "  Selected legacy Copilot Chat: ${COPILOT_CHAT_VERSION_LEGACY}" >&2
               break
             else
-              echo "  Copilot Chat ${candidate} requires GLIBC > ${GLIBC_LEGACY}, trying older version..." >&2
+              echo "  Copilot Chat ${candidate} does not run on Bullseye, trying older version..." >&2
               rm -f "$TMP_VSIX"
             fi
           done < <(copilot_candidates_for_vscode "$VSCODE_VERSION_LEGACY")
           [ -n "$COPILOT_CHAT_VERSION_LEGACY" ] || {
-            echo "Failed to detect a GLIBC ${GLIBC_LEGACY}-compatible Copilot Chat version" >&2; exit 1;
+            echo "Failed to detect a Bullseye-compatible Copilot Chat version" >&2; exit 1;
           }
         fi
 
@@ -294,8 +292,7 @@ runs:
     # ── Cache steps ──────────────────────────────────────────────────────────
     # Cache code-server .deb files and Copilot Chat VSIXs separately so that
     # a version bump in one artifact does not invalidate the other's cache.
-    # Modern and legacy artifacts are cached independently so they survive
-    # across runs where one tier's version changes but the other stays the same.
+    # Modern and legacy artifacts are cached independently.
     - name: Cache modern code-server debs
       id: cache-cs-modern
       uses: actions/cache@v5
@@ -445,7 +442,7 @@ runs:
         cp "${{ runner.temp }}/copilot-chat-modern.vsix" \
            "$PRE_DOWNLOADED_DIR/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
 
-        # Legacy artifacts (only copy if versions differ from modern to avoid redundant files)
+        # Legacy artifacts (only copy when versions differ from modern)
         if [ "$CODESERVER_VERSION_LEGACY" != "$CODESERVER_VERSION" ]; then
           for ARCH in amd64 arm64; do
             cp "${{ runner.temp }}/code-server-debs-legacy/code-server_${CODESERVER_VERSION_LEGACY}_${ARCH}.deb" \

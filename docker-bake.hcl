@@ -1,8 +1,8 @@
 # docker-bake.hcl — Docker Buildx Bake file for devpanel/php
 #
 # Build graph (→ = "depends on"):
-#   downloader / downloader-legacy    (GHCR stored + cached, not pushed to Docker Hub)
-#     └─▶ phpX_Y-php-ext              (GHCR stored + cached, not pushed to Docker Hub)
+#   phpX_Y-downloader              (GHCR stored + cached, not pushed to Docker Hub)
+#     └─▶ phpX_Y-php-ext           (GHCR stored + cached, not pushed to Docker Hub)
 #           └─▶ phpX_Y-base        (GHA cached, pushed to Docker Hub)
 #                 └─▶ phpX_Y-secure-int  (GHCR stored + cached, not pushed to Docker Hub)
 #                       └─▶ phpX_Y-secure    (GHA cached, pushed to Docker Hub)
@@ -14,19 +14,18 @@
 #   TAG_SUFFIX                    Image tag suffix                             ("" on main, "-rc" on develop)
 #   VERSIONS                      Space-separated PHP version dirs             ("7.4 8.0 8.1 8.2 8.3")
 #   LATEST_PHP_VERSION            Highest PHP version dir in the repo          (8.3)
-#   CODESERVER_VERSION            code-server version for modern PHP ("" = Dockerfile default) ("")
+#   CODESERVER_VERSION            code-server version for modern PHP (8.1+) ("" = Dockerfile default) ("")
 #   COPILOT_CHAT_VERSION          Copilot Chat VSIX version for modern PHP ("" = Dockerfile default) ("")
-#   CODESERVER_VERSION_LEGACY     code-server version for legacy PHP ("" = Dockerfile default) ("")
+#   CODESERVER_VERSION_LEGACY     code-server version for legacy PHP (7.4, 8.0) ("" = Dockerfile default) ("")
 #   COPILOT_CHAT_VERSION_LEGACY   Copilot Chat VSIX version for legacy PHP ("" = Dockerfile default) ("")
-#   VERSIONS_LEGACY               PHP versions on Debian 11 / GLIBC 2.31 that use the legacy
-#                                 downloader (downloader-legacy) instead of the modern one  ("7.4 8.0")
+#   VERSIONS_LEGACY               PHP versions on Debian 11 that use the legacy code-server ("7.4 8.0")
 #   CORERULESET_VERSION           ModSecurity CRS version                      (3.3.5)
 #   CACHE_FROM_ENABLED            Read from GHA/GHCR cache ("true"/"false")    ("true")
 #   PLATFORMS                     Comma-separated target platforms             ("linux/amd64,linux/arm64")
 #   VERSIONS_NEEDING_MULTIPART_FIX  Versions running Debian 11 / modsec 2.9.3  ("7.4 8.0")
 #
 # Intermediate targets pushed to GHCR (never pushed to Docker Hub):
-#   downloader, downloader-legacy, phpX_Y-php-ext, phpX_Y-secure-int
+#   phpX_Y-downloader, phpX_Y-php-ext, phpX_Y-secure-int
 # These are permanently stored in the GitHub Container Registry and use
 # type=registry cache (mode=max) for efficient incremental rebuilds.
 
@@ -65,19 +64,19 @@ variable "CODESERVER_DEB_SHA256_AMD64"   { default = ""                         
 variable "CODESERVER_DEB_SHA256_ARM64"   { default = ""                                                     }
 variable "COPILOT_CHAT_VERSION"          { default = ""                                                     }
 variable "COPILOT_CHAT_VSIX_SHA256"      { default = ""                                                     }
-# Legacy versions: PHP 7.4 and 8.0 run on Debian 11 (Bullseye / GLIBC 2.31) and
-# may not be able to run the latest code-server or Copilot Chat VSIX if they
-# contain native modules compiled against a newer GLIBC.  CI resolves these via
-# preseed-downloads and passes them separately so each PHP version uses the newest
-# code-server it can support.  When empty, the Dockerfile defaults are used.
+# Legacy versions: PHP 7.4 and 8.0 run on Debian 11 (Bullseye) and may not be
+# able to run the latest code-server if it requires a newer GLIBC.  CI resolves
+# compatible versions by testing the .deb in a real Bullseye Docker container and
+# passes them separately so each PHP version's downloader gets the best it can use.
+# When empty, the Dockerfile defaults are used (always set to a Bullseye-compatible
+# version).
 variable "CODESERVER_VERSION_LEGACY"          { default = ""                        }
 variable "CODESERVER_DEB_SHA256_AMD64_LEGACY" { default = ""                        }
 variable "CODESERVER_DEB_SHA256_ARM64_LEGACY" { default = ""                        }
 variable "COPILOT_CHAT_VERSION_LEGACY"        { default = ""                        }
 variable "COPILOT_CHAT_VSIX_SHA256_LEGACY"    { default = ""                        }
-# VERSIONS_LEGACY: PHP versions on Debian 11 / GLIBC 2.31 that must use the
-# legacy downloader (downloader-legacy) with GLIBC 2.31-compatible artifacts.
-# Must match VERSIONS_NEEDING_MULTIPART_FIX since both identify Debian 11 images.
+# VERSIONS_LEGACY: PHP versions on Debian 11 (Bullseye) whose per-version
+# downloader receives the legacy code-server build args instead of the modern ones.
 variable "VERSIONS_LEGACY"                   { default = "7.4 8.0"               }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 # DOWNLOADS_DIR: path to a directory whose pre-downloaded/ subdirectory contains
@@ -116,12 +115,29 @@ function "ver_key" {
   result = replace(v, ".", "_")
 }
 
-# downloader_for: returns the name of the downloader target to use for a given
-# PHP version.  Versions in VERSIONS_LEGACY (Debian 11 / GLIBC 2.31 images) use
-# the legacy downloader so they get the newest code-server they can actually run.
-function "downloader_for" {
+# downloader_args: returns the merged build-arg map for a per-version downloader
+# target.  Versions in VERSIONS_LEGACY (Debian 11 / Bullseye) receive the legacy
+# code-server and Copilot Chat versions; all other versions receive the modern ones.
+# When a *_LEGACY variable is empty the Dockerfile default is used, which is always
+# set to a version that works on Debian 11.
+function "downloader_args" {
   params = [version]
-  result = contains(split(" ", trimspace(VERSIONS_LEGACY)), version) ? "target:downloader-legacy" : "target:downloader"
+  result = merge(
+    { PHP_VERSION = version },
+    contains(split(" ", trimspace(VERSIONS_LEGACY)), version) ? merge(
+      CODESERVER_VERSION_LEGACY          != "" ? { CODESERVER_VERSION          = CODESERVER_VERSION_LEGACY          } : {},
+      CODESERVER_DEB_SHA256_AMD64_LEGACY != "" ? { CODESERVER_DEB_SHA256_AMD64 = CODESERVER_DEB_SHA256_AMD64_LEGACY } : {},
+      CODESERVER_DEB_SHA256_ARM64_LEGACY != "" ? { CODESERVER_DEB_SHA256_ARM64 = CODESERVER_DEB_SHA256_ARM64_LEGACY } : {},
+      COPILOT_CHAT_VERSION_LEGACY        != "" ? { COPILOT_CHAT_VERSION        = COPILOT_CHAT_VERSION_LEGACY        } : {},
+      COPILOT_CHAT_VSIX_SHA256_LEGACY    != "" ? { COPILOT_CHAT_VSIX_SHA256    = COPILOT_CHAT_VSIX_SHA256_LEGACY    } : {}
+    ) : merge(
+      CODESERVER_VERSION          != "" ? { CODESERVER_VERSION          = CODESERVER_VERSION          } : {},
+      CODESERVER_DEB_SHA256_AMD64 != "" ? { CODESERVER_DEB_SHA256_AMD64 = CODESERVER_DEB_SHA256_AMD64 } : {},
+      CODESERVER_DEB_SHA256_ARM64 != "" ? { CODESERVER_DEB_SHA256_ARM64 = CODESERVER_DEB_SHA256_ARM64 } : {},
+      COPILOT_CHAT_VERSION        != "" ? { COPILOT_CHAT_VERSION        = COPILOT_CHAT_VERSION        } : {},
+      COPILOT_CHAT_VSIX_SHA256    != "" ? { COPILOT_CHAT_VSIX_SHA256    = COPILOT_CHAT_VSIX_SHA256    } : {}
+    )
+  )
 }
 
 # should_push: true if version v is listed in the space-separated stage_versions
@@ -199,11 +215,18 @@ function "cache_to_registry" {
   result = GHCR_WRITABLE == "true" ? concat(["type=registry,ref=${ref},mode=max"], cache_to(scope)) : concat(["type=registry,ref=${ref},mode=max,ignore-error=true"], cache_to(scope))
 }
 
-# ─── Shared downloader (pushed to GHCR, NOT pushed to Docker Hub) ────────────
-# Downloads code-server .deb and libsodium source; both are version-independent.
-# Referenced by every phpX_Y-php-ext target via the 'common-downloader'
-# named context.
-target "downloader" {
+# ─── Per-version downloader targets (pushed to GHCR, NOT pushed to Docker Hub) ─
+# Each PHP version has its own downloader that runs inside php:${PHP_VERSION}-apache.
+# PHP 7.4 and 8.0 use Debian 11 (Bullseye); PHP 8.1+ use Debian 12 (Bookworm).
+# Each downloader therefore fetches the newest code-server its OS can support.
+# Versions in VERSIONS_LEGACY receive the legacy code-server build args (resolved
+# by CI by testing with a real Bullseye container); all other versions receive
+# the modern ones.  When *_LEGACY variables are empty the Dockerfile defaults
+# (which are always Bullseye-compatible) are used.
+#
+# Matrix generates one target per version: php7_4-downloader, php8_0-downloader, ...
+
+target "_downloader-common" {
   dockerfile = "Dockerfile"
   context    = "base"
   target     = "downloader"
@@ -214,41 +237,18 @@ target "downloader" {
   # 'downloads' stage (FROM alpine:3 with an empty /pre-downloaded dir) is used,
   # causing all downloads to fall through to the normal network path.
   contexts = DOWNLOADS_DIR != "" ? { downloads = DOWNLOADS_DIR } : {}
-  args = merge(
-    { LATEST_PHP_VERSION = LATEST_PHP_VERSION },
-    CODESERVER_VERSION          != "" ? { CODESERVER_VERSION          = CODESERVER_VERSION          } : {},
-    CODESERVER_DEB_SHA256_AMD64 != "" ? { CODESERVER_DEB_SHA256_AMD64 = CODESERVER_DEB_SHA256_AMD64 } : {},
-    CODESERVER_DEB_SHA256_ARM64 != "" ? { CODESERVER_DEB_SHA256_ARM64 = CODESERVER_DEB_SHA256_ARM64 } : {},
-    COPILOT_CHAT_VERSION        != "" ? { COPILOT_CHAT_VERSION        = COPILOT_CHAT_VERSION        } : {},
-    COPILOT_CHAT_VSIX_SHA256    != "" ? { COPILOT_CHAT_VSIX_SHA256    = COPILOT_CHAT_VSIX_SHA256    } : {}
-  )
-  tags       = ["${GHCR_REPO}:downloader${TAG_SUFFIX}"]
-  cache-from = cache_from_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}", "downloader")
-  cache-to   = cache_to_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}", "downloader")
 }
 
-# ─── Legacy downloader (pushed to GHCR, NOT pushed to Docker Hub) ────────────
-# Same as 'downloader' but uses the GLIBC 2.31-compatible code-server and Copilot
-# Chat versions resolved for PHP 7.4 and 8.0 (Debian 11 / Bullseye images).
-# When the *_LEGACY variables are empty, the Dockerfile's hardcoded defaults are
-# used, which are always set to a version that works on Debian 11.
-target "downloader-legacy" {
-  dockerfile = "Dockerfile"
-  context    = "base"
-  target     = "downloader"
-  platforms  = split(",", PLATFORMS)
-  contexts = DOWNLOADS_DIR != "" ? { downloads = DOWNLOADS_DIR } : {}
-  args = merge(
-    { LATEST_PHP_VERSION = LATEST_PHP_VERSION },
-    CODESERVER_VERSION_LEGACY          != "" ? { CODESERVER_VERSION          = CODESERVER_VERSION_LEGACY          } : {},
-    CODESERVER_DEB_SHA256_AMD64_LEGACY != "" ? { CODESERVER_DEB_SHA256_AMD64 = CODESERVER_DEB_SHA256_AMD64_LEGACY } : {},
-    CODESERVER_DEB_SHA256_ARM64_LEGACY != "" ? { CODESERVER_DEB_SHA256_ARM64 = CODESERVER_DEB_SHA256_ARM64_LEGACY } : {},
-    COPILOT_CHAT_VERSION_LEGACY        != "" ? { COPILOT_CHAT_VERSION        = COPILOT_CHAT_VERSION_LEGACY        } : {},
-    COPILOT_CHAT_VSIX_SHA256_LEGACY    != "" ? { COPILOT_CHAT_VSIX_SHA256    = COPILOT_CHAT_VSIX_SHA256_LEGACY    } : {}
-  )
-  tags       = ["${GHCR_REPO}:downloader-legacy${TAG_SUFFIX}"]
-  cache-from = cache_from_registry("${GHCR_REPO}:cache-downloader-legacy${TAG_SUFFIX}", "downloader-legacy")
-  cache-to   = cache_to_registry("${GHCR_REPO}:cache-downloader-legacy${TAG_SUFFIX}", "downloader-legacy")
+target "php-downloader" {
+  matrix = {
+    version = split(" ", trimspace(VERSIONS))
+  }
+  name       = "php${ver_key(version)}-downloader"
+  inherits   = ["_downloader-common"]
+  args       = downloader_args(version)
+  tags       = ["${GHCR_REPO}:${version}-downloader${TAG_SUFFIX}"]
+  cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-downloader${TAG_SUFFIX}", "php${ver_key(version)}-downloader")
+  cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-downloader${TAG_SUFFIX}", "php${ver_key(version)}-downloader")
 }
 
 # ─── Common php-ext intermediates (pushed to GHCR, NOT pushed to Docker Hub) ─
@@ -278,7 +278,7 @@ target "php-php-ext" {
   inherits = ["_php-ext-common"]
   args     = { PHP_VERSION = version }
   contexts = {
-    common-downloader = downloader_for(version)
+    common-downloader = "target:php${ver_key(version)}-downloader"
   }
   tags       = ["${GHCR_REPO}:${version}-php-ext${TAG_SUFFIX}"]
   cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-php-ext${TAG_SUFFIX}", "php${ver_key(version)}-php-ext")
@@ -306,7 +306,7 @@ target "php-base" {
   context    = "${version}/base"
   contexts = {
     common-php-ext    = "target:php${ver_key(version)}-php-ext"
-    common-downloader = downloader_for(version)
+    common-downloader = "target:php${ver_key(version)}-downloader"
     common            = "./base"
   }
   tags       = should_push(VERSIONS_BASE, version) ? ["${REPO}:${version}-base${TAG_SUFFIX}"] : []
