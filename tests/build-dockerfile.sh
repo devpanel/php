@@ -74,11 +74,6 @@ if ! docker buildx version &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# Detect highest PHP version (used as LATEST_PHP_VERSION in bake)
-# ---------------------------------------------------------------------------
-LATEST_PHP_VERSION="$(echo "$VERSIONS_LIST" | tr ' ' '\n' | sort -V | tail -1)"
-
-# ---------------------------------------------------------------------------
 # Detect target platform (single platform required for --load)
 # ---------------------------------------------------------------------------
 if [[ -z "${PLATFORMS:-}" ]]; then
@@ -135,7 +130,6 @@ BAKE_ENV=(
   REPO="$TEST_REPO"
   GHCR_REPO="$TEST_REPO"
   TAG_SUFFIX=""
-  LATEST_PHP_VERSION="$LATEST_PHP_VERSION"
   PLATFORMS="$PLATFORMS"
   "CACHE_FROM_ENABLED=${CACHE_FROM_ENABLED:-false}"
   GHCR_WRITABLE=false

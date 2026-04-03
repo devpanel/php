@@ -435,7 +435,6 @@ runs:
       uses: docker/bake-action@v7
       env:
         TAG_SUFFIX:                  ${{ steps.detect.outputs.tag_suffix }}
-        LATEST_PHP_VERSION:          ${{ steps.detect.outputs.latest_php_version }}
         VERSIONS:                    ${{ steps.detect.outputs.versions }}
         VERSIONS_BASE:               ${{ steps.detect.outputs.versions_base }}
         VERSIONS_SECURE:             ${{ steps.detect.outputs.versions_secure }}
