@@ -448,6 +448,11 @@ runs:
         CODESERVER_DEB_SHA256_ARM64: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64 }}
         COPILOT_CHAT_VERSION:        ${{ steps.preseed.outputs.copilot_chat_version }}
         COPILOT_CHAT_VSIX_SHA256:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256 }}
+        CODESERVER_VERSION_LEGACY:          ${{ steps.preseed.outputs.codeserver_version_legacy }}
+        CODESERVER_DEB_SHA256_AMD64_LEGACY: ${{ steps.preseed.outputs.codeserver_deb_sha256_amd64_legacy }}
+        CODESERVER_DEB_SHA256_ARM64_LEGACY: ${{ steps.preseed.outputs.codeserver_deb_sha256_arm64_legacy }}
+        COPILOT_CHAT_VERSION_LEGACY:        ${{ steps.preseed.outputs.copilot_chat_version_legacy }}
+        COPILOT_CHAT_VSIX_SHA256_LEGACY:    ${{ steps.preseed.outputs.copilot_chat_vsix_sha256_legacy }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
       with:
         source: .

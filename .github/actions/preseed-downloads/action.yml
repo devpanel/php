@@ -1,25 +1,22 @@
 name: Pre-seed build downloads
 description: >
-  Resolve the latest compatible code-server and Copilot Chat versions, restore
-  previously downloaded files from the actions/cache, and download them on a
-  cache miss.  Files are placed in a pre-downloaded/ subdirectory of the output
-  directory so that docker-bake.hcl can pass the parent directory as the
-  'downloads' named context and the Dockerfile can bind-mount source=/pre-downloaded.
+  Resolve the latest compatible code-server and Copilot Chat versions for each
+  GLIBC tier, restore previously downloaded files from the actions/cache, and
+  download them on a cache miss.  Files are placed in a pre-downloaded/
+  subdirectory of the output directory so that docker-bake.hcl can pass the
+  parent directory as the 'downloads' named context and the Dockerfile can
+  bind-mount source=/pre-downloaded.
+  Two tiers are resolved:
+    modern  — latest stable release (for PHP 8.1+, Debian 12 / GLIBC 2.35)
+    legacy  — latest release whose native modules do not require GLIBC > 2.31
+              (for PHP 7.4 and 8.0, which run on Debian 11 / Bullseye)
+  When the latest release is already GLIBC 2.31-compatible both tiers resolve
+  to the same version and only one set of artifacts is downloaded.
 
 inputs:
   github_token:
     description: GitHub token used for authenticated GitHub API calls during version resolution.
     required: true
-  min_glibc_version:
-    description: >
-      Minimum GLIBC version that must be satisfied by all native (.node) modules
-      in the resolved code-server .deb and Copilot Chat VSIX.  Set this to the
-      oldest GLIBC present in any of the target PHP base images.
-      Debian 11 (Bullseye) — used by PHP 7.4 and 8.0 — ships GLIBC 2.31.
-      Debian 12 (Bookworm) — used by PHP 8.1 and later — ships GLIBC 2.35.
-      Defaults to 2.31 so that all currently supported PHP versions are covered.
-    required: false
-    default: '2.31'
 
 outputs:
   downloads_dir:
@@ -28,20 +25,35 @@ outputs:
       pre-seeded artifacts.  Pass as DOWNLOADS_DIR to docker buildx bake.
     value: ${{ steps.set-dir.outputs.downloads_dir }}
   codeserver_version:
-    description: Resolved code-server version (e.g. 4.99.4)
+    description: Resolved modern code-server version (e.g. 4.100.0)
     value: ${{ steps.resolve.outputs.codeserver_version }}
   copilot_chat_version:
-    description: Resolved Copilot Chat version (e.g. 0.26.7)
+    description: Resolved modern Copilot Chat version (e.g. 0.27.0)
     value: ${{ steps.resolve.outputs.copilot_chat_version }}
   codeserver_deb_sha256_amd64:
-    description: SHA256 of the code-server amd64 .deb for the resolved version.
+    description: SHA256 of the modern code-server amd64 .deb.
     value: ${{ steps.sha256.outputs.codeserver_deb_sha256_amd64 }}
   codeserver_deb_sha256_arm64:
-    description: SHA256 of the code-server arm64 .deb for the resolved version.
+    description: SHA256 of the modern code-server arm64 .deb.
     value: ${{ steps.sha256.outputs.codeserver_deb_sha256_arm64 }}
   copilot_chat_vsix_sha256:
-    description: SHA256 of the Copilot Chat VSIX for the resolved version.
+    description: SHA256 of the modern Copilot Chat VSIX.
     value: ${{ steps.sha256.outputs.copilot_chat_vsix_sha256 }}
+  codeserver_version_legacy:
+    description: Resolved legacy code-server version (GLIBC 2.31-compatible, e.g. 4.99.4)
+    value: ${{ steps.resolve.outputs.codeserver_version_legacy }}
+  copilot_chat_version_legacy:
+    description: Resolved legacy Copilot Chat version (GLIBC 2.31-compatible, e.g. 0.26.7)
+    value: ${{ steps.resolve.outputs.copilot_chat_version_legacy }}
+  codeserver_deb_sha256_amd64_legacy:
+    description: SHA256 of the legacy code-server amd64 .deb.
+    value: ${{ steps.sha256.outputs.codeserver_deb_sha256_amd64_legacy }}
+  codeserver_deb_sha256_arm64_legacy:
+    description: SHA256 of the legacy code-server arm64 .deb.
+    value: ${{ steps.sha256.outputs.codeserver_deb_sha256_arm64_legacy }}
+  copilot_chat_vsix_sha256_legacy:
+    description: SHA256 of the legacy Copilot Chat VSIX.
+    value: ${{ steps.sha256.outputs.copilot_chat_vsix_sha256_legacy }}
 
 runs:
   using: composite
@@ -56,9 +68,12 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
-        MIN_GLIBC: ${{ inputs.min_glibc_version }}
       run: |
         set -euo pipefail
+
+        # GLIBC_LEGACY: maximum GLIBC version supported by Debian 11 (Bullseye),
+        # which is the base OS for PHP 7.4 and 8.0 images.
+        GLIBC_LEGACY="2.31"
 
         # ── GLIBC compatibility helpers ──────────────────────────────────────
         # Returns 0 (true) if version string $1 is strictly greater than $2.
@@ -68,9 +83,9 @@ runs:
         }
 
         # Check one ELF .node file: fail (return 1) if its highest required
-        # GLIBC symbol version exceeds MIN_GLIBC.
+        # GLIBC symbol version exceeds $2 (min_glibc argument).
         check_node_file_glibc() {
-          local f="$1"
+          local f="$1" min_glibc="$2"
           if ! command -v readelf >/dev/null 2>&1; then
             echo "  WARNING: readelf not available; skipping GLIBC check for $(basename "$f")" >&2
             return 0
@@ -80,29 +95,25 @@ runs:
             | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' \
             | sed 's/GLIBC_//' \
             | sort -V | tail -1)
-          if [ -n "$max_req" ] && version_gt "$max_req" "$MIN_GLIBC"; then
-            echo "  $(basename "$f"): requires GLIBC ${max_req} > ${MIN_GLIBC}" >&2
+          if [ -n "$max_req" ] && version_gt "$max_req" "$min_glibc"; then
+            echo "  $(basename "$f"): requires GLIBC ${max_req} > ${min_glibc}" >&2
             return 1
           fi
           return 0
         }
 
-        # Check all *.node files in a directory; return 1 on first incompatible
-        # native module, 0 if none found or all are compatible.
+        # Check all *.node files in a directory against $2 (min_glibc).
         check_dir_node_files_glibc() {
-          local dir="$1"
-          local result=0
+          local dir="$1" min_glibc="$2" result=0
           while IFS= read -r f; do
-            check_node_file_glibc "$f" || { result=1; break; }
+            check_node_file_glibc "$f" "$min_glibc" || { result=1; break; }
           done < <(find "$dir" -name "*.node" -type f 2>/dev/null)
           return $result
         }
 
-        # Check all *.node files inside a VSIX (ZIP); return 1 on first
-        # incompatible native module, 0 if none found or all are compatible.
-        # If extraction fails (malformed archive), logs a warning and returns 0.
+        # Check all *.node files inside a VSIX (ZIP) against $2 (min_glibc).
         check_vsix_glibc() {
-          local vsix="$1"
+          local vsix="$1" min_glibc="$2"
           local tmp_dir result=0
           tmp_dir=$(mktemp -d)
           if ! unzip -q "$vsix" -d "$tmp_dir" 2>/dev/null; then
@@ -110,16 +121,14 @@ runs:
             rm -rf "$tmp_dir"
             return 0
           fi
-          check_dir_node_files_glibc "$tmp_dir" || result=1
+          check_dir_node_files_glibc "$tmp_dir" "$min_glibc" || result=1
           rm -rf "$tmp_dir"
           return $result
         }
 
-        # Check all *.node files inside a .deb; return 1 on first incompatible
-        # native module, 0 if none found or all are compatible.
-        # If extraction fails (malformed archive), logs a warning and returns 0.
+        # Check all *.node files inside a .deb against $2 (min_glibc).
         check_deb_glibc() {
-          local deb="$1"
+          local deb="$1" min_glibc="$2"
           local tmp_dir result=0
           tmp_dir=$(mktemp -d)
           if ! dpkg-deb -x "$deb" "$tmp_dir" 2>/dev/null; then
@@ -127,52 +136,76 @@ runs:
             rm -rf "$tmp_dir"
             return 0
           fi
-          check_dir_node_files_glibc "$tmp_dir" || result=1
+          check_dir_node_files_glibc "$tmp_dir" "$min_glibc" || result=1
           rm -rf "$tmp_dir"
           return $result
         }
         # ────────────────────────────────────────────────────────────────────
 
-        # Fetch the list of stable code-server major-4 releases once and
-        # reuse it for both version selection and GLIBC compatibility checks.
+        # Fetch the list of stable code-server major-4 releases once.
         CODESERVER_RELEASES_JSON=$(curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
           -H 'Accept: application/vnd.github+json' \
           -H "Authorization: Bearer ${GITHUB_TOKEN}" \
           -H 'X-GitHub-Api-Version: 2022-11-28' \
           'https://api.github.com/repos/coder/code-server/releases?per_page=100')
 
-        # Iterate releases from newest to oldest and pick the first version
-        # whose amd64 .deb contains no native module requiring GLIBC > MIN_GLIBC.
-        # The amd64 prebuild is used as a proxy for all platforms: both amd64
-        # and arm64 Debian prebuilds are compiled against the same GLIBC version.
-        # Save the pre-downloaded .deb so the download step can reuse it.
-        CODESERVER_VERSION=""
-        while IFS= read -r candidate; do
-          echo "Checking code-server ${candidate} (GLIBC ≤ ${MIN_GLIBC} required)..." >&2
-          DEB_URL="https://github.com/coder/code-server/releases/download/v${candidate}/code-server_${candidate}_amd64.deb"
-          TMP_DEB=$(mktemp --suffix=.deb)
-          if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
-               "${DEB_URL}" -o "$TMP_DEB" 2>/dev/null \
-             && check_deb_glibc "$TMP_DEB"; then
-            CODESERVER_VERSION="$candidate"
-            mv "$TMP_DEB" "$RUNNER_TEMP/code-server-resolved-amd64.deb"
-            echo "  ✔ Selected code-server: ${CODESERVER_VERSION}" >&2
-            break
-          else
-            echo "  ✘ code-server ${candidate} requires GLIBC > ${MIN_GLIBC}, trying older release..." >&2
-            rm -f "$TMP_DEB"
-          fi
-        done < <(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
-          [.[] |
-          select(.draft==false and .prerelease==false) |
-          select(.tag_name | test("^v?4\\.[0-9]+\\.[0-9]+([-+].*)?$")) |
-          .tag_name | ltrimstr("v")] | .[]')
-        [ -n "$CODESERVER_VERSION" ] || { echo "Failed to detect a GLIBC-compatible code-server version" >&2; exit 1; }
+        # ── Modern code-server: pick the absolute latest stable v4 ───────────
+        CODESERVER_VERSION=$(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
+          first(
+            .[] |
+            select(.draft==false and .prerelease==false) |
+            select(.tag_name | test("^v?4\\.[0-9]+\\.[0-9]+([-+].*)?$")) |
+            .tag_name | ltrimstr("v")
+          ) // ""
+        ')
+        [ -n "$CODESERVER_VERSION" ] || { echo "Failed to detect modern code-server version" >&2; exit 1; }
+        echo "Modern code-server: ${CODESERVER_VERSION}" >&2
 
-        # Derive the VS Code version bundled with this code-server release
-        # (code-server 4.X.Y bundles VS Code 1.X.Y, e.g. 4.99.4 → 1.99.4).
-        VSCODE_VERSION="$(printf '%s' "$CODESERVER_VERSION" | sed 's/^[0-9][0-9]*\./1./')"
+        # ── Legacy code-server: latest GLIBC ${GLIBC_LEGACY}-compatible ──────
+        # Download the modern amd64 .deb first; if it is already compatible with
+        # GLIBC ${GLIBC_LEGACY} then legacy == modern and no extra download is needed.
+        curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
+          "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/code-server_${CODESERVER_VERSION}_amd64.deb" \
+          -o "$RUNNER_TEMP/code-server-modern-amd64.deb"
 
+        if check_deb_glibc "$RUNNER_TEMP/code-server-modern-amd64.deb" "$GLIBC_LEGACY"; then
+          CODESERVER_VERSION_LEGACY="$CODESERVER_VERSION"
+          cp "$RUNNER_TEMP/code-server-modern-amd64.deb" "$RUNNER_TEMP/code-server-legacy-amd64.deb"
+          echo "Legacy code-server = modern (${CODESERVER_VERSION_LEGACY} is GLIBC ${GLIBC_LEGACY}-compatible)" >&2
+        else
+          echo "Modern code-server ${CODESERVER_VERSION} requires GLIBC > ${GLIBC_LEGACY}; searching for legacy-compatible version..." >&2
+          CODESERVER_VERSION_LEGACY=""
+          while IFS= read -r candidate; do
+            [ "$candidate" = "$CODESERVER_VERSION" ] && continue
+            echo "Checking code-server ${candidate} (GLIBC <= ${GLIBC_LEGACY} required)..." >&2
+            TMP_DEB=$(mktemp --suffix=.deb)
+            if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
+                 "https://github.com/coder/code-server/releases/download/v${candidate}/code-server_${candidate}_amd64.deb" \
+                 -o "$TMP_DEB" 2>/dev/null \
+               && check_deb_glibc "$TMP_DEB" "$GLIBC_LEGACY"; then
+              CODESERVER_VERSION_LEGACY="$candidate"
+              mv "$TMP_DEB" "$RUNNER_TEMP/code-server-legacy-amd64.deb"
+              echo "  Selected legacy code-server: ${CODESERVER_VERSION_LEGACY}" >&2
+              break
+            else
+              echo "  code-server ${candidate} requires GLIBC > ${GLIBC_LEGACY}, trying older release..." >&2
+              rm -f "$TMP_DEB"
+            fi
+          done < <(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
+            [.[] |
+            select(.draft==false and .prerelease==false) |
+            select(.tag_name | test("^v?4\\.[0-9]+\\.[0-9]+([-+].*)?$")) |
+            .tag_name | ltrimstr("v")] | .[]')
+          [ -n "$CODESERVER_VERSION_LEGACY" ] || {
+            echo "Failed to detect a GLIBC ${GLIBC_LEGACY}-compatible code-server version" >&2; exit 1;
+          }
+        fi
+
+        # Derive VS Code versions (code-server 4.X.Y bundles VS Code 1.X.Y).
+        VSCODE_VERSION_MODERN="$(printf '%s' "$CODESERVER_VERSION" | sed 's/^[0-9][0-9]*\./1./')"
+        VSCODE_VERSION_LEGACY="$(printf '%s' "$CODESERVER_VERSION_LEGACY" | sed 's/^[0-9][0-9]*\./1./')"
+
+        # ── Copilot Chat ─────────────────────────────────────────────────────
         # Fetch all Copilot Chat versions from the VS Marketplace once.
         # Stable versions have a patch component of at most 9 digits
         # (excludes 10-digit YYYYMMDDNN pre-releases).
@@ -183,116 +216,211 @@ runs:
           -d '{"filters":[{"criteria":[{"filterType":7,"value":"GitHub.copilot-chat"}],"pageSize":100}],"flags":17}' \
           'https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery')
 
-        # Iterate VS Code engine-compatible Copilot Chat versions from newest
-        # to oldest and pick the first whose VSIX contains no native module
-        # requiring GLIBC > MIN_GLIBC.
-        # Save the pre-downloaded VSIX so the download step can reuse it.
-        COPILOT_CHAT_VERSION=""
-        while IFS= read -r candidate; do
-          echo "Checking Copilot Chat ${candidate} (GLIBC ≤ ${MIN_GLIBC} required)..." >&2
-          VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${candidate}/vspackage"
-          TMP_VSIX=$(mktemp --suffix=.vsix)
-          if curl -fsSL --compressed --retry 3 --retry-all-errors --connect-timeout 30 \
-               "${VSIX_URL}" -o "$TMP_VSIX" 2>/dev/null \
-             && check_vsix_glibc "$TMP_VSIX"; then
-            COPILOT_CHAT_VERSION="$candidate"
-            mv "$TMP_VSIX" "$RUNNER_TEMP/copilot-chat-resolved.vsix"
-            echo "  ✔ Selected Copilot Chat: ${COPILOT_CHAT_VERSION}" >&2
-            break
-          else
-            echo "  ✘ Copilot Chat ${candidate} requires GLIBC > ${MIN_GLIBC}, trying older version..." >&2
-            rm -f "$TMP_VSIX"
-          fi
-        done < <(printf '%s' "$MARKETPLACE_JSON" | jq -r \
-          --arg vscode "$VSCODE_VERSION" '
-            def vparts: split(".") | map(tonumber? // 0);
-            [
-              .results[0].extensions[0].versions[]? |
-              select(.version | test("^[0-9]+\\.[0-9]+\\.[0-9]{1,9}$")) |
-              (.properties // [] |
-               map(select(.key == "Microsoft.VisualStudio.Code.Engine")) |
-               .[0].value // "") as $engine |
-              select($engine != "") |
-              ($engine | gsub("^[^0-9]+"; "") | split("-")[0]) as $min_vscode |
-              select(($vscode | vparts) >= ($min_vscode | vparts)) |
-              .version
-            ] | sort_by(split(".") | map(tonumber? // 0)) | reverse | .[]
-          ')
-        [ -n "$COPILOT_CHAT_VERSION" ] || { echo "Failed to detect a GLIBC-compatible Copilot Chat version" >&2; exit 1; }
+        # Emit stable Copilot Chat versions compatible with a given VS Code version,
+        # sorted newest first.
+        copilot_candidates_for_vscode() {
+          local vscode="$1"
+          printf '%s' "$MARKETPLACE_JSON" | jq -r \
+            --arg vscode "$vscode" '
+              def vparts: split(".") | map(tonumber? // 0);
+              [
+                .results[0].extensions[0].versions[]? |
+                select(.version | test("^[0-9]+\\.[0-9]+\\.[0-9]{1,9}$")) |
+                (.properties // [] |
+                 map(select(.key == "Microsoft.VisualStudio.Code.Engine")) |
+                 .[0].value // "") as $engine |
+                select($engine != "") |
+                ($engine | gsub("^[^0-9]+"; "") | split("-")[0]) as $min_vscode |
+                select(($vscode | vparts) >= ($min_vscode | vparts)) |
+                .version
+              ] | sort_by(split(".") | map(tonumber? // 0)) | reverse | .[]
+            '
+        }
 
-        echo "codeserver_version=${CODESERVER_VERSION}" >> "$GITHUB_OUTPUT"
-        echo "copilot_chat_version=${COPILOT_CHAT_VERSION}" >> "$GITHUB_OUTPUT"
-        echo "Resolved: code-server=${CODESERVER_VERSION}  VS Code=${VSCODE_VERSION}  copilot-chat=${COPILOT_CHAT_VERSION}"
+        # Modern Copilot Chat: pick the latest version compatible with the modern
+        # VS Code engine.  No GLIBC check — Debian 12 ships GLIBC 2.35.
+        COPILOT_CHAT_VERSION=$(copilot_candidates_for_vscode "$VSCODE_VERSION_MODERN" | head -1)
+        [ -n "$COPILOT_CHAT_VERSION" ] || { echo "Failed to detect modern Copilot Chat version" >&2; exit 1; }
+        echo "Modern Copilot Chat: ${COPILOT_CHAT_VERSION}" >&2
+        curl -fsSL --compressed --retry 3 --retry-all-errors --connect-timeout 30 \
+          "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage" \
+          -o "$RUNNER_TEMP/copilot-chat-modern.vsix"
 
-    # Cache code-server .deb files and the Copilot Chat VSIX separately so
-    # that a version bump in one artifact does not invalidate the other's cache.
-    # The key names match those used by the verify-code-server and
-    # verify-extension CI jobs. Within the same workflow run, a consumer job
-    # must be wired via `needs` to guarantee the cache is fully saved before
-    # it tries to restore. Across workflow runs, any job can restore an
-    # existing cache entry without any `needs` ordering.
-    - name: Cache code-server debs
-      id: cache-cs
+        # Legacy Copilot Chat: pick the latest version compatible with the legacy
+        # VS Code engine AND GLIBC ${GLIBC_LEGACY}.
+        # Fast path: if legacy code-server == modern AND the modern Copilot Chat
+        # VSIX is already GLIBC ${GLIBC_LEGACY}-compatible, legacy == modern.
+        COPILOT_CHAT_VERSION_LEGACY=""
+        if [ "$CODESERVER_VERSION_LEGACY" = "$CODESERVER_VERSION" ] \
+           && check_vsix_glibc "$RUNNER_TEMP/copilot-chat-modern.vsix" "$GLIBC_LEGACY"; then
+          COPILOT_CHAT_VERSION_LEGACY="$COPILOT_CHAT_VERSION"
+          cp "$RUNNER_TEMP/copilot-chat-modern.vsix" "$RUNNER_TEMP/copilot-chat-legacy.vsix"
+          echo "Legacy Copilot Chat = modern (${COPILOT_CHAT_VERSION_LEGACY} is GLIBC ${GLIBC_LEGACY}-compatible)" >&2
+        else
+          while IFS= read -r candidate; do
+            echo "Checking Copilot Chat ${candidate} (GLIBC <= ${GLIBC_LEGACY} required)..." >&2
+            TMP_VSIX=$(mktemp --suffix=.vsix)
+            CC_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${candidate}/vspackage"
+            # Reuse already-downloaded modern VSIX when it matches the candidate.
+            if [ "$candidate" = "$COPILOT_CHAT_VERSION" ] \
+               && [ -f "$RUNNER_TEMP/copilot-chat-modern.vsix" ]; then
+              cp "$RUNNER_TEMP/copilot-chat-modern.vsix" "$TMP_VSIX"
+            else
+              curl -fsSL --compressed --retry 3 --retry-all-errors --connect-timeout 30 \
+                "${CC_URL}" -o "$TMP_VSIX" 2>/dev/null || { rm -f "$TMP_VSIX"; continue; }
+            fi
+            if check_vsix_glibc "$TMP_VSIX" "$GLIBC_LEGACY"; then
+              COPILOT_CHAT_VERSION_LEGACY="$candidate"
+              mv "$TMP_VSIX" "$RUNNER_TEMP/copilot-chat-legacy.vsix"
+              echo "  Selected legacy Copilot Chat: ${COPILOT_CHAT_VERSION_LEGACY}" >&2
+              break
+            else
+              echo "  Copilot Chat ${candidate} requires GLIBC > ${GLIBC_LEGACY}, trying older version..." >&2
+              rm -f "$TMP_VSIX"
+            fi
+          done < <(copilot_candidates_for_vscode "$VSCODE_VERSION_LEGACY")
+          [ -n "$COPILOT_CHAT_VERSION_LEGACY" ] || {
+            echo "Failed to detect a GLIBC ${GLIBC_LEGACY}-compatible Copilot Chat version" >&2; exit 1;
+          }
+        fi
+
+        echo "codeserver_version=${CODESERVER_VERSION}"                   >> "$GITHUB_OUTPUT"
+        echo "copilot_chat_version=${COPILOT_CHAT_VERSION}"               >> "$GITHUB_OUTPUT"
+        echo "codeserver_version_legacy=${CODESERVER_VERSION_LEGACY}"     >> "$GITHUB_OUTPUT"
+        echo "copilot_chat_version_legacy=${COPILOT_CHAT_VERSION_LEGACY}" >> "$GITHUB_OUTPUT"
+        echo "Resolved modern: code-server=${CODESERVER_VERSION}  VS Code=${VSCODE_VERSION_MODERN}  copilot-chat=${COPILOT_CHAT_VERSION}"
+        echo "Resolved legacy: code-server=${CODESERVER_VERSION_LEGACY}  VS Code=${VSCODE_VERSION_LEGACY}  copilot-chat=${COPILOT_CHAT_VERSION_LEGACY}"
+
+    # ── Cache steps ──────────────────────────────────────────────────────────
+    # Cache code-server .deb files and Copilot Chat VSIXs separately so that
+    # a version bump in one artifact does not invalidate the other's cache.
+    # Modern and legacy artifacts are cached independently so they survive
+    # across runs where one tier's version changes but the other stays the same.
+    - name: Cache modern code-server debs
+      id: cache-cs-modern
       uses: actions/cache@v5
       with:
-        path: ${{ runner.temp }}/code-server-debs
+        path: ${{ runner.temp }}/code-server-debs-modern
         key: code-server-debs-${{ steps.resolve.outputs.codeserver_version }}
 
-    - name: Cache Copilot Chat VSIX
-      id: cache-cc
+    - name: Cache legacy code-server debs
+      id: cache-cs-legacy
       uses: actions/cache@v5
       with:
-        path: ${{ runner.temp }}/copilot-chat.vsix
+        path: ${{ runner.temp }}/code-server-debs-legacy
+        key: code-server-debs-${{ steps.resolve.outputs.codeserver_version_legacy }}
+
+    - name: Cache modern Copilot Chat VSIX
+      id: cache-cc-modern
+      uses: actions/cache@v5
+      with:
+        path: ${{ runner.temp }}/copilot-chat-modern.vsix
         key: copilot-chat-vsix-${{ steps.resolve.outputs.copilot_chat_version }}
 
-    - name: Download code-server debs (cache miss)
-      if: steps.cache-cs.outputs.cache-hit != 'true'
+    - name: Cache legacy Copilot Chat VSIX
+      id: cache-cc-legacy
+      uses: actions/cache@v5
+      with:
+        path: ${{ runner.temp }}/copilot-chat-legacy.vsix
+        key: copilot-chat-vsix-${{ steps.resolve.outputs.copilot_chat_version_legacy }}
+
+    # ── Download steps ───────────────────────────────────────────────────────
+    - name: Download modern code-server debs (cache miss)
+      if: steps.cache-cs-modern.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
         CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
-        mkdir -p "${{ runner.temp }}/code-server-debs"
-        # code-server .deb for both architectures (the bake build targets
-        # linux/amd64 and linux/arm64; each arch looks up its own .deb).
+        mkdir -p "${{ runner.temp }}/code-server-debs-modern"
         for ARCH in amd64 arm64; do
           DEB="code-server_${CODESERVER_VERSION}_${ARCH}.deb"
-          TARGET="${{ runner.temp }}/code-server-debs/${DEB}"
-          # Reuse the amd64 .deb already downloaded during the GLIBC compatibility
-          # check in the resolve step to avoid a redundant download.
-          if [ "$ARCH" = "amd64" ] && [ -f "$RUNNER_TEMP/code-server-resolved-amd64.deb" ]; then
-            echo "Reusing ${DEB} from GLIBC compatibility check"
-            cp "$RUNNER_TEMP/code-server-resolved-amd64.deb" "$TARGET"
+          TARGET="${{ runner.temp }}/code-server-debs-modern/${DEB}"
+          # Reuse the amd64 .deb pre-downloaded during the resolve step.
+          if [ "$ARCH" = "amd64" ] && [ -f "$RUNNER_TEMP/code-server-modern-amd64.deb" ]; then
+            echo "Reusing ${DEB} from resolve step"
+            cp "$RUNNER_TEMP/code-server-modern-amd64.deb" "$TARGET"
           else
             echo "Downloading ${DEB}"
             curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
               "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION}/${DEB}" \
               -o "$TARGET"
-            # Validate the file is a proper .deb (ar archive with "!<arch>" magic).
-            # This catches cases where the server returned an error body with HTTP 200.
             head -c 8 "$TARGET" | grep -qF '!<arch>' || \
               { echo "ERROR: ${DEB} failed format validation (not a valid .deb archive)" >&2; exit 1; }
           fi
         done
 
-    - name: Download Copilot Chat VSIX (cache miss)
-      if: steps.cache-cc.outputs.cache-hit != 'true'
+    - name: Download legacy code-server debs (cache miss)
+      if: steps.cache-cs-legacy.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        CODESERVER_VERSION_LEGACY="${{ steps.resolve.outputs.codeserver_version_legacy }}"
+        CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
+        mkdir -p "${{ runner.temp }}/code-server-debs-legacy"
+        for ARCH in amd64 arm64; do
+          DEB="code-server_${CODESERVER_VERSION_LEGACY}_${ARCH}.deb"
+          TARGET="${{ runner.temp }}/code-server-debs-legacy/${DEB}"
+          # When legacy == modern, copy from the already-downloaded modern debs.
+          if [ "$CODESERVER_VERSION_LEGACY" = "$CODESERVER_VERSION" ] \
+             && [ -f "${{ runner.temp }}/code-server-debs-modern/${DEB}" ]; then
+            echo "Legacy == modern; copying ${DEB} from modern debs"
+            cp "${{ runner.temp }}/code-server-debs-modern/${DEB}" "$TARGET"
+          # Reuse the amd64 .deb pre-downloaded during the resolve step.
+          elif [ "$ARCH" = "amd64" ] && [ -f "$RUNNER_TEMP/code-server-legacy-amd64.deb" ]; then
+            echo "Reusing ${DEB} from resolve step"
+            cp "$RUNNER_TEMP/code-server-legacy-amd64.deb" "$TARGET"
+          else
+            echo "Downloading ${DEB}"
+            curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
+              "https://github.com/coder/code-server/releases/download/v${CODESERVER_VERSION_LEGACY}/${DEB}" \
+              -o "$TARGET"
+            head -c 8 "$TARGET" | grep -qF '!<arch>' || \
+              { echo "ERROR: ${DEB} failed format validation (not a valid .deb archive)" >&2; exit 1; }
+          fi
+        done
+
+    - name: Download modern Copilot Chat VSIX (cache miss)
+      if: steps.cache-cc-modern.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
         COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
-        VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"
-        TARGET="${{ runner.temp }}/copilot-chat.vsix"
-        # Reuse the VSIX already downloaded during the GLIBC compatibility check
-        # in the resolve step to avoid a redundant download.
-        if [ -f "$RUNNER_TEMP/copilot-chat-resolved.vsix" ]; then
-          echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION}.vsix from GLIBC compatibility check"
-          cp "$RUNNER_TEMP/copilot-chat-resolved.vsix" "$TARGET"
+        TARGET="${{ runner.temp }}/copilot-chat-modern.vsix"
+        # Reuse the VSIX pre-downloaded during the resolve step.
+        if [ -f "$RUNNER_TEMP/copilot-chat-modern.vsix" ]; then
+          echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION}.vsix from resolve step"
+          cp "$RUNNER_TEMP/copilot-chat-modern.vsix" "$TARGET"
         else
           echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
           curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
-            "${VSIX_URL}" -o "$TARGET"
-          # Validate the file is a proper ZIP archive (VSIX is a ZIP; magic bytes: PK 0x03 0x04 = 504b0304).
-          # This catches rate-limit or error HTML responses returned with HTTP 200.
+            "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage" \
+            -o "$TARGET"
+          od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || \
+            { echo "ERROR: Downloaded VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
+        fi
+
+    - name: Download legacy Copilot Chat VSIX (cache miss)
+      if: steps.cache-cc-legacy.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        COPILOT_CHAT_VERSION_LEGACY="${{ steps.resolve.outputs.copilot_chat_version_legacy }}"
+        COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
+        TARGET="${{ runner.temp }}/copilot-chat-legacy.vsix"
+        # When legacy == modern, copy from the already-downloaded modern VSIX.
+        if [ "$COPILOT_CHAT_VERSION_LEGACY" = "$COPILOT_CHAT_VERSION" ] \
+           && [ -f "${{ runner.temp }}/copilot-chat-modern.vsix" ]; then
+          echo "Legacy == modern; copying copilot-chat-${COPILOT_CHAT_VERSION_LEGACY}.vsix from modern"
+          cp "${{ runner.temp }}/copilot-chat-modern.vsix" "$TARGET"
+        # Reuse the VSIX pre-downloaded during the resolve step.
+        elif [ -f "$RUNNER_TEMP/copilot-chat-legacy.vsix" ]; then
+          echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION_LEGACY}.vsix from resolve step"
+          cp "$RUNNER_TEMP/copilot-chat-legacy.vsix" "$TARGET"
+        else
+          echo "Downloading copilot-chat-${COPILOT_CHAT_VERSION_LEGACY}.vsix"
+          curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 30 \
+            "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION_LEGACY}/vspackage" \
+            -o "$TARGET"
           od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || \
             { echo "ERROR: Downloaded VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
         fi
@@ -303,15 +431,31 @@ runs:
       run: |
         set -euo pipefail
         CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
+        CODESERVER_VERSION_LEGACY="${{ steps.resolve.outputs.codeserver_version_legacy }}"
         COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
+        COPILOT_CHAT_VERSION_LEGACY="${{ steps.resolve.outputs.copilot_chat_version_legacy }}"
         PRE_DOWNLOADED_DIR="${{ steps.set-dir.outputs.downloads_dir }}/pre-downloaded"
         mkdir -p "$PRE_DOWNLOADED_DIR"
+
+        # Modern artifacts
         for ARCH in amd64 arm64; do
-          cp "${{ runner.temp }}/code-server-debs/code-server_${CODESERVER_VERSION}_${ARCH}.deb" \
+          cp "${{ runner.temp }}/code-server-debs-modern/code-server_${CODESERVER_VERSION}_${ARCH}.deb" \
              "$PRE_DOWNLOADED_DIR/"
         done
-        cp "${{ runner.temp }}/copilot-chat.vsix" \
+        cp "${{ runner.temp }}/copilot-chat-modern.vsix" \
            "$PRE_DOWNLOADED_DIR/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"
+
+        # Legacy artifacts (only copy if versions differ from modern to avoid redundant files)
+        if [ "$CODESERVER_VERSION_LEGACY" != "$CODESERVER_VERSION" ]; then
+          for ARCH in amd64 arm64; do
+            cp "${{ runner.temp }}/code-server-debs-legacy/code-server_${CODESERVER_VERSION_LEGACY}_${ARCH}.deb" \
+               "$PRE_DOWNLOADED_DIR/"
+          done
+        fi
+        if [ "$COPILOT_CHAT_VERSION_LEGACY" != "$COPILOT_CHAT_VERSION" ]; then
+          cp "${{ runner.temp }}/copilot-chat-legacy.vsix" \
+             "$PRE_DOWNLOADED_DIR/copilot-chat-${COPILOT_CHAT_VERSION_LEGACY}.vsix"
+        fi
 
     - name: Compute SHA256 of pre-seeded downloads
       id: sha256
@@ -319,15 +463,23 @@ runs:
       run: |
         set -euo pipefail
         CODESERVER_VERSION="${{ steps.resolve.outputs.codeserver_version }}"
+        CODESERVER_VERSION_LEGACY="${{ steps.resolve.outputs.codeserver_version_legacy }}"
         COPILOT_CHAT_VERSION="${{ steps.resolve.outputs.copilot_chat_version }}"
+        COPILOT_CHAT_VERSION_LEGACY="${{ steps.resolve.outputs.copilot_chat_version_legacy }}"
         PRE_DOWNLOADED_DIR="${{ steps.set-dir.outputs.downloads_dir }}/pre-downloaded"
 
-        AMD64_SHA=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION}_amd64.deb" | awk '{print $1}')
-        ARM64_SHA=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION}_arm64.deb" | awk '{print $1}')
-        VSIX_SHA=$(sha256sum "${PRE_DOWNLOADED_DIR}/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"    | awk '{print $1}')
+        AMD64_SHA=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION}_amd64.deb"          | awk '{print $1}')
+        ARM64_SHA=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION}_arm64.deb"          | awk '{print $1}')
+        VSIX_SHA=$(sha256sum  "${PRE_DOWNLOADED_DIR}/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"            | awk '{print $1}')
+        AMD64_SHA_L=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION_LEGACY}_amd64.deb" | awk '{print $1}')
+        ARM64_SHA_L=$(sha256sum "${PRE_DOWNLOADED_DIR}/code-server_${CODESERVER_VERSION_LEGACY}_arm64.deb" | awk '{print $1}')
+        VSIX_SHA_L=$(sha256sum  "${PRE_DOWNLOADED_DIR}/copilot-chat-${COPILOT_CHAT_VERSION_LEGACY}.vsix"   | awk '{print $1}')
 
-        echo "codeserver_deb_sha256_amd64=${AMD64_SHA}" >> "$GITHUB_OUTPUT"
-        echo "codeserver_deb_sha256_arm64=${ARM64_SHA}" >> "$GITHUB_OUTPUT"
-        echo "copilot_chat_vsix_sha256=${VSIX_SHA}"     >> "$GITHUB_OUTPUT"
-        echo "SHA256: code-server amd64=${AMD64_SHA}  arm64=${ARM64_SHA}  copilot-chat=${VSIX_SHA}"
-
+        echo "codeserver_deb_sha256_amd64=${AMD64_SHA}"               >> "$GITHUB_OUTPUT"
+        echo "codeserver_deb_sha256_arm64=${ARM64_SHA}"               >> "$GITHUB_OUTPUT"
+        echo "copilot_chat_vsix_sha256=${VSIX_SHA}"                   >> "$GITHUB_OUTPUT"
+        echo "codeserver_deb_sha256_amd64_legacy=${AMD64_SHA_L}"      >> "$GITHUB_OUTPUT"
+        echo "codeserver_deb_sha256_arm64_legacy=${ARM64_SHA_L}"      >> "$GITHUB_OUTPUT"
+        echo "copilot_chat_vsix_sha256_legacy=${VSIX_SHA_L}"          >> "$GITHUB_OUTPUT"
+        echo "SHA256 modern: amd64=${AMD64_SHA}  arm64=${ARM64_SHA}  copilot-chat=${VSIX_SHA}"
+        echo "SHA256 legacy: amd64=${AMD64_SHA_L}  arm64=${ARM64_SHA_L}  copilot-chat=${VSIX_SHA_L}"

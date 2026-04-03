@@ -1,8 +1,8 @@
 # docker-bake.hcl — Docker Buildx Bake file for devpanel/php
 #
 # Build graph (→ = "depends on"):
-#   downloader             (GHCR stored + cached, not pushed to Docker Hub)
-#     └─▶ phpX_Y-php-ext   (GHCR stored + cached, not pushed to Docker Hub)
+#   downloader / downloader-legacy    (GHCR stored + cached, not pushed to Docker Hub)
+#     └─▶ phpX_Y-php-ext              (GHCR stored + cached, not pushed to Docker Hub)
 #           └─▶ phpX_Y-base        (GHA cached, pushed to Docker Hub)
 #                 └─▶ phpX_Y-secure-int  (GHCR stored + cached, not pushed to Docker Hub)
 #                       └─▶ phpX_Y-secure    (GHA cached, pushed to Docker Hub)
@@ -14,15 +14,19 @@
 #   TAG_SUFFIX                    Image tag suffix                             ("" on main, "-rc" on develop)
 #   VERSIONS                      Space-separated PHP version dirs             ("7.4 8.0 8.1 8.2 8.3")
 #   LATEST_PHP_VERSION            Highest PHP version dir in the repo          (8.3)
-#   CODESERVER_VERSION            code-server version ("" = use Dockerfile default) ("")
-#   COPILOT_CHAT_VERSION          Copilot Chat VSIX version ("" = use Dockerfile default) ("")
+#   CODESERVER_VERSION            code-server version for modern PHP ("" = Dockerfile default) ("")
+#   COPILOT_CHAT_VERSION          Copilot Chat VSIX version for modern PHP ("" = Dockerfile default) ("")
+#   CODESERVER_VERSION_LEGACY     code-server version for legacy PHP ("" = Dockerfile default) ("")
+#   COPILOT_CHAT_VERSION_LEGACY   Copilot Chat VSIX version for legacy PHP ("" = Dockerfile default) ("")
+#   VERSIONS_LEGACY               PHP versions on Debian 11 / GLIBC 2.31 that use the legacy
+#                                 downloader (downloader-legacy) instead of the modern one  ("7.4 8.0")
 #   CORERULESET_VERSION           ModSecurity CRS version                      (3.3.5)
 #   CACHE_FROM_ENABLED            Read from GHA/GHCR cache ("true"/"false")    ("true")
 #   PLATFORMS                     Comma-separated target platforms             ("linux/amd64,linux/arm64")
 #   VERSIONS_NEEDING_MULTIPART_FIX  Versions running Debian 11 / modsec 2.9.3  ("7.4 8.0")
 #
 # Intermediate targets pushed to GHCR (never pushed to Docker Hub):
-#   downloader, phpX_Y-php-ext, phpX_Y-secure-int
+#   downloader, downloader-legacy, phpX_Y-php-ext, phpX_Y-secure-int
 # These are permanently stored in the GitHub Container Registry and use
 # type=registry cache (mode=max) for efficient incremental rebuilds.
 
@@ -61,6 +65,20 @@ variable "CODESERVER_DEB_SHA256_AMD64"   { default = ""                         
 variable "CODESERVER_DEB_SHA256_ARM64"   { default = ""                                                     }
 variable "COPILOT_CHAT_VERSION"          { default = ""                                                     }
 variable "COPILOT_CHAT_VSIX_SHA256"      { default = ""                                                     }
+# Legacy versions: PHP 7.4 and 8.0 run on Debian 11 (Bullseye / GLIBC 2.31) and
+# may not be able to run the latest code-server or Copilot Chat VSIX if they
+# contain native modules compiled against a newer GLIBC.  CI resolves these via
+# preseed-downloads and passes them separately so each PHP version uses the newest
+# code-server it can support.  When empty, the Dockerfile defaults are used.
+variable "CODESERVER_VERSION_LEGACY"          { default = ""                        }
+variable "CODESERVER_DEB_SHA256_AMD64_LEGACY" { default = ""                        }
+variable "CODESERVER_DEB_SHA256_ARM64_LEGACY" { default = ""                        }
+variable "COPILOT_CHAT_VERSION_LEGACY"        { default = ""                        }
+variable "COPILOT_CHAT_VSIX_SHA256_LEGACY"    { default = ""                        }
+# VERSIONS_LEGACY: PHP versions on Debian 11 / GLIBC 2.31 that must use the
+# legacy downloader (downloader-legacy) with GLIBC 2.31-compatible artifacts.
+# Must match VERSIONS_NEEDING_MULTIPART_FIX since both identify Debian 11 images.
+variable "VERSIONS_LEGACY"                   { default = "7.4 8.0"               }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 # DOWNLOADS_DIR: path to a directory whose pre-downloaded/ subdirectory contains
 # pre-seeded build artifacts (code-server .deb files and Copilot Chat VSIX).
@@ -96,6 +114,14 @@ variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
 function "ver_key" {
   params = [v]
   result = replace(v, ".", "_")
+}
+
+# downloader_for: returns the name of the downloader target to use for a given
+# PHP version.  Versions in VERSIONS_LEGACY (Debian 11 / GLIBC 2.31 images) use
+# the legacy downloader so they get the newest code-server they can actually run.
+function "downloader_for" {
+  params = [version]
+  result = contains(split(" ", trimspace(VERSIONS_LEGACY)), version) ? "target:downloader-legacy" : "target:downloader"
 }
 
 # should_push: true if version v is listed in the space-separated stage_versions
@@ -201,6 +227,30 @@ target "downloader" {
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-downloader${TAG_SUFFIX}", "downloader")
 }
 
+# ─── Legacy downloader (pushed to GHCR, NOT pushed to Docker Hub) ────────────
+# Same as 'downloader' but uses the GLIBC 2.31-compatible code-server and Copilot
+# Chat versions resolved for PHP 7.4 and 8.0 (Debian 11 / Bullseye images).
+# When the *_LEGACY variables are empty, the Dockerfile's hardcoded defaults are
+# used, which are always set to a version that works on Debian 11.
+target "downloader-legacy" {
+  dockerfile = "Dockerfile"
+  context    = "base"
+  target     = "downloader"
+  platforms  = split(",", PLATFORMS)
+  contexts = DOWNLOADS_DIR != "" ? { downloads = DOWNLOADS_DIR } : {}
+  args = merge(
+    { LATEST_PHP_VERSION = LATEST_PHP_VERSION },
+    CODESERVER_VERSION_LEGACY          != "" ? { CODESERVER_VERSION          = CODESERVER_VERSION_LEGACY          } : {},
+    CODESERVER_DEB_SHA256_AMD64_LEGACY != "" ? { CODESERVER_DEB_SHA256_AMD64 = CODESERVER_DEB_SHA256_AMD64_LEGACY } : {},
+    CODESERVER_DEB_SHA256_ARM64_LEGACY != "" ? { CODESERVER_DEB_SHA256_ARM64 = CODESERVER_DEB_SHA256_ARM64_LEGACY } : {},
+    COPILOT_CHAT_VERSION_LEGACY        != "" ? { COPILOT_CHAT_VERSION        = COPILOT_CHAT_VERSION_LEGACY        } : {},
+    COPILOT_CHAT_VSIX_SHA256_LEGACY    != "" ? { COPILOT_CHAT_VSIX_SHA256    = COPILOT_CHAT_VSIX_SHA256_LEGACY    } : {}
+  )
+  tags       = ["${GHCR_REPO}:downloader-legacy${TAG_SUFFIX}"]
+  cache-from = cache_from_registry("${GHCR_REPO}:cache-downloader-legacy${TAG_SUFFIX}", "downloader-legacy")
+  cache-to   = cache_to_registry("${GHCR_REPO}:cache-downloader-legacy${TAG_SUFFIX}", "downloader-legacy")
+}
+
 # ─── Common php-ext intermediates (pushed to GHCR, NOT pushed to Docker Hub) ─
 # Builds the php-ext-common stage from base/Dockerfile for each PHP version.
 # Contains all extensions, packages, and tools common to every version.
@@ -214,8 +264,7 @@ target "_php-ext-common" {
   target     = "php-ext-common"
   context    = "base"
   contexts = {
-    common-downloader = "target:downloader"
-    common            = "./base"
+    common = "./base"
   }
   platforms  = split(",", PLATFORMS)
   # No tags → not pushed to Docker Hub
@@ -228,6 +277,9 @@ target "php-php-ext" {
   name     = "php${ver_key(version)}-php-ext"
   inherits = ["_php-ext-common"]
   args     = { PHP_VERSION = version }
+  contexts = {
+    common-downloader = downloader_for(version)
+  }
   tags       = ["${GHCR_REPO}:${version}-php-ext${TAG_SUFFIX}"]
   cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-php-ext${TAG_SUFFIX}", "php${ver_key(version)}-php-ext")
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-php-ext${TAG_SUFFIX}", "php${ver_key(version)}-php-ext")
@@ -254,7 +306,7 @@ target "php-base" {
   context    = "${version}/base"
   contexts = {
     common-php-ext    = "target:php${ver_key(version)}-php-ext"
-    common-downloader = "target:downloader"
+    common-downloader = downloader_for(version)
     common            = "./base"
   }
   tags       = should_push(VERSIONS_BASE, version) ? ["${REPO}:${version}-base${TAG_SUFFIX}"] : []
