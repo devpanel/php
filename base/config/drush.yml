@@ -8,4 +8,4 @@ command:
       extra: "--skip-ssl-verify-server-cert"
     dump:
       options:
-        extra-dump: "--no-tablespaces"
+        extra-dump: "--no-tablespaces --skip-ssl-verify-server-cert"
