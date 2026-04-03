@@ -1,5 +1,5 @@
 {
-  "./.github/actions/build-php-images/action.yml:colons": 20,
+  "./.github/actions/build-php-images/action.yml:colons": 22,
   "./.github/workflows/ci.yml:colons": 8,
   "./.github/workflows/docker-build-all.yml:colons": 4,
   "./.github/workflows/docker-build-on-push.yml:colons": 6

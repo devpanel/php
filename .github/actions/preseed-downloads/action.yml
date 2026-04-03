@@ -6,17 +6,30 @@ description: >
   subdirectory of the output directory so that docker-bake.hcl can pass the
   parent directory as the 'downloads' named context and the Dockerfile can
   bind-mount source=/pre-downloaded.
-  Two tiers are resolved:
-    bookworm  — latest stable release (for PHP 8.1+, Debian 12 / Bookworm)
-    bullseye  — latest release whose binaries run successfully on the actual
-                PHP Bullseye base image (php:7.4-apache), verified by running
-                ldd inside that container
-  When the latest release already runs on Bullseye both tiers resolve to the
+
+  Debian tiers are detected automatically by pulling each PHP version's base
+  image (php:<version>-apache) and reading its VERSION_CODENAME from
+  /etc/os-release.  Versions sharing a codename are grouped together and
+  tested against the actual PHP image for that group — no hardcoded version
+  lists or image names.
+
+  Two code-server sets are resolved:
+    bookworm  — latest stable release (works on Debian 12 / Bookworm images)
+    bullseye  — latest release that runs on Debian 11 / Bullseye PHP images,
+                verified by ldd-testing against the actual php:<ver>-apache
+                image for that group
+  When the latest release already works on Bullseye both sets resolve to the
   same version and only one set of artifacts is downloaded.
 
 inputs:
   github_token:
     description: GitHub token used for authenticated GitHub API calls during version resolution.
+    required: true
+  versions:
+    description: >
+      Space-separated list of PHP versions being built (e.g. "7.4 8.0 8.1 8.2 8.3").
+      Used to pull the actual php:<version>-apache images and detect which Debian
+      codename each version runs on, so compatibility tests use the real target image.
     required: true
 
 outputs:
@@ -55,6 +68,13 @@ outputs:
   copilot_chat_vsix_sha256_bullseye:
     description: SHA256 of the Bullseye Copilot Chat VSIX.
     value: ${{ steps.sha256.outputs.copilot_chat_vsix_sha256_bullseye }}
+  versions_bullseye:
+    description: >
+      Space-separated list of PHP versions detected to be running on Debian 11
+      (Bullseye), e.g. "7.4 8.0".  Detected dynamically from the PHP images;
+      empty if no version in the build matrix uses Bullseye.
+      Pass as VERSIONS_BULLSEYE to docker buildx bake.
+    value: ${{ steps.detect-codenames.outputs.versions_bullseye }}
 
 runs:
   using: composite
@@ -64,13 +84,44 @@ runs:
       shell: bash
       run: echo "downloads_dir=${{ runner.temp }}/build-downloads" >> "$GITHUB_OUTPUT"
 
-    - name: Pull PHP base images for compatibility testing
+    - name: Detect Debian codenames from PHP base images
+      id: detect-codenames
       shell: bash
       run: |
-        # Pull the oldest Bullseye-based PHP image as the canonical test image.
-        # This is the same image used by the per-version downloader stage and is
-        # therefore the most accurate compatibility test target.
-        docker pull --quiet php:7.4-apache
+        set -euo pipefail
+        VERSIONS="${{ inputs.versions }}"
+
+        # Pull all PHP base images and detect each version's Debian codename.
+        # This avoids hardcoding which PHP versions run on which Debian release.
+        declare -A codename_for  # version → codename
+        declare -A versions_for  # codename → space-separated versions (oldest first)
+        declare -A image_for     # codename → first (oldest) php:<ver>-apache image
+
+        for ver in $VERSIONS; do
+          image="php:${ver}-apache"
+          echo "Pulling ${image} to detect Debian codename..." >&2
+          docker pull --quiet "$image" >&2
+          codename=$(docker run --rm "$image" sh -c '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-unknown}"')
+          echo "  php:${ver}-apache → ${codename}" >&2
+          codename_for[$ver]="$codename"
+          if [ -z "${versions_for[$codename]+x}" ]; then
+            versions_for[$codename]="$ver"
+            image_for[$codename]="$image"
+          else
+            versions_for[$codename]="${versions_for[$codename]} $ver"
+          fi
+        done
+
+        # Identify the Bullseye group (if any).
+        VERSIONS_BULLSEYE="${versions_for[bullseye]:-}"
+        BULLSEYE_TEST_IMAGE="${image_for[bullseye]:-}"
+        echo "Detected codename groups:" >&2
+        for cn in "${!versions_for[@]}"; do
+          echo "  ${cn}: ${versions_for[$cn]}" >&2
+        done
+
+        echo "versions_bullseye=${VERSIONS_BULLSEYE}"     >> "$GITHUB_OUTPUT"
+        echo "bullseye_test_image=${BULLSEYE_TEST_IMAGE}" >> "$GITHUB_OUTPUT"
 
     - name: Resolve artifact versions
       id: resolve
@@ -79,6 +130,9 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
+
+        BULLSEYE_TEST_IMAGE="${{ steps.detect-codenames.outputs.bullseye_test_image }}"
+        VERSIONS_BULLSEYE="${{ steps.detect-codenames.outputs.versions_bullseye }}"
 
         # ── Compatibility helpers ────────────────────────────────────────────
         # Check whether a code-server .deb runs cleanly on a given PHP/distro image.
@@ -104,8 +158,8 @@ runs:
             return 1
           fi
           # Run ldd inside the target container.  Any "not found" lines indicate
-          # that the binary requires a library (e.g. a newer GLIBC) not present in that
-          # image, making the package incompatible.
+          # that the binary requires a library (e.g. a newer GLIBC) not present in
+          # that image, making the package incompatible.
           local result=0
           if ! docker run --rm \
                -v "${node_bin}:/tmp/node:ro" \
@@ -171,31 +225,36 @@ runs:
         head -c 8 "$RUNNER_TEMP/code-server-bookworm-amd64.deb" | grep -qF '!<arch>' || \
           { echo "ERROR: code-server_${CODESERVER_VERSION}_amd64.deb failed format validation (not a valid .deb archive)" >&2; exit 1; }
 
-        # ── Bullseye code-server: latest version whose binaries run on php:7.4-apache
-        # Test the Bookworm version first.  If it runs on Bullseye, bullseye == bookworm
-        # (fast path, no extra download needed).
-        if check_deb_on_image "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "php:7.4-apache"; then
+        # ── Bullseye code-server ─────────────────────────────────────────────
+        # If no Bullseye PHP versions exist in the build matrix (BULLSEYE_TEST_IMAGE
+        # is empty), skip Bullseye compat checking — all versions use Bookworm.
+        if [ -z "$BULLSEYE_TEST_IMAGE" ]; then
           CODESERVER_VERSION_BULLSEYE="$CODESERVER_VERSION"
           cp "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "$RUNNER_TEMP/code-server-bullseye-amd64.deb"
-          echo "Bullseye code-server = Bookworm (${CODESERVER_VERSION_BULLSEYE} runs on php:7.4-apache)" >&2
+          echo "No Bullseye PHP versions in build matrix; Bullseye code-server = Bookworm" >&2
+        # Test the Bookworm version first against the detected Bullseye PHP image.
+        elif check_deb_on_image "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "$BULLSEYE_TEST_IMAGE"; then
+          CODESERVER_VERSION_BULLSEYE="$CODESERVER_VERSION"
+          cp "$RUNNER_TEMP/code-server-bookworm-amd64.deb" "$RUNNER_TEMP/code-server-bullseye-amd64.deb"
+          echo "Bullseye code-server = Bookworm (${CODESERVER_VERSION_BULLSEYE} runs on ${BULLSEYE_TEST_IMAGE})" >&2
         else
-          echo "Bookworm code-server ${CODESERVER_VERSION} does not run on php:7.4-apache; searching for compatible version..." >&2
+          echo "Bookworm code-server ${CODESERVER_VERSION} does not run on ${BULLSEYE_TEST_IMAGE}; searching for compatible version..." >&2
           CODESERVER_VERSION_BULLSEYE=""
           while IFS= read -r candidate; do
             [ "$candidate" = "$CODESERVER_VERSION" ] && continue
-            echo "Checking code-server ${candidate} on php:7.4-apache..." >&2
+            echo "Checking code-server ${candidate} on ${BULLSEYE_TEST_IMAGE}..." >&2
             TMP_DEB=$(mktemp --suffix=.deb)
             if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 \
                  "https://github.com/coder/code-server/releases/download/v${candidate}/code-server_${candidate}_amd64.deb" \
                  -o "$TMP_DEB" 2>/dev/null \
                && head -c 8 "$TMP_DEB" | grep -qF '!<arch>' \
-               && check_deb_on_image "$TMP_DEB" "php:7.4-apache"; then
+               && check_deb_on_image "$TMP_DEB" "$BULLSEYE_TEST_IMAGE"; then
               CODESERVER_VERSION_BULLSEYE="$candidate"
               mv "$TMP_DEB" "$RUNNER_TEMP/code-server-bullseye-amd64.deb"
               echo "  Selected Bullseye code-server: ${CODESERVER_VERSION_BULLSEYE}" >&2
               break
             else
-              echo "  code-server ${candidate} does not run on php:7.4-apache, trying older release..." >&2
+              echo "  code-server ${candidate} does not run on ${BULLSEYE_TEST_IMAGE}, trying older release..." >&2
               rm -f "$TMP_DEB"
             fi
           done < <(printf '%s' "$CODESERVER_RELEASES_JSON" | jq -r '
@@ -204,7 +263,7 @@ runs:
             select(.tag_name | test("^v?4\\.[0-9]+\\.[0-9]+([-+].*)?$")) |
             .tag_name | ltrimstr("v")] | .[]')
           [ -n "$CODESERVER_VERSION_BULLSEYE" ] || {
-            echo "Failed to detect a Bullseye-compatible code-server version" >&2; exit 1;
+            echo "Failed to detect a ${BULLSEYE_TEST_IMAGE}-compatible code-server version" >&2; exit 1;
           }
         fi
 
@@ -244,8 +303,8 @@ runs:
             '
         }
 
-        # Bookworm Copilot Chat: pick the latest version compatible with the Bookworm
-        # VS Code engine.  No Bullseye compatibility check needed for Bookworm.
+        # Bookworm Copilot Chat: pick the latest version compatible with the
+        # Bookworm VS Code engine.
         COPILOT_CHAT_VERSION=$(copilot_candidates_for_vscode "$VSCODE_VERSION_BOOKWORM" | head -1)
         [ -n "$COPILOT_CHAT_VERSION" ] || { echo "Failed to detect Bookworm Copilot Chat version" >&2; exit 1; }
         echo "Bookworm Copilot Chat: ${COPILOT_CHAT_VERSION}" >&2
@@ -255,18 +314,24 @@ runs:
         od -An -N4 -tx1 "$RUNNER_TEMP/copilot-chat-bookworm.vsix" | tr -d ' \n' | grep -q '^504b0304' || \
           { echo "ERROR: copilot-chat-${COPILOT_CHAT_VERSION}.vsix failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
 
-        # Bullseye Copilot Chat: pick the latest version compatible with the Bullseye VS
-        # Code engine that also runs on php:7.4-apache.  Fast path: if bullseye code-server ==
-        # bookworm AND the bookworm VSIX runs on php:7.4-apache, bullseye == bookworm.
+        # Bullseye Copilot Chat: latest version compatible with the Bullseye VS Code
+        # engine that also runs on the detected Bullseye PHP image.
         COPILOT_CHAT_VERSION_BULLSEYE=""
-        if [ "$CODESERVER_VERSION_BULLSEYE" = "$CODESERVER_VERSION" ] \
-           && check_vsix_on_image "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "php:7.4-apache"; then
+        if [ -z "$BULLSEYE_TEST_IMAGE" ]; then
+          # No Bullseye PHP versions — same as Bookworm.
           COPILOT_CHAT_VERSION_BULLSEYE="$COPILOT_CHAT_VERSION"
           cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$RUNNER_TEMP/copilot-chat-bullseye.vsix"
-          echo "Bullseye Copilot Chat = Bookworm (${COPILOT_CHAT_VERSION_BULLSEYE} runs on php:7.4-apache)" >&2
+          echo "No Bullseye PHP versions; Bullseye Copilot Chat = Bookworm" >&2
+        elif [ "$CODESERVER_VERSION_BULLSEYE" = "$CODESERVER_VERSION" ] \
+           && check_vsix_on_image "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$BULLSEYE_TEST_IMAGE"; then
+          # Fast path: if Bullseye code-server == Bookworm AND the Bookworm VSIX runs
+          # on the Bullseye PHP image, reuse the Bookworm VSIX.
+          COPILOT_CHAT_VERSION_BULLSEYE="$COPILOT_CHAT_VERSION"
+          cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$RUNNER_TEMP/copilot-chat-bullseye.vsix"
+          echo "Bullseye Copilot Chat = Bookworm (${COPILOT_CHAT_VERSION_BULLSEYE} runs on ${BULLSEYE_TEST_IMAGE})" >&2
         else
           while IFS= read -r candidate; do
-            echo "Checking Copilot Chat ${candidate} on php:7.4-apache..." >&2
+            echo "Checking Copilot Chat ${candidate} on ${BULLSEYE_TEST_IMAGE}..." >&2
             TMP_VSIX=$(mktemp --suffix=.vsix)
             CC_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${candidate}/vspackage"
             # Reuse already-downloaded Bookworm VSIX when candidate matches.
@@ -279,18 +344,18 @@ runs:
               # Validate the ZIP magic before running ldd checks.
               od -An -N4 -tx1 "$TMP_VSIX" | tr -d ' \n' | grep -q '^504b0304' || { rm -f "$TMP_VSIX"; continue; }
             fi
-            if check_vsix_on_image "$TMP_VSIX" "php:7.4-apache"; then
+            if check_vsix_on_image "$TMP_VSIX" "$BULLSEYE_TEST_IMAGE"; then
               COPILOT_CHAT_VERSION_BULLSEYE="$candidate"
               mv "$TMP_VSIX" "$RUNNER_TEMP/copilot-chat-bullseye.vsix"
               echo "  Selected Bullseye Copilot Chat: ${COPILOT_CHAT_VERSION_BULLSEYE}" >&2
               break
             else
-              echo "  Copilot Chat ${candidate} does not run on php:7.4-apache, trying older version..." >&2
+              echo "  Copilot Chat ${candidate} does not run on ${BULLSEYE_TEST_IMAGE}, trying older version..." >&2
               rm -f "$TMP_VSIX"
             fi
           done < <(copilot_candidates_for_vscode "$VSCODE_VERSION_BULLSEYE")
           [ -n "$COPILOT_CHAT_VERSION_BULLSEYE" ] || {
-            echo "Failed to detect a Bullseye-compatible Copilot Chat version" >&2; exit 1;
+            echo "Failed to detect a ${BULLSEYE_TEST_IMAGE}-compatible Copilot Chat version" >&2; exit 1;
           }
         fi
 
@@ -305,7 +370,7 @@ runs:
     # Cache code-server .deb files and Copilot Chat VSIXs separately so that
     # a version bump in one artifact does not invalidate the other's cache.
     # Bookworm and Bullseye artifacts are cached under distinct keys to prevent
-    # conflicts when both tiers resolve to the same version.
+    # key collisions when both tiers resolve to the same version.
     - name: Cache Bookworm code-server debs
       id: cache-cs-bookworm
       uses: actions/cache@v5
@@ -370,7 +435,7 @@ runs:
         for ARCH in amd64 arm64; do
           DEB="code-server_${CODESERVER_VERSION_BULLSEYE}_${ARCH}.deb"
           TARGET="${{ runner.temp }}/code-server-debs-bullseye/${DEB}"
-          # When bullseye == bookworm, copy from the already-downloaded bookworm debs.
+          # When bullseye == bookworm, copy from the already-downloaded Bookworm debs.
           if [ "$CODESERVER_VERSION_BULLSEYE" = "$CODESERVER_VERSION" ] \
              && [ -f "${{ runner.temp }}/code-server-debs-bookworm/${DEB}" ]; then
             echo "Bullseye == Bookworm; copying ${DEB} from Bookworm debs"

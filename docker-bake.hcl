@@ -77,6 +77,9 @@ variable "COPILOT_CHAT_VERSION_BULLSEYE"        { default = ""                  
 variable "COPILOT_CHAT_VSIX_SHA256_BULLSEYE"    { default = ""                        }
 # VERSIONS_BULLSEYE: PHP versions on Debian 11 (Bullseye) whose per-version
 # downloader receives the Bullseye code-server build args instead of the Bookworm ones.
+# In CI this is always set by preseed-downloads, which detects the Debian codename
+# of each php:<version>-apache image automatically.  The default below is a fallback
+# for standalone local builds only where that detection does not run.
 variable "VERSIONS_BULLSEYE"                   { default = "7.4 8.0"               }
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 # DOWNLOADS_DIR: path to a directory whose pre-downloaded/ subdirectory contains
