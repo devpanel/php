@@ -1,4 +1,8 @@
 command:
+  site:
+    install:
+      options:
+        extra: "--skip-ssl-verify-server-cert"
   sql:
     options:
       extra: "--skip-ssl-verify-server-cert"
