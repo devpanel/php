@@ -468,7 +468,8 @@ runs:
         # Reuse the VSIX pre-downloaded during the resolve step.
         if [ -f "$RUNNER_TEMP/copilot-chat-bookworm.vsix" ]; then
           echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION}.vsix from resolve step"
-          cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$TARGET"
+          [ "$RUNNER_TEMP/copilot-chat-bookworm.vsix" = "$TARGET" ] || \
+            cp "$RUNNER_TEMP/copilot-chat-bookworm.vsix" "$TARGET"
           od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || \
             { echo "ERROR: Reused VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
         else
@@ -496,7 +497,8 @@ runs:
         # Reuse the VSIX pre-downloaded during the resolve step.
         elif [ -f "$RUNNER_TEMP/copilot-chat-bullseye.vsix" ]; then
           echo "Reusing copilot-chat-${COPILOT_CHAT_VERSION_BULLSEYE}.vsix from resolve step"
-          cp "$RUNNER_TEMP/copilot-chat-bullseye.vsix" "$TARGET"
+          [ "$RUNNER_TEMP/copilot-chat-bullseye.vsix" = "$TARGET" ] || \
+            cp "$RUNNER_TEMP/copilot-chat-bullseye.vsix" "$TARGET"
           od -An -N4 -tx1 "$TARGET" | tr -d ' \n' | grep -q '^504b0304' || \
             { echo "ERROR: Reused VSIX failed format validation (not a valid ZIP/VSIX archive)" >&2; exit 1; }
         else
