@@ -229,13 +229,17 @@ runs:
             # rate-limited inspect cycle does not permanently lose the digest.
             # Use parallel arrays to avoid encoding issues (digests contain
             # colons, e.g. "sha256:abc..." which would break :-delimited strings).
-            NEW_PKEYS=()    # platform keys,  e.g. linux-amd64
-            NEW_PDIGESTS=() # full digest refs, e.g. sha256:abc…
+            # Processed artifacts are tracked as "name:id" so that a re-uploaded
+            # artifact (same name, new id from overwrite:true reruns) is recognised
+            # as a new artifact and re-merged rather than silently skipped.
+            NEW_PKEYS=()         # platform keys,  e.g. linux-amd64
+            NEW_PDIGESTS=()      # full digest refs, e.g. sha256:abc…
+            NEW_ARTIFACT_IDS=()  # artifact ids, matching indices with NEW_PKEYS
 
             while IFS=$'\t' read -r aname aid; do
               [[ -z "${aname}" ]] && continue
               [[ "${aname}" == "${ARTIFACT_PREFIX}"* ]] || continue
-              grep -qxF "${aname}" "${IMG_PROCESSED[$key]}" 2>/dev/null && continue
+              grep -qxF "${aname}:${aid}" "${IMG_PROCESSED[$key]}" 2>/dev/null && continue
 
               platform_key="${aname#"${ARTIFACT_PREFIX}"}"   # e.g. linux-amd64
               dl_dir="${img_dir}/dl/${aname}"
@@ -261,10 +265,11 @@ runs:
                   if [[ -n "${DIGEST}" ]]; then
                     NEW_PKEYS+=("${platform_key}")
                     NEW_PDIGESTS+=("${DIGEST}")
+                    NEW_ARTIFACT_IDS+=("${aid}")
                   elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
                     echo "::warning::${aname}: key '${DIGEST_KEY}' empty;" \
                          "all builds complete, skipping."
-                    echo "${aname}" >> "${IMG_PROCESSED[$key]}"
+                    echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
                   else
                     echo "::warning::${aname}: key '${DIGEST_KEY}' empty;" \
                          "will retry next cycle."
@@ -272,7 +277,7 @@ runs:
                 elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
                   echo "::warning::${aname}: missing ${platform_key}.json;" \
                        "all builds complete, skipping."
-                  echo "${aname}" >> "${IMG_PROCESSED[$key]}"
+                  echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
                 else
                   echo "::warning::${aname}: missing ${platform_key}.json;" \
                        "will retry next cycle."
@@ -284,13 +289,13 @@ runs:
 
             # ── Skip permanently inaccessible artifacts once all builds done ─
             if [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
-              while IFS=$'\t' read -r aname _; do
+              while IFS=$'\t' read -r aname aid; do
                 [[ -z "${aname}" ]] && continue
                 [[ "${aname}" == "${ARTIFACT_PREFIX}"* ]] || continue
-                grep -qxF "${aname}" "${IMG_PROCESSED[$key]}" 2>/dev/null && continue
+                grep -qxF "${aname}:${aid}" "${IMG_PROCESSED[$key]}" 2>/dev/null && continue
                 echo "::warning::${aname}: all builds done but cannot be" \
                      "downloaded; skipping."
-                echo "${aname}" >> "${IMG_PROCESSED[$key]}"
+                echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
               done <<< "${ALL_ARTIFACTS}"
             fi
 
@@ -396,8 +401,12 @@ runs:
                     # Only done here, after a successful create, so that a
                     # failed inspect or create in a prior cycle does not
                     # permanently lose a digest.
+                    # Record "name:id" so that if a build is retried and the
+                    # artifact is re-uploaded (same name, new id via
+                    # overwrite:true), the updated artifact is recognised as
+                    # new and its digest is re-merged.
                     for i in "${!NEW_PKEYS[@]}"; do
-                      echo "${ARTIFACT_PREFIX}${NEW_PKEYS[$i]}" \
+                      echo "${ARTIFACT_PREFIX}${NEW_PKEYS[$i]}:${NEW_ARTIFACT_IDS[$i]}" \
                         >> "${IMG_PROCESSED[$key]}"
                       IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
                     done
