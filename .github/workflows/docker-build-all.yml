@@ -92,26 +92,23 @@ jobs:
           github_token:       ${{ secrets.GITHUB_TOKEN }}
           ghcr_token:         ${{ secrets.GHCR_TOKEN }}
 
-  # ── Parallel manifest merge matrix ──────────────────────────────────────────
-  # One job per Docker Hub image (version × stage).  All jobs start as soon as
-  # detect finishes and run fully in parallel with every build job and with
-  # each other.
+  # ── Single manifest merge job ────────────────────────────────────────────────
+  # One job handles all Docker Hub images (every version × stage combination).
+  # It starts as soon as detect finishes and runs in parallel with every build
+  # job.
   #
-  # Each job polls for "digests-*" artifacts from the build jobs.  Whenever
-  # one or more new platform digests arrive in the same polling cycle they are
-  # batched into a single "docker buildx imagetools create" call, preserving
-  # any platform still missing from the current batch via the previously
-  # published Docker Hub manifest.
+  # The job polls for "digests-*" artifacts from the build jobs.  Whenever one
+  # or more new platform digests arrive in the same polling cycle they are
+  # batched into a single "docker buildx imagetools create" call per image,
+  # preserving any platform still missing from the current batch via the
+  # previously published Docker Hub manifest.
   #
-  # Because every job writes to exactly one Docker Hub tag there are no
-  # concurrent writes and therefore no race conditions.
+  # Using a single job (rather than a per-image matrix) avoids saturating the
+  # Docker Hub pull rate limit with many concurrent "imagetools inspect" calls
+  # and reduces the number of runners consumed during the build.
   merge:
     needs: detect
     if: needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != ''
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.detect.outputs.merge_matrix) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -132,8 +129,7 @@ jobs:
       - name: Poll and merge platform manifests
         uses: ./.github/actions/merge-manifests
         with:
-          version:          ${{ matrix.version }}
-          stage:            ${{ matrix.stage }}
+          merge_matrix:     ${{ needs.detect.outputs.merge_matrix }}
           repo:             ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
           tag_suffix:       ${{ needs.detect.outputs.tag_suffix }}
           total_platforms:  ${{ needs.detect.outputs.total_platforms }}
