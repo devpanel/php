@@ -33,6 +33,7 @@ inputs:
       JSON array of {version, stage} objects — one entry per Docker Hub image
       that needs a manifest merge. Pass needs.detect.outputs.merge_matrix from
       the calling workflow.
+      Example: [{"version":"8.3","stage":"base"},{"version":"8.3","stage":"secure"}]
     required: true
   repo:
     description: Docker Hub repository (e.g. devpanel/php)
