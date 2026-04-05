@@ -67,23 +67,15 @@ runs:
         for ver in $VERSIONS; do
           image="php:${ver}-apache"
           # Skip the registry pull if the image is already in the local Docker
-          # daemon (pre-pulled by the build job's caching step).  If not, try
-          # an anonymous pull first (per-IP quota, 100/6 h) to avoid consuming
-          # the shared authenticated-account quota (200/6 h across all jobs).
-          # Fall back to an authenticated pull if the anonymous one fails.
+          # daemon (pre-pulled by the build job's caching step).  If not, pull
+          # anonymously — Docker Hub login has not yet occurred at this point,
+          # so docker pull naturally uses the per-IP anonymous quota
+          # (100 pulls/6 h), independent of the shared authenticated-account quota.
           if docker image inspect "${image}" > /dev/null 2>&1; then
             echo "${image}: already available locally; skipping pull." >&2
           else
             echo "Pulling ${image} to detect Debian codename..." >&2
-            # Use a temp Docker config (no credentials) for the anonymous attempt.
-            _tmp_cfg="$(mktemp -d)"
-            if docker --config "${_tmp_cfg}" pull --quiet "${image}" >&2; then
-              rm -rf "${_tmp_cfg}"
-            else
-              rm -rf "${_tmp_cfg}"
-              echo "${image}: anonymous pull failed; retrying with credentials." >&2
-              docker pull --quiet "${image}" >&2
-            fi
+            docker pull --quiet "${image}" >&2
           fi
           codename=$(docker run --rm "$image" sh -c \
             '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-}"')
