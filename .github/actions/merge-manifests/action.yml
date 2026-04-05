@@ -101,9 +101,10 @@ runs:
 
         # Per-image state (keyed by "VERSION:STAGE", colons replaced with _ for
         # filenames).
-        declare -A IMG_PROCESSED     # image_key → path to processed-artifacts file
-        declare -A IMG_DIGEST_MERGED # image_key → count of successfully merged platforms
-        declare -A IMG_DONE          # image_key → "true"/"false"
+        declare -A IMG_PROCESSED      # image_key → path to processed-artifacts file
+        declare -A IMG_DIGEST_MERGED  # image_key → count of distinct merged platforms
+        declare -A IMG_MERGED_PKEYS   # image_key → path to merged-platform-keys set file
+        declare -A IMG_DONE           # image_key → "true"/"false"
 
         # Per-version build-done state.  A single "build-done-{VERSION}-*"
         # marker covers all stages (base/secure/advance) for that version,
@@ -123,9 +124,11 @@ runs:
           safe_key="${key//:/_}"
 
           IMG_PROCESSED[$key]="${WORK_DIR}/processed-${safe_key}.txt"
+          IMG_MERGED_PKEYS[$key]="${WORK_DIR}/merged-pkeys-${safe_key}.txt"
           IMG_DIGEST_MERGED[$key]=0
           IMG_DONE[$key]="false"
           touch "${IMG_PROCESSED[$key]}"
+          touch "${IMG_MERGED_PKEYS[$key]}"
 
           if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
             VER_BUILD_DONE[$version]=0
@@ -408,7 +411,17 @@ runs:
                     for i in "${!NEW_PKEYS[@]}"; do
                       echo "${ARTIFACT_PREFIX}${NEW_PKEYS[$i]}:${NEW_ARTIFACT_IDS[$i]}" \
                         >> "${IMG_PROCESSED[$key]}"
-                      IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
+                      # Only increment the merged-platform count if this
+                      # platform_key has not been counted before.  A retried
+                      # build re-uploads the artifact with the same platform_key
+                      # but a new artifact id; without this guard the counter
+                      # would exceed TOTAL_PLATFORMS and mark the image done
+                      # prematurely.
+                      pkey="${NEW_PKEYS[$i]}"
+                      if ! grep -qxF "${pkey}" "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
+                        echo "${pkey}" >> "${IMG_MERGED_PKEYS[$key]}"
+                        IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
+                      fi
                     done
                   else
                     echo "::warning::imagetools create failed for ${IMAGE};" \

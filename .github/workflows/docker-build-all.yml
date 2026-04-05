@@ -29,9 +29,9 @@ jobs:
       tag_suffix:         ${{ steps.tag-suffix.outputs.tag_suffix }}
       total_platforms:    ${{ steps.detect.outputs.total_platforms }}
       # JSON array of {version, stage} objects — one entry per Docker Hub
-      # image that needs a manifest merge.  Each entry becomes one parallel
-      # merge job so all images are merged concurrently with no race
-      # conditions (every job owns exactly one tag).
+      # image that needs a manifest merge.  The single merge job consumes
+      # this whole array, and the merge-manifests action iterates over the
+      # entries internally to merge each image's tags.
       merge_matrix:       ${{ steps.detect.outputs.merge_matrix }}
       # JSON array of {version, platform, versions_base, versions_secure}
       # objects — one entry per PHP-version × platform combination.
