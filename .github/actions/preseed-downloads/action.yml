@@ -49,6 +49,18 @@ runs:
       shell: bash
       run: echo "downloads_dir=${{ runner.temp }}/build-downloads" >> "$GITHUB_OUTPUT"
 
+    # ── Codenames cache ────────────────────────────────────────────────────────
+    # Caches the (image digest → Debian codename) mapping across runs so that
+    # docker pull is skipped when the base image hasn't changed.  An exact-key
+    # miss falls back to the most-recent save via restore-keys prefix matching.
+    - name: Restore codenames cache
+      id: codenames-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/php-codenames-cache.json
+        key:          php-codenames-${{ github.run_id }}
+        restore-keys: php-codenames-
+
     - name: Detect Debian codenames and resolve artifact versions
       id: detect-and-resolve
       shell: bash
@@ -64,12 +76,67 @@ runs:
         declare -A IMAGE_FOR      # Debian codename → representative php:<ver>-apache image
         declare -A VERSIONS_FOR   # Debian codename → space-separated PHP versions
 
+        # ── Load codenames cache ──────────────────────────────────────────────
+        # The cache maps image digest → Debian codename.  A cache hit avoids
+        # docker pull entirely; a cache miss pulls and updates the cache.
+        CODENAMES_CACHE_FILE="${RUNNER_TEMP}/php-codenames-cache.json"
+        [[ -f "${CODENAMES_CACHE_FILE}" ]] || echo '{}' > "${CODENAMES_CACHE_FILE}"
+
+        # Obtain an anonymous Docker Hub token for library/php to look up
+        # image digests without using the authenticated pull quota.
+        ANON_PHP_TOKEN=""
+        _anon_err="$(mktemp)"
+        ANON_PHP_TOKEN="$(curl -sf \
+          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/php:pull" \
+          2>"${_anon_err}" | jq -r '.token // ""')" || ANON_PHP_TOKEN=""
+        rm -f "${_anon_err}"
+        if [[ -n "${ANON_PHP_TOKEN}" ]]; then
+          echo "  Obtained anonymous Docker Hub token for library/php." >&2
+        else
+          echo "  Could not obtain anonymous token; will use docker pull for all versions." >&2
+        fi
+
         for ver in $VERSIONS; do
           image="php:${ver}-apache"
-          echo "Pulling ${image} to detect Debian codename..." >&2
-          docker pull --quiet "$image" >&2
-          codename=$(docker run --rm "$image" sh -c \
-            '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-}"')
+
+          # ── Try to get image digest without pulling (unauthenticated) ──────
+          image_digest=""
+          if [[ -n "${ANON_PHP_TOKEN}" ]]; then
+            _head_tmp="$(mktemp)"
+            image_digest="$(curl -sf \
+              -H "Authorization: Bearer ${ANON_PHP_TOKEN}" \
+              -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+              -D "${_head_tmp}" \
+              -o /dev/null \
+              "https://registry-1.docker.io/v2/library/php/manifests/${ver}-apache" \
+              2>/dev/null \
+              && grep -i '^docker-content-digest:' "${_head_tmp}" \
+                 | awk '{print $2}' | tr -d '\r\n')" || image_digest=""
+            rm -f "${_head_tmp}"
+          fi
+
+          # ── Check codenames cache by digest ───────────────────────────────
+          codename=""
+          if [[ -n "${image_digest}" ]]; then
+            codename="$(jq -r --arg d "${image_digest}" '.[$d] // ""' \
+              "${CODENAMES_CACHE_FILE}" 2>/dev/null)" || codename=""
+          fi
+
+          if [[ -n "${codename}" ]]; then
+            echo "  ${image} → ${codename} (cached for digest ${image_digest})" >&2
+          else
+            # ── Cache miss: pull the image and detect codename ─────────────
+            echo "Pulling ${image} to detect Debian codename..." >&2
+            docker pull --quiet "$image" >&2
+            codename=$(docker run --rm "$image" sh -c \
+              '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-}"')
+            # Update the codenames cache with the new (digest → codename) entry.
+            if [[ -n "${image_digest}" && -n "${codename}" ]]; then
+              _updated="$(jq --arg d "${image_digest}" --arg c "${codename}" \
+                '. + {($d): $c}' "${CODENAMES_CACHE_FILE}" 2>/dev/null)" || _updated=""
+              [[ -n "${_updated}" ]] && printf '%s\n' "${_updated}" > "${CODENAMES_CACHE_FILE}"
+            fi
+          fi
           # Validate: Debian codenames are purely lowercase ASCII letters.
           if [ -z "$codename" ] || ! printf '%s' "$codename" | grep -qE '^[a-z]+$'; then
             echo "ERROR: unexpected VERSION_CODENAME '${codename}' from ${image}" >&2
@@ -226,6 +293,17 @@ runs:
         for cn in $(echo "${!VERSIONS_FOR[@]}" | tr ' ' '\n' | sort); do
           echo "  ${cn}: code-server=${CS_VERSION_FOR[$cn]}  copilot-chat=${CC_VERSION_FOR[$cn]}"
         done
+
+    # ── Save codenames cache ───────────────────────────────────────────────────
+    # Persist the (image digest → Debian codename) map unconditionally so future
+    # runs can skip docker pull for images that have not changed.  Runs even if
+    # the detection step failed, in case it partially updated the cache file.
+    - name: Save codenames cache
+      if: always()
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/php-codenames-cache.json
+        key: php-codenames-${{ github.run_id }}
 
     # ── Cache step ────────────────────────────────────────────────────────────
     # A single cache entry covers all detected Debian tiers.  The key is a

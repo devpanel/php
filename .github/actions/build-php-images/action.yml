@@ -544,11 +544,14 @@ runs:
       id: build-done-marker
       shell: bash
       env:
-        VERSION:  ${{ inputs.version }}
-        PLATFORM: ${{ inputs.platform }}
+        VERSION:      ${{ inputs.version }}
+        PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
       run: |
         set -euo pipefail
-        PLATFORM_KEY="${PLATFORM//\//-}"
+        # Use the validated/trimmed platform_key from the Validate step.  If
+        # that step did not produce a key (e.g. because it failed), skip the
+        # marker — the upload step below guards against an empty platform_key.
+        [[ -n "${PLATFORM_KEY}" ]] || exit 0
         mkdir -p /tmp/build-done
         printf '%s\n' "${VERSION}" > "/tmp/build-done/${PLATFORM_KEY}.txt"
         echo "platform_key=${PLATFORM_KEY}" >> "$GITHUB_OUTPUT"

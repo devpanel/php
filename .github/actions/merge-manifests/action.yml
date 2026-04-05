@@ -240,8 +240,25 @@ runs:
             case "${HTTP_CODE}" in
               200)
                 SEED_RAW="$(cat "${manifest_tmp}")"
-                SEED_STATUS="ok"
-                echo "  ${IMAGE_SEED}: fetched manifest (unauthenticated)."
+                # Only accept the unauthenticated result when it contains at
+                # least one parseable platform entry.  A single-platform
+                # manifest (no "manifests" array) or one where every entry is
+                # filtered as unknown/attestation returns 0 platforms; in that
+                # case fall through to the authenticated path which may return
+                # a manifest-list format not given to anonymous callers.
+                _anon_plat_count=$(printf '%s' "${SEED_RAW}" | jq -r \
+                  '.manifests[]? |
+                   select((.platform.os // "") != "unknown" and
+                          (.platform.architecture // "") != "unknown") |
+                   .digest' 2>/dev/null | wc -l) || _anon_plat_count=0
+                if [[ "${_anon_plat_count}" -gt 0 ]]; then
+                  SEED_STATUS="ok"
+                  echo "  ${IMAGE_SEED}: fetched manifest (unauthenticated," \
+                       "${_anon_plat_count} platform(s))."
+                else
+                  echo "  ${IMAGE_SEED}: unauthenticated manifest has 0 valid" \
+                       "platform(s); trying authenticated inspect."
+                fi
                 ;;
               404)
                 SEED_STATUS="not_found"
@@ -288,26 +305,42 @@ runs:
             ok)
               # Fresh manifest obtained; rewrite state file from it.
               > "${IMG_PLATFORM_DIGESTS[$key]}"
-              while IFS=$'\t' read -r p_os p_arch p_var p_digest; do
+              # Parse each manifest entry as a JSON object (one per line) to
+              # avoid the bash IFS=$'\t' whitespace-collapsing issue that
+              # incorrectly merges consecutive tab delimiters (empty variant
+              # field) and shifts digest into the variant variable.
+              while IFS= read -r _entry; do
+                p_os="$(    printf '%s' "${_entry}" | jq -r '.os')"
+                p_arch="$(  printf '%s' "${_entry}" | jq -r '.arch')"
+                p_var="$(   printf '%s' "${_entry}" | jq -r '.var')"
+                p_digest="$(printf '%s' "${_entry}" | jq -r '.digest')"
                 # Skip attestation / unknown-platform entries.
                 [[ "${p_os}" == "unknown" || "${p_arch}" == "unknown" ]] && continue
                 # Skip entries with empty digest, os, or architecture.
                 [[ -n "${p_digest}" && -n "${p_os}" && -n "${p_arch}" ]] || continue
-                existing_base="${p_os}/${p_arch}"
-                if [[ -n "${p_var}" ]]; then
-                  existing_platform="${existing_base}/${p_var}"
-                else
-                  existing_platform="${existing_base}"
+                # Normalize the platform key to match what build jobs produce.
+                # Build jobs specify platforms like "linux/arm64" (without the
+                # default variant), so their artifact names use "linux-arm64"
+                # not "linux-arm64-v8".  Strip default variants so that seeded
+                # keys match artifact keys and avoid duplicate platform entries
+                # in subsequent imagetools create calls.
+                # Known default variants to strip: arm64/v8.
+                # Non-default variants (arm/v6, arm/v7) are kept as-is because
+                # they identify distinct platforms.
+                _normalized_plat="${p_os}/${p_arch}"
+                if [[ -n "${p_var}" ]] && \
+                   ! [[ "${p_arch}" == "arm64" && "${p_var}" == "v8" ]]; then
+                  _normalized_plat="${p_os}/${p_arch}/${p_var}"
                 fi
-                pkey="${existing_platform//\//-}"
+                pkey="${_normalized_plat//\//-}"
                 printf '%s\t%s\n' "${pkey}" "${p_digest}" \
                   >> "${IMG_PLATFORM_DIGESTS[$key]}"
-              done < <(printf '%s' "${SEED_RAW}" | jq -r \
+              done < <(printf '%s' "${SEED_RAW}" | jq -c \
                 '.manifests[]? |
-                 [(.platform.os // ""),
-                  (.platform.architecture // ""),
-                  (.platform.variant // ""),
-                  (.digest // "")] | @tsv')
+                 {os:     (.platform.os           // ""),
+                  arch:   (.platform.architecture // ""),
+                  var:    (.platform.variant      // ""),
+                  digest: (.digest                // "")}')
               n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
               echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
               ;;
