@@ -75,6 +75,9 @@ runs:
         PHP_VERSION: ${{ inputs.version }}
         PLATFORM: ${{ inputs.platform }}
       run: |
+        set -euo pipefail
+
+        # Helper: fetch the content-digest of a public Docker Hub image/tag for
         # a specific platform via the anonymous Registry API.
         # Prints the digest to stdout, or empty string on failure.
         get_digest() {
