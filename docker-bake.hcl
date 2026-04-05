@@ -82,8 +82,8 @@ variable "PLATFORMS"                     { default = "linux/amd64,linux/arm64" }
 # PUSH_BY_DIGEST: when "true" final images are pushed by content-hash with no
 # tag.  A separate manifest-merge step then creates / updates the tagged
 # multi-arch manifest.  Intermediate targets (downloader, php-ext, secure-int)
-# are not affected by this flag; they only export build caches to GHCR
-# (via cache-to) and do not push image manifests as registry tags.
+# are not switched to digest mode by this flag; they are always pushed to
+# GHCR for layer caching and are never pushed to Docker Hub.
 # Default is "false" so that local builds and test runs (using --load) work
 # without needing a real registry.  The build-php-images CI action always sets
 # this to "true" to enable the progressive-manifest merge pipeline.

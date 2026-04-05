@@ -94,7 +94,7 @@ fi
 
 # Derive PLATFORM_KEY from the target platform so the test build uses the same
 # GHA/GHCR cache scopes as the CI build matrix job for the same platform (e.g.
-# "php83-base-linux-amd64" instead of the unkeyed "php83-base").  This lets the
+# "php8_3-base-linux-amd64" instead of the unkeyed "php8_3-base").  This lets the
 # test job hit the caches already populated by the corresponding build job.
 PLATFORM_KEY="${PLATFORMS//\//-}"
 
