@@ -240,8 +240,21 @@ runs:
             case "${HTTP_CODE}" in
               200)
                 SEED_RAW="$(cat "${manifest_tmp}")"
-                SEED_STATUS="ok"
-                echo "  ${IMAGE_SEED}: fetched manifest (unauthenticated)."
+                # Verify the response is a manifest list (OCI index or Docker
+                # manifest list) — not a single-arch schema 2 manifest.  Docker
+                # Hub can return schema 2 with HTTP 200 even when a manifest list
+                # exists, if the accept-type negotiation falls back.  In that
+                # case fall through to the authenticated inspect which reliably
+                # returns the full manifest list.
+                if printf '%s' "${SEED_RAW}" | jq -e '.manifests // empty' \
+                     > /dev/null 2>&1; then
+                  SEED_STATUS="ok"
+                  echo "  ${IMAGE_SEED}: fetched manifest list (unauthenticated)."
+                else
+                  echo "  ${IMAGE_SEED}: unauthenticated fetch returned a non-list" \
+                       "manifest (schema 2?); trying authenticated inspect."
+                  SEED_RAW=""
+                fi
                 ;;
               404)
                 SEED_STATUS="not_found"
@@ -294,7 +307,14 @@ runs:
                 # Skip entries with empty digest, os, or architecture.
                 [[ -n "${p_digest}" && -n "${p_os}" && -n "${p_arch}" ]] || continue
                 existing_base="${p_os}/${p_arch}"
-                if [[ -n "${p_var}" ]]; then
+                # Normalize platform key: drop the default arm64/v8 variant so
+                # that manifest entries like "linux/arm64/v8" produce the same
+                # key ("linux-arm64") as build jobs whose platform input is
+                # "linux/arm64" (no variant).  Other variants (e.g. arm/v7) are
+                # kept because they identify distinct platforms.
+                if [[ "${p_arch}" == "arm64" && "${p_var}" == "v8" ]]; then
+                  existing_platform="${existing_base}"
+                elif [[ -n "${p_var}" ]]; then
                   existing_platform="${existing_base}/${p_var}"
                 else
                   existing_platform="${existing_base}"

@@ -66,8 +66,25 @@ runs:
 
         for ver in $VERSIONS; do
           image="php:${ver}-apache"
-          echo "Pulling ${image} to detect Debian codename..." >&2
-          docker pull --quiet "$image" >&2
+          # Skip the registry pull if the image is already in the local Docker
+          # daemon (pre-pulled by the build job's caching step).  If not, try
+          # an anonymous pull first (per-IP quota, 100/6 h) to avoid consuming
+          # the shared authenticated-account quota (200/6 h across all jobs).
+          # Fall back to an authenticated pull if the anonymous one fails.
+          if docker image inspect "${image}" > /dev/null 2>&1; then
+            echo "${image}: already available locally; skipping pull." >&2
+          else
+            echo "Pulling ${image} to detect Debian codename..." >&2
+            # Use a temp Docker config (no credentials) for the anonymous attempt.
+            _tmp_cfg="$(mktemp -d)"
+            if docker --config "${_tmp_cfg}" pull --quiet "${image}" >&2; then
+              rm -rf "${_tmp_cfg}"
+            else
+              rm -rf "${_tmp_cfg}"
+              echo "${image}: anonymous pull failed; retrying with credentials." >&2
+              docker pull --quiet "${image}" >&2
+            fi
+          fi
           codename=$(docker run --rm "$image" sh -c \
             '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-}"')
           # Validate: Debian codenames are purely lowercase ASCII letters.

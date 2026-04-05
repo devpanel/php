@@ -59,6 +59,174 @@ inputs:
 runs:
   using: composite
   steps:
+    # ── Pre-pull base images anonymously with digest caching ─────────────────
+    # Pull binfmt (needed by QEMU) and the PHP base image anonymously — before
+    # the Docker Hub login — so that these pulls use the per-IP anonymous quota
+    # (100 pulls/6 h per runner, independent across parallel jobs) rather than
+    # the shared authenticated-account quota (200 pulls/6 h total).
+    #
+    # Each image is cached in GHA by its content digest: if the runner already
+    # has the exact digest cached the image is loaded without any network pull,
+    # preserving both quotas entirely.
+    - name: Resolve image digests (anonymous)
+      id: image-digests
+      shell: bash
+      env:
+        PHP_VERSION: ${{ inputs.version }}
+        PLATFORM: ${{ inputs.platform }}
+      run: |
+        # a specific platform via the anonymous Registry API.
+        # Prints the digest to stdout, or empty string on failure.
+        get_digest() {
+          local repo="$1" tag="$2" platform="$3"
+          local anon_token http_code manifest_tmp digest
+          anon_token="$(curl -sf \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull" \
+            | jq -r '.token // ""')" || anon_token=""
+          [[ -z "${anon_token}" ]] && { echo ""; return; }
+
+          manifest_tmp="$(mktemp)"
+          # Request manifest list first so we can resolve per-platform digest.
+          http_code="$(curl -s \
+            -H "Authorization: Bearer ${anon_token}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json" \
+            -o "${manifest_tmp}" \
+            -w "%{http_code}" \
+            "https://registry-1.docker.io/v2/${repo}/manifests/${tag}" \
+            2>/dev/null)" || http_code="000"
+
+          if [[ "${http_code}" != "200" ]]; then
+            rm -f "${manifest_tmp}"; echo ""; return
+          fi
+
+          # If the response is a manifest list, find the per-platform digest.
+          os="${platform%%/*}"
+          rest="${platform#*/}"
+          arch="${rest%%/*}"
+          variant="${rest#*/}"; [[ "${variant}" == "${arch}" ]] && variant=""
+
+          digest="$(jq -r \
+            --arg os "${os}" --arg arch "${arch}" --arg var "${variant}" \
+            '.manifests[]?
+             | select(
+                 .platform.os == $os and
+                 .platform.architecture == $arch and
+                 (if $var == "" then (.platform.variant // "") == ""
+                  else (.platform.variant // "") == $var end))
+             | .digest' \
+            "${manifest_tmp}" | head -1)"
+
+          # If not a manifest list (schema 2), use the overall digest.
+          if [[ -z "${digest}" ]]; then
+            digest="$(jq -r '.config.digest // ""' "${manifest_tmp}")"
+          fi
+          rm -f "${manifest_tmp}"
+          printf '%s' "${digest}"
+        }
+
+        BINFMT_DIGEST="$(get_digest "tonistiigi/binfmt" "latest" "linux/amd64")"
+        PHP_DIGEST="$(get_digest "library/php" "${PHP_VERSION}-apache" "${PLATFORM}")"
+
+        echo "binfmt_digest=${BINFMT_DIGEST}" >> "$GITHUB_OUTPUT"
+        echo "php_digest=${PHP_DIGEST}"       >> "$GITHUB_OUTPUT"
+
+        if [[ -n "${BINFMT_DIGEST}" ]]; then
+          echo "  binfmt:latest digest: ${BINFMT_DIGEST}"
+        else
+          echo "  binfmt:latest digest: unavailable (will pull unauthenticated)"
+        fi
+        if [[ -n "${PHP_DIGEST}" ]]; then
+          echo "  php:${PHP_VERSION}-apache (${PLATFORM}) digest: ${PHP_DIGEST}"
+        else
+          echo "  php:${PHP_VERSION}-apache (${PLATFORM}) digest: unavailable (will pull unauthenticated)"
+        fi
+
+    - name: Restore binfmt cache
+      id: restore-binfmt
+      if: steps.image-digests.outputs.binfmt_digest != ''
+      uses: actions/cache/restore@v4
+      with:
+        path: /tmp/image-cache/binfmt
+        key: binfmt-${{ steps.image-digests.outputs.binfmt_digest }}
+
+    - name: Restore PHP base image cache
+      id: restore-php-base
+      if: steps.image-digests.outputs.php_digest != ''
+      uses: actions/cache/restore@v4
+      with:
+        path: /tmp/image-cache/php-base
+        key: php-base-${{ inputs.version }}-${{ inputs.platform }}-${{ steps.image-digests.outputs.php_digest }}
+
+    - name: Pull and cache binfmt (anonymous)
+      id: pull-binfmt
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.restore-binfmt.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        mkdir -p /tmp/image-cache/binfmt
+        if [[ "${CACHE_HIT}" == "true" && -f /tmp/image-cache/binfmt/image.tar.gz ]]; then
+          echo "Loading binfmt from GHA cache..."
+          docker image load -i /tmp/image-cache/binfmt/image.tar.gz
+          echo "loaded=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "Pulling tonistiigi/binfmt:latest (anonymous)..."
+          if docker pull --platform linux/amd64 tonistiigi/binfmt:latest 2>&1; then
+            docker image save tonistiigi/binfmt:latest \
+              | gzip -1 > /tmp/image-cache/binfmt/image.tar.gz
+            echo "loaded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Anonymous binfmt pull failed; will retry after login."
+            echo "loaded=false" >> "$GITHUB_OUTPUT"
+          fi
+        fi
+
+    - name: Save binfmt cache
+      if: >
+        steps.restore-binfmt.outputs.cache-hit != 'true' &&
+        steps.pull-binfmt.outputs.loaded == 'true' &&
+        steps.image-digests.outputs.binfmt_digest != ''
+      uses: actions/cache/save@v4
+      with:
+        path: /tmp/image-cache/binfmt
+        key: binfmt-${{ steps.image-digests.outputs.binfmt_digest }}
+
+    - name: Pull and cache PHP base image (anonymous)
+      id: pull-php-base
+      shell: bash
+      env:
+        PHP_VERSION: ${{ inputs.version }}
+        PLATFORM: ${{ inputs.platform }}
+        CACHE_HIT: ${{ steps.restore-php-base.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        mkdir -p /tmp/image-cache/php-base
+        if [[ "${CACHE_HIT}" == "true" && -f /tmp/image-cache/php-base/image.tar.gz ]]; then
+          echo "Loading php:${PHP_VERSION}-apache from GHA cache..."
+          docker image load -i /tmp/image-cache/php-base/image.tar.gz
+          echo "loaded=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "Pulling php:${PHP_VERSION}-apache --platform ${PLATFORM} (anonymous)..."
+          if docker pull --platform "${PLATFORM}" "php:${PHP_VERSION}-apache" 2>&1; then
+            docker image save "php:${PHP_VERSION}-apache" \
+              | gzip -1 > /tmp/image-cache/php-base/image.tar.gz
+            echo "loaded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Anonymous php:${PHP_VERSION}-apache pull failed; BuildKit will pull during bake."
+            echo "loaded=false" >> "$GITHUB_OUTPUT"
+          fi
+        fi
+
+    - name: Save PHP base image cache
+      if: >
+        steps.restore-php-base.outputs.cache-hit != 'true' &&
+        steps.pull-php-base.outputs.loaded == 'true' &&
+        steps.image-digests.outputs.php_digest != ''
+      uses: actions/cache/save@v4
+      with:
+        path: /tmp/image-cache/php-base
+        key: php-base-${{ inputs.version }}-${{ inputs.platform }}-${{ steps.image-digests.outputs.php_digest }}
+
     # ── Build steps ──────────────────────────────────────────────────────────
     - name: Login to Docker Hub
       uses: docker/login-action@v4
@@ -544,11 +712,19 @@ runs:
       id: build-done-marker
       shell: bash
       env:
-        VERSION:  ${{ inputs.version }}
+        VERSION: ${{ inputs.version }}
         PLATFORM: ${{ inputs.platform }}
+        VALIDATED_PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
       run: |
         set -euo pipefail
-        PLATFORM_KEY="${PLATFORM//\//-}"
+        # Use the validated/trimmed platform key when available (from the
+        # "Validate single-platform input" step).  Fall back to deriving the
+        # key from the raw input if that step was skipped or failed.
+        if [[ -n "${VALIDATED_PLATFORM_KEY}" ]]; then
+          PLATFORM_KEY="${VALIDATED_PLATFORM_KEY}"
+        else
+          PLATFORM_KEY="${PLATFORM//\//-}"
+        fi
         mkdir -p /tmp/build-done
         printf '%s\n' "${VERSION}" > "/tmp/build-done/${PLATFORM_KEY}.txt"
         echo "platform_key=${PLATFORM_KEY}" >> "$GITHUB_OUTPUT"
