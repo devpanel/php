@@ -53,7 +53,9 @@ jobs:
 
   # Detect PHP versions to test and compute the lowercase GHCR repo name.
   # Runs in parallel with the lint and verify jobs so the build matrix is
-  # ready as soon as all prerequisites complete.
+  # ready as soon as possible.  The build job waits for detect AND all lint
+  # and verify jobs to pass before starting, so no build resources are spent
+  # if linting fails.
   detect:
     name: Detect versions
     runs-on: ubuntu-latest
