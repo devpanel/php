@@ -39,9 +39,10 @@ inputs:
     default: ''
   no_cache:
     description: >
-      When "true", skip restoring and saving the preseed artifacts cache and
-      always download fresh artifacts.  Set to "true" in workflows whose
-      purpose is to rebuild all caches (e.g. docker-build-all.yml).
+      When "true", always download fresh artifacts even if the cache step
+      restores a matching cache entry.  The cache is still restored and saved
+      normally; use this in workflows whose purpose is to refresh the cached
+      artifacts (e.g. docker-build-all.yml).
     default: 'false'
 
 outputs:
