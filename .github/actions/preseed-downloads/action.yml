@@ -386,7 +386,6 @@ runs:
         key: preseed-${{ steps.detect-and-resolve.outputs.cache_key }}-${{ github.run_id }}
         restore-keys: |
           preseed-${{ steps.detect-and-resolve.outputs.cache_key }}-
-          preseed-
 
     # ── Download step ─────────────────────────────────────────────────────────
     # Runs on cache miss (cache-matched-key is empty), or unconditionally when
