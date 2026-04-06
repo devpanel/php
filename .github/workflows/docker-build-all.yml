@@ -25,6 +25,7 @@ jobs:
       actions: write
     outputs:
       versions:           ${{ steps.detect.outputs.versions }}
+      latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
       # JSON array of {version, stage} objects — one entry per Docker Hub
       # image that needs a manifest merge.  The single merge job consumes
       # this whole array, and the merge-manifests action iterates over the
@@ -37,6 +38,12 @@ jobs:
       # detect job and passed to every build job via the build matrix so that
       # each job uses GHCR as primary (writable) or GHA as primary (not writable).
       ghcr_writable:      ${{ steps.detect.outputs.ghcr_writable }}
+      # Tag suffix computed from the branch name (empty for main, -rc for develop,
+      # or a sanitised branch slug for all other branches).
+      tag_suffix:         ${{ steps.tag-suffix.outputs.tag_suffix }}
+      # Total number of platforms being built; used by the merge job to know
+      # when all platform digests have been uploaded.
+      total_platforms:    ${{ steps.detect.outputs.total_platforms }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
