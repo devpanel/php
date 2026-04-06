@@ -37,7 +37,7 @@ inputs:
       Docker Hub token for authenticated pulls.  Used only as a fallback when an
       unauthenticated pull fails (e.g. due to the anonymous rate limit).
     default: ''
-  no_cache:
+  refresh_cache:
     description: >
       When "true", always download fresh artifacts and save them under a new
       cache key (preseed-<hash>-<run_id>) so that future runs pick up the
@@ -376,8 +376,8 @@ runs:
     # invalidated if any resolved version changes for any tier.
     # The save key always includes github.run_id so it is unique per run;
     # restore-keys prefix-matches on the content hash so GitHub returns the
-    # most-recently created entry.  This lets no_cache=true runs create a new
-    # cache entry without being blocked by GHA's immutable-cache rule.
+    # most-recently created entry.  This lets refresh_cache=true runs create a
+    # new cache entry without being blocked by GHA's immutable-cache rule.
     - name: Restore preseed artifacts cache
       id: cache
       uses: actions/cache/restore@v4
@@ -390,14 +390,14 @@ runs:
 
     # ── Download step ─────────────────────────────────────────────────────────
     # Runs on cache miss (cache-matched-key is empty), or unconditionally when
-    # no_cache is "true" (e.g. in the rebuild-all workflow).  Downloads primary
+    # refresh_cache is "true" (e.g. in the rebuild-all workflow).  Downloads primary
     # artifacts, runs compatibility tests for non-primary Debian codenames
     # (searching backwards for an older compatible version when the primary does
     # not work), writes a final-versions.env into the cache directory (so
     # subsequent cache-hit runs can recover actual per-codename versions without
     # re-downloading), then downloads all artifacts.
     - name: Download artifacts for all detected Debian tiers (cache miss)
-      if: steps.cache.outputs.cache-matched-key == '' || inputs.no_cache == 'true'
+      if: steps.cache.outputs.cache-matched-key == '' || inputs.refresh_cache == 'true'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
@@ -687,14 +687,14 @@ runs:
         done
 
     # ── Save preseed artifacts cache ──────────────────────────────────────────
-    # Runs when artifacts were (re)downloaded (cache miss or no_cache=true).
+    # Runs when artifacts were (re)downloaded (cache miss or refresh_cache=true).
     # The key always includes github.run_id so it is unique and never collides
     # with an existing immutable entry.  Future runs find this entry via the
     # restore-keys prefix "preseed-<hash>-" and GitHub returns the most-recently
-    # created match, so a no_cache=true force-refresh is automatically preferred
+    # created match, so a refresh_cache=true force-refresh is automatically preferred
     # over an older entry with the same content hash.
     - name: Save preseed artifacts cache
-      if: steps.cache.outputs.cache-matched-key == '' || inputs.no_cache == 'true'
+      if: steps.cache.outputs.cache-matched-key == '' || inputs.refresh_cache == 'true'
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/preseed-artifacts

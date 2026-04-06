@@ -82,7 +82,7 @@ jobs:
           # Force a fresh download and save it under a new cache key
           # (preseed-<hash>-<run_id>) so that subsequent runs pick up the
           # refreshed artifacts via restore-keys prefix matching.
-          no_cache: 'true'
+          refresh_cache: 'true'
 
       - name: Upload preseed bake overrides
         if: steps.detect.outputs.versions != ''
