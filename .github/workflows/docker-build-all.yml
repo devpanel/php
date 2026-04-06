@@ -78,6 +78,8 @@ jobs:
         uses: ./.github/actions/preseed-downloads
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           versions: ${{ steps.detect.outputs.all_versions }}
           # Force a fresh download and save it under a new cache key
           # (preseed-<hash>-<run_id>) so that subsequent runs pick up the
@@ -180,7 +182,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions:  read
+      actions:  write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6

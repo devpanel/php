@@ -82,7 +82,8 @@ runs:
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
         key:          php-codenames-${{ github.run_id }}
-        restore-keys: php-codenames-
+        restore-keys: |
+          php-codenames-
 
     - name: Detect Debian codenames and resolve artifact versions
       id: detect-and-resolve
@@ -359,16 +360,38 @@ runs:
         done
 
     # ── Save codenames cache ───────────────────────────────────────────────────
-    # Persist the (PHP version → Debian codename) map unconditionally so future
-    # runs can skip docker pull for versions whose codename is already known.
-    # Runs even if the detection step failed, in case it partially updated the
-    # cache file.
-    - name: Save codenames cache
+    # Persist the (PHP version → Debian codename) map using a content-based key
+    # so identical cache files reuse the same entry instead of creating a new
+    # one every run.  Runs even if the detection step failed, in case it
+    # partially updated the cache file.
+    - name: Compute codenames cache key
       if: always()
+      id: codenames-cache-key
+      shell: bash
+      run: |
+        cache_file="${{ runner.temp }}/php-codenames-cache.json"
+        if [[ -f "$cache_file" ]]; then
+          hash="$(sha256sum "$cache_file" | awk '{print $1}')"
+          echo "key=php-codenames-${hash}" >> "$GITHUB_OUTPUT"
+        else
+          echo "key=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Check for existing codenames cache
+      if: always() && steps.codenames-cache-key.outputs.key != ''
+      id: codenames-cache-lookup
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/php-codenames-cache.json
+        key: ${{ steps.codenames-cache-key.outputs.key }}
+        lookup-only: true
+
+    - name: Save codenames cache
+      if: always() && steps.codenames-cache-key.outputs.key != '' && steps.codenames-cache-lookup.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
-        key: php-codenames-${{ github.run_id }}
+        key: ${{ steps.codenames-cache-key.outputs.key }}
 
     # ── Cache step ────────────────────────────────────────────────────────────
     # A single cache entry covers all detected Debian tiers.  The key is a

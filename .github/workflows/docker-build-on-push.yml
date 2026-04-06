@@ -156,6 +156,8 @@ jobs:
         uses: ./.github/actions/preseed-downloads
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           versions: ${{ steps.detect.outputs.all_versions }}
 
       - name: Upload preseed bake overrides
@@ -263,7 +265,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions:  read
+      actions:  write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
