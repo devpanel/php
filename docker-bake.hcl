@@ -26,14 +26,14 @@
 # defaults are used as fallback.
 #
 # Cache behavior depends on GHCR_WRITABLE.  When GHCR_WRITABLE=true, all
-# targets use GHCR registry cache (type=registry, mode=max) as the primary
-# durable cache store, with GHA cache as a secondary best-effort fast-restore
-# layer (ignore-error=true).  When GHCR_WRITABLE=false, GHCR cache usage is
-# also best-effort (ignore-error=true) and GHA is the preferred restore source,
-# but GHA writes are still best-effort to prevent GHA cache eviction from
-# aborting the build.  Intermediate targets (downloader, php-ext, secure-int)
-# are also stored as full images in GHCR when GHCR is writable.  GHA cache
-# eviction ("cache entry no longer exists") is non-fatal for all targets.
+# targets use GHCR registry cache (type=registry, mode=max) as the sole
+# durable cache store; GHA cache writes are skipped so that GHA cache quota
+# is preserved for other workflow caches (e.g. dependency caches).  When
+# GHCR_WRITABLE=false, both GHCR and GHA are used as best-effort caches
+# (ignore-error=true for both).  Intermediate targets (downloader, php-ext,
+# secure-int) are also stored as full images in GHCR when GHCR is writable.
+# GHA cache eviction ("cache entry no longer exists") is non-fatal for all
+# targets.
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
@@ -77,10 +77,11 @@ variable "DOWNLOADS_DIR"                 { default = ""                        }
 variable "CACHE_FROM_ENABLED"            { default = "true"                    }
 # GHCR_WRITABLE is set by the detect-versions action (runs once centrally
 # in the detect job) and propagated to each build job via the build matrix.
-# "true"  → GHCR cache writes proceed without ignore-error: any failure is a
-#            real error that will fail the build (write was expected to succeed).
-# "false" → GHCR cache writes use ignore-error=true: failures surface in the
-#            log but do not abort the build (write was not expected to succeed).
+# "true"  → GHCR cache writes proceed without ignore-error (write expected to
+#            succeed) and GHA cache writes are skipped entirely so that GHA
+#            cache quota is preserved for other caches in the workflow.
+# "false" → GHCR cache writes use ignore-error=true; GHA cache is also written
+#            as a best-effort fallback (ignore-error=true).
 # Default is "false" so that local dev builds (where no pre-flight check runs)
 # never abort due to a GHCR write failure.
 variable "GHCR_WRITABLE"                { default = "false"                   }
@@ -106,10 +107,9 @@ variable "PLATFORM_KEY"                  { default = ""                        }
 variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
 
 # ─── Cache helpers ────────────────────────────────────────────────────────────
-# cache_from_registry / cache_to_registry: GHCR registry cache + GHA (both used by all targets).
-#   When GHCR is writable it is primary (no ignore-error) and GHA is secondary (ignore-error=true).
-#   When GHCR is not writable, both cache exporters are best-effort: GHA still uses
-#   ignore-error=true, and GHCR writes also use ignore-error=true.
+# cache_from_registry / cache_to_registry: GHCR registry cache (used by all targets).
+#   When GHCR is writable it is the sole cache_to destination (no GHA write).
+#   When GHCR is not writable, both GHCR and GHA are written as best-effort.
 
 # ver_key: converts a version string ("8.1") to a key safe for target names ("8_1").
 # Dots are not valid in HCL identifiers (they are the attribute-access operator),
@@ -138,13 +138,15 @@ function "should_push" {
   result = contains(split(" ", trimspace(stage_versions)), v)
 }
 
-# cache_to_registry: writes both GHCR registry cache and GHA cache.  All targets
-# use this function.  GHA cache writes always use ignore-error=true because GHA
-# cache eviction ("cache entry no longer exists") is a transient failure mode
-# that should never abort the build.  GHCR write strictness depends on
-# GHCR_WRITABLE:
-#   GHCR_WRITABLE=true  → GHCR primary (no ignore-error), GHA best-effort (ignore-error=true)
-#   GHCR_WRITABLE=false → GHCR best-effort (ignore-error=true), GHA best-effort (ignore-error=true)
+# cache_to_registry: writes GHCR registry cache and, when GHCR is not writable,
+# also writes GHA cache.  All targets use this function.  GHA cache writes are
+# only used as a fallback (GHCR_WRITABLE=false) so that GHA cache quota is not
+# consumed when GHCR is available.  GHA cache writes always use ignore-error=true
+# because GHA cache eviction ("cache entry no longer exists") is a transient
+# failure mode that should never abort the build.  GHCR write strictness depends
+# on GHCR_WRITABLE:
+#   GHCR_WRITABLE=true  → GHCR only (no ignore-error; GHA skipped to save cache quota)
+#   GHCR_WRITABLE=false → GHCR best-effort (ignore-error=true) + GHA best-effort (ignore-error=true)
 #
 # cache_from_registry reads from the GHCR branch-specific ref and, when TAG_SUFFIX
 # is non-empty (i.e. not on main), also reads from main's cache ref so that layers
@@ -184,8 +186,7 @@ function "cache_from_registry" {
 function "cache_to_registry" {
   params = [ref, scope]
   result = GHCR_WRITABLE == "true" ? [
-    "type=registry,ref=${ref},mode=max",
-    "type=gha,scope=${scope},mode=max,ignore-error=true"
+    "type=registry,ref=${ref},mode=max"
   ] : [
     "type=registry,ref=${ref},mode=max,ignore-error=true",
     "type=gha,scope=${scope},mode=max,ignore-error=true"
