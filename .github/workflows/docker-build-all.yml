@@ -79,10 +79,9 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           versions: ${{ steps.detect.outputs.all_versions }}
-          # Force a fresh download for this run regardless of the preseed cache.
-          # GitHub Actions caches are immutable, so an existing cache entry
-          # cannot be overwritten; the preseed cache is only refreshed when
-          # newly resolved versions produce a different cache key.
+          # Force a fresh download and save it under a new cache key
+          # (preseed-<hash>-<run_id>) so that subsequent runs pick up the
+          # refreshed artifacts via restore-keys prefix matching.
           no_cache: 'true'
 
       - name: Upload preseed bake overrides
