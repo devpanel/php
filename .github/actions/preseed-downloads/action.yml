@@ -100,10 +100,25 @@ runs:
         CODENAMES_CACHE_FILE="${RUNNER_TEMP}/php-codenames-cache.json"
         [[ -f "${CODENAMES_CACHE_FILE}" ]] || echo '{}' > "${CODENAMES_CACHE_FILE}"
 
+        # Obtain an anonymous Docker Hub token for library/php to look up
+        # image manifests without using the authenticated pull quota.
+        ANON_PHP_TOKEN=""
+        ANON_PHP_TOKEN="$(curl -sf \
+          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/php:pull" \
+          2>/dev/null | jq -r '.token // ""')" || ANON_PHP_TOKEN=""
+        if [[ -n "${ANON_PHP_TOKEN}" ]]; then
+          echo "  Obtained anonymous Docker Hub token for library/php." >&2
+        else
+          echo "  Could not obtain anonymous token; will use docker pull for all versions." >&2
+        fi
+
         for ver in $VERSIONS; do
           image="php:${ver}-apache"
 
           # ── Check codenames cache by PHP version ──────────────────────────
+          # The Debian release for a PHP version never changes mid-lifecycle,
+          # so the version string is a stable cache key (unlike the image
+          # digest, which changes on every upstream rebuild).
           codename="$(jq -r --arg v "${ver}" '.[$v] // ""' \
             "${CODENAMES_CACHE_FILE}" 2>/dev/null)" || codename=""
 
@@ -111,10 +126,32 @@ runs:
             echo "  ${image} → ${codename} (cached for version ${ver})" >&2
           else
             # ── Cache miss: pull the image and detect codename ─────────────
-            # Try unauthenticated pull first to avoid consuming the
-            # authenticated Docker Hub pull quota (200 pulls/6 h per account).
-            # Fall back to authenticated pull only if the anonymous attempt
-            # fails (e.g. IP-based anonymous rate limit exhausted).
+            # Attempt order (anonymous → unauthenticated pull → authenticated):
+            #   1. Verify image is accessible via anonymous registry API
+            #      (no docker pull, no account pull quota consumed).
+            #   2. Unauthenticated docker pull (IP-based anonymous quota).
+            #   3. Authenticated docker pull (per-account quota, only when
+            #      credentials are available and step 2 fails).
+            if [[ -n "${ANON_PHP_TOKEN}" ]]; then
+              _head_tmp="$(mktemp)"
+              _curl_ok=false
+              curl -sf \
+                -H "Authorization: Bearer ${ANON_PHP_TOKEN}" \
+                -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+                -D "${_head_tmp}" \
+                -o /dev/null \
+                "https://registry-1.docker.io/v2/library/php/manifests/${ver}-apache" \
+                2>/dev/null && _curl_ok=true || true
+              if [[ "${_curl_ok}" == "true" ]]; then
+                _image_digest="$(grep -i '^docker-content-digest:' "${_head_tmp}" 2>/dev/null \
+                  | awk '{print $2}' | tr -d '\r\n')" || _image_digest=""
+                [[ -n "${_image_digest}" ]] \
+                  && echo "  ${image} digest: ${_image_digest} (manifest reachable)" >&2
+              else
+                echo "  Anonymous manifest HEAD failed for ${image}." >&2
+              fi
+              rm -f "${_head_tmp}"
+            fi
             _DOCKERHUB_LOGGED_IN=false
             echo "Pulling ${image} to detect Debian codename (unauthenticated)..." >&2
             if ! docker pull --quiet "$image" >&2 2>/dev/null; then
@@ -144,7 +181,7 @@ runs:
               docker logout >&2 2>/dev/null || true
               trap - EXIT
             fi
-            # Update the codenames cache with the new (version → codename) entry.
+            # Cache the codename by PHP version (stable key, never changes mid-lifecycle).
             if [[ -n "${codename}" ]]; then
               _updated="$(jq --arg v "${ver}" --arg c "${codename}" \
                 '. + {($v): $c}' "${CODENAMES_CACHE_FILE}" 2>/dev/null)" || _updated=""
