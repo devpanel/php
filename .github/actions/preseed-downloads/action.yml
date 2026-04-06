@@ -52,9 +52,10 @@ outputs:
     value: ${{ steps.assemble.outputs.bake_overrides_file }}
   preseed_cache_key:
     description: >
-      The cache key used for the preseed-artifacts cache entry.  Other jobs can
-      pass this to actions/cache/restore to restore the pre-downloaded artifacts
-      without re-running the full preseed action.
+      The cache key used for the preseed-artifacts cache entry.  Deprecated:
+      workflows now download the pre-seeded files via the preseed-pre-downloaded
+      workflow artifact instead of restoring the GHA cache.  This output is
+      kept for backward compatibility but is no longer consumed by any workflow.
     value: ${{ steps.detect-and-resolve.outputs.cache_key }}
 
 runs:
