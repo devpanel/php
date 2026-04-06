@@ -375,17 +375,8 @@ runs:
           echo "key=" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Check for existing codenames cache
-      if: always() && steps.codenames-cache-key.outputs.key != ''
-      id: codenames-cache-lookup
-      uses: actions/cache/restore@v4
-      with:
-        path: ${{ runner.temp }}/php-codenames-cache.json
-        key: ${{ steps.codenames-cache-key.outputs.key }}
-        lookup-only: true
-
     - name: Save codenames cache
-      if: always() && steps.codenames-cache-key.outputs.key != '' && steps.codenames-cache-lookup.outputs.cache-hit != 'true'
+      if: always() && steps.codenames-cache-key.outputs.key != '' && steps.codenames-cache.outputs.cache-matched-key != steps.codenames-cache-key.outputs.key
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
@@ -703,12 +694,12 @@ runs:
         done
 
     # ── Save preseed artifacts cache ──────────────────────────────────────────
-    # Runs only on cache miss (i.e. when the content hash changed or no entry
-    # exists yet).  The key is the content hash, so there is at most one entry
-    # per hash; an unchanged hash means the cached content is still valid and
-    # no new entry is needed.
+    # Runs when the restore step did not find this exact key, i.e. the content
+    # hash changed or no entry exists yet.  There is at most one cache entry per
+    # hash; when the restore already matched our key, the content is unchanged
+    # and no new entry is needed.
     - name: Save preseed artifacts cache
-      if: steps.cache.outputs.cache-matched-key == ''
+      if: steps.cache.outputs.cache-matched-key != format('preseed-{0}', steps.detect-and-resolve.outputs.cache_key)
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/preseed-artifacts
