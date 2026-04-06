@@ -71,8 +71,8 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
-        key:          php-codenames-v2-${{ github.run_id }}
-        restore-keys: php-codenames-v2-
+        key:          php-codenames-${{ github.run_id }}
+        restore-keys: php-codenames-
 
     - name: Detect Debian codenames and resolve artifact versions
       id: detect-and-resolve
@@ -355,7 +355,7 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
-        key: php-codenames-v2-${{ github.run_id }}
+        key: php-codenames-${{ github.run_id }}
 
     # ── Cache step ────────────────────────────────────────────────────────────
     # A single cache entry covers all detected Debian tiers.  The key is a

@@ -103,8 +103,9 @@ variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
 
 # ─── Cache helpers ────────────────────────────────────────────────────────────
 # cache_from: read from GHA cache (push workflow only; full-rebuild sets CACHE_FROM_ENABLED=false)
-# cache_to:   write to GHA cache with ignore-error=true (GHA is secondary; GHCR is primary)
-# cache_from_registry / cache_to_registry: GHCR registry cache (primary, durable) + GHA (secondary)
+# cache_from_registry / cache_to_registry: GHCR registry cache + GHA (both used by all targets).
+#   When GHCR is writable it is primary (no ignore-error) and GHA is secondary (ignore-error=true).
+#   When GHCR is not writable, GHA is primary (no ignore-error) and GHCR is secondary (ignore-error=true).
 
 # ver_key: converts a version string ("8.1") to a key safe for target names ("8_1").
 # Dots are not valid in HCL identifiers (they are the attribute-access operator),
@@ -138,27 +139,13 @@ function "cache_from" {
   result = CACHE_FROM_ENABLED == "true" ? ["type=gha,scope=${scope}"] : []
 }
 
-function "cache_to" {
-  params = [scope]
-  # ignore-error=true: GHA cache eviction (e.g. "cache entry no longer exists")
-  # must not abort a successful build.  GHCR registry cache is the primary
-  # durable store for all targets; GHA is a secondary fast-restore layer.
-  result = ["type=gha,scope=${scope},mode=max,ignore-error=true"]
-}
-
-# cache_from_registry / cache_to_registry: registry-based cache in GHCR with
-# GHA cache as a secondary fast-restore layer.  Used for all targets so that
-# build layers survive beyond the GHA cache eviction window.  GHA cache
-# (cache_to) uses ignore-error=true so that eviction events ("cache entry no
-# longer exists") do not abort an otherwise-successful build; GHCR is the
-# durable primary store.
+# cache_to_registry: writes both GHCR registry cache and GHA cache.  All targets
+# use this function; the standalone cache_to function is not needed separately.
 # cache_to_registry behaviour depends on GHCR_WRITABLE (set by the workflow's
-# "Check GHCR write access" pre-flight step):
-#   "true"  → write without ignore-error: a failure is unexpected and should
-#              fail the build so the operator is forced to investigate.
-#   "false" → write with ignore-error=true: the pre-flight check already warned
-#              that GHCR is unwritable; errors are still visible in the bake log
-#              but must not abort a build that would otherwise succeed.
+# "Check GHCR write access" pre-flight step).  ignore-error is set on whichever
+# backend is secondary in each scenario — the inverse of the other:
+#   GHCR_WRITABLE=true  → GHCR primary (no ignore-error), GHA secondary (ignore-error=true)
+#   GHCR_WRITABLE=false → GHA primary (no ignore-error), GHCR secondary (ignore-error=true)
 #
 # Cross-branch cache sharing:
 #   actions/cache entries are scoped to the current branch + its base branches
@@ -202,7 +189,13 @@ function "cache_from_registry" {
 
 function "cache_to_registry" {
   params = [ref, scope]
-  result = GHCR_WRITABLE == "true" ? concat(["type=registry,ref=${ref},mode=max"], cache_to(scope)) : concat(["type=registry,ref=${ref},mode=max,ignore-error=true"], cache_to(scope))
+  result = GHCR_WRITABLE == "true" ? [
+    "type=registry,ref=${ref},mode=max",
+    "type=gha,scope=${scope},mode=max,ignore-error=true"
+  ] : [
+    "type=registry,ref=${ref},mode=max,ignore-error=true",
+    "type=gha,scope=${scope},mode=max"
+  ]
 }
 
 # ─── Per-version downloader targets (pushed to GHCR, NOT pushed to Docker Hub) ─
