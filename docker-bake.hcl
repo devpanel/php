@@ -25,11 +25,15 @@
 # phpX_Y-downloader target).  For standalone local builds the Dockerfile ARG
 # defaults are used as fallback.
 #
-# All targets use GHCR registry cache (type=registry, mode=max) as the primary
-# durable cache store, with GHA cache (type=gha, ignore-error=true) as a
-# secondary fast-restore layer.  Intermediate targets (downloader, php-ext,
-# secure-int) are also stored as full images in GHCR.  GHA cache eviction
-# ("cache entry no longer exists") is non-fatal for all targets.
+# Cache behavior depends on GHCR_WRITABLE.  When GHCR_WRITABLE=true, all
+# targets use GHCR registry cache (type=registry, mode=max) as the primary
+# durable cache store, with GHA cache as a secondary best-effort fast-restore
+# layer (ignore-error=true).  When GHCR_WRITABLE=false, GHCR cache usage is
+# also best-effort (ignore-error=true) and GHA is the preferred restore source,
+# but GHA writes are still best-effort to prevent GHA cache eviction from
+# aborting the build.  Intermediate targets (downloader, php-ext, secure-int)
+# are also stored as full images in GHCR when GHCR is writable.  GHA cache
+# eviction ("cache entry no longer exists") is non-fatal for all targets.
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
@@ -134,10 +138,12 @@ function "should_push" {
 }
 
 # cache_to_registry: writes both GHCR registry cache and GHA cache.  All targets
-# use this function.  ignore-error is set on whichever backend is secondary —
-# the inverse of the other:
-#   GHCR_WRITABLE=true  → GHCR primary (no ignore-error), GHA secondary (ignore-error=true)
-#   GHCR_WRITABLE=false → GHA primary (no ignore-error), GHCR secondary (ignore-error=true)
+# use this function.  GHA cache writes always use ignore-error=true because GHA
+# cache eviction ("cache entry no longer exists") is a transient failure mode
+# that should never abort the build.  GHCR write strictness depends on
+# GHCR_WRITABLE:
+#   GHCR_WRITABLE=true  → GHCR primary (no ignore-error), GHA best-effort (ignore-error=true)
+#   GHCR_WRITABLE=false → GHCR best-effort (ignore-error=true), GHA best-effort (ignore-error=true)
 #
 # cache_from_registry reads from the GHCR branch-specific ref and, when TAG_SUFFIX
 # is non-empty (i.e. not on main), also reads from main's cache ref so that layers
@@ -181,7 +187,7 @@ function "cache_to_registry" {
     "type=gha,scope=${scope},mode=max,ignore-error=true"
   ] : [
     "type=registry,ref=${ref},mode=max,ignore-error=true",
-    "type=gha,scope=${scope},mode=max"
+    "type=gha,scope=${scope},mode=max,ignore-error=true"
   ]
 }
 

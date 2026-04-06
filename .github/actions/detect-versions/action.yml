@@ -227,11 +227,16 @@ runs:
         # Probe write permission: initiate (and immediately abandon) a blob upload.
         # Use a temp curl config file so the bearer token is not a command-line argument.
         CFG=$(umask 0177 && mktemp)
+        CURL_ERR_FILE=$(mktemp)
         printf 'header = "Authorization: Bearer %s"\n' "${REG_TOKEN}" > "${CFG}"
         HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
           -K "${CFG}" \
-          "https://ghcr.io/v2/${REPO_LC}/blobs/uploads/")
-        rm -f "${CFG}"
+          "https://ghcr.io/v2/${REPO_LC}/blobs/uploads/" 2>"${CURL_ERR_FILE}") \
+          || HTTP_STATUS="000"
+        CURL_ERR=$(cat "${CURL_ERR_FILE}")
+        rm -f "${CFG}" "${CURL_ERR_FILE}"
+        # Ensure HTTP_STATUS is never empty (e.g. if curl produced no output).
+        HTTP_STATUS="${HTTP_STATUS:-000}"
 
         if [[ "${HTTP_STATUS}" == "202" || "${HTTP_STATUS}" == "201" ]]; then
           echo "GHCR write access confirmed for ghcr.io/${REPO_LC}."
@@ -296,10 +301,16 @@ runs:
               echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
               ;;
             *)
-              REASON="${AUTH_CRED_NAME} does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS})."
-              echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
+              if [[ "${HTTP_STATUS}" == "000" ]]; then
+                REASON="curl failed to reach ghcr.io when probing write access (HTTP 000 / network error)."
+                CURL_DETAIL="${CURL_ERR:+ curl stderr: ${CURL_ERR}}"
+              else
+                REASON="${AUTH_CRED_NAME} does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS})."
+                CURL_DETAIL=""
+              fi
+              echo "::warning title=GHCR cache write likely to fail::${REASON}${CURL_DETAIL} ${NOTE}"
               echo "writable=false" >> "$GITHUB_OUTPUT"
-              echo "❌ **GHCR cache write pre-check:** failed — ${REASON} ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ **GHCR cache write pre-check:** failed — ${REASON}${CURL_DETAIL} ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
               ;;
           esac
         fi
