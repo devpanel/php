@@ -40,12 +40,13 @@ inputs:
   refresh_cache:
     description: >
       When "true", always download fresh artifacts even when a cache entry
-      already exists.  The cache key is a hash of the downloaded content, so
-      if the content changes the hash changes and a new cache entry is
-      automatically saved for future runs.  If the content is identical the
-      hash (and key) is unchanged, meaning the existing cache entry is already
-      up-to-date and no new entry is written.  Use this in workflows whose
-      purpose is to rebuild cached artifacts (e.g. docker-build-all.yml).
+      already exists.  Cache entries are keyed from the resolved Debian
+      codename and code-server / Copilot Chat versions, so a new cache entry
+      is created automatically when any of those resolved values changes.
+      If the resolved codename and versions are unchanged, the cache key is
+      also unchanged and the existing cache entry remains current.  Use this
+      in workflows whose purpose is to rebuild cached artifacts (e.g.
+      docker-build-all.yml).
     default: 'false'
 
 outputs:
