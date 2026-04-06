@@ -79,8 +79,10 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           versions: ${{ steps.detect.outputs.all_versions }}
-          # This workflow's purpose is to rebuild all caches from scratch, so
-          # skip the preseed artifacts cache and always download fresh copies.
+          # Force a fresh download for this run regardless of the preseed cache.
+          # GitHub Actions caches are immutable, so an existing cache entry
+          # cannot be overwritten; the preseed cache is only refreshed when
+          # newly resolved versions produce a different cache key.
           no_cache: 'true'
 
       - name: Upload preseed bake overrides

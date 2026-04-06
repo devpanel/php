@@ -39,10 +39,12 @@ inputs:
     default: ''
   no_cache:
     description: >
-      When "true", always download fresh artifacts even if the cache step
-      restores a matching cache entry.  The cache is still restored and saved
-      normally; use this in workflows whose purpose is to refresh the cached
-      artifacts (e.g. docker-build-all.yml).
+      When "true", always download fresh artifacts for the current run even if
+      the cache step restores a matching entry.  GitHub Actions cache entries
+      are immutable: an existing entry cannot be overwritten, so the cache is
+      only refreshed when the resolved versions change (new cache key).  Use
+      this when you need a guaranteed-fresh download in the current run
+      regardless of any cached content (e.g. docker-build-all.yml).
     default: 'false'
 
 outputs:

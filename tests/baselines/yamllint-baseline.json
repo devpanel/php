@@ -5,5 +5,5 @@
   "./.github/actions/preseed-downloads/action.yml:colons": 1,
   "./.github/workflows/docker-build-all.yml:colons": 31,
   "./.github/workflows/docker-build-on-push.yml:colons": 36,
-  "./.github/workflows/test.yml:colons": 8
+  "./.github/workflows/test.yml:colons": 7
 }

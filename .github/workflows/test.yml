@@ -75,9 +75,9 @@ jobs:
       contents: read
       actions: write
     outputs:
-      versions:          ${{ steps.versions.outputs.versions }}
-      has_versions:      ${{ steps.versions.outputs.has_versions }}
-      ghcr_repo:         ${{ steps.ghcr.outputs.repo }}
+      versions:     ${{ steps.versions.outputs.versions }}
+      has_versions: ${{ steps.versions.outputs.has_versions }}
+      ghcr_repo:    ${{ steps.ghcr.outputs.repo }}
     steps:
       - uses: actions/checkout@v6
 
