@@ -87,7 +87,7 @@ jobs:
       - name: Detect PHP versions for build test
         id: versions
         run: |
-          versions_str=$(bash tests/detect-versions.sh | sort -V | tr '\n' ' ' | xargs)
+          versions_str=$(bash tests/detect-versions.sh | sort -V | tr '\n' ' ' | sed 's/ $//')
           versions_json=$(printf '%s\n' $versions_str | jq -R -s -c '[split("\n")[] | select(length > 0)]')
           echo "versions=${versions_json}" >> "$GITHUB_OUTPUT"
           echo "versions_str=${versions_str}" >> "$GITHUB_OUTPUT"
@@ -168,10 +168,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/build-downloads/pre-downloaded"
-          while IFS= read -r f; do
-            dst="$RUNNER_TEMP/build-downloads/pre-downloaded/$(basename "$f")"
-            [ -e "$dst" ] || cp "$f" "$dst"
-          done < <(find "$RUNNER_TEMP/preseed-artifacts" \( -name "*.deb" -o -name "*.vsix" \) 2>/dev/null || true)
+          if [ -d "$RUNNER_TEMP/preseed-artifacts" ]; then
+            while IFS= read -r f; do
+              dst="$RUNNER_TEMP/build-downloads/pre-downloaded/$(basename "$f")"
+              [ -e "$dst" ] || cp "$f" "$dst"
+            done < <(find "$RUNNER_TEMP/preseed-artifacts" \( -name "*.deb" -o -name "*.vsix" \))
+          fi
           echo "downloads_dir=$RUNNER_TEMP/build-downloads" >> "$GITHUB_OUTPUT"
 
       - name: Build PHP images
