@@ -50,13 +50,6 @@ outputs:
       to the code-server and Copilot Chat versions and SHA256 digests resolved
       for its Debian tier.  Pass to docker buildx bake as an additional --file.
     value: ${{ steps.assemble.outputs.bake_overrides_file }}
-  preseed_cache_key:
-    description: >
-      The cache key used for the preseed-artifacts cache entry.  Deprecated:
-      workflows now download the pre-seeded files via the preseed-pre-downloaded
-      workflow artifact instead of restoring the GHA cache.  This output is
-      kept for backward compatibility but is no longer consumed by any workflow.
-    value: ${{ steps.detect-and-resolve.outputs.cache_key }}
 
 runs:
   using: composite
