@@ -81,7 +81,9 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
-        key:          php-codenames-${{ github.run_id }}
+        # Primary key is a non-matching placeholder; restore-keys prefix-matches
+        # on the content-hash keys written by "Save codenames cache" below.
+        key:          php-codenames-lookup
         restore-keys: |
           php-codenames-
 
