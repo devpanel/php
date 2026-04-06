@@ -154,6 +154,9 @@ runs:
                 if echo "${DOCKERHUB_TOKEN}" \
                   | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin >&2; then
                   _DOCKERHUB_LOGGED_IN=true
+                  # Install a trap so docker logout always runs on EXIT (including
+                  # on set -e early exit from the pull or docker run below).
+                  trap 'docker logout >&2 2>/dev/null || true' EXIT
                   docker pull --quiet "$image" >&2
                 else
                   echo "  Docker Hub login failed; cannot retry authenticated pull for ${image}." >&2
@@ -170,6 +173,7 @@ runs:
             # preserving the unauthenticated-first pattern for any later pulls.
             if [[ "${_DOCKERHUB_LOGGED_IN}" == "true" ]]; then
               docker logout >&2 2>/dev/null || true
+              trap - EXIT
             fi
             # Update the codenames cache with the new (digest → codename) entry.
             if [[ -n "${image_digest}" && -n "${codename}" ]]; then
