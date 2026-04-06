@@ -108,7 +108,8 @@ variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
 # ─── Cache helpers ────────────────────────────────────────────────────────────
 # cache_from_registry / cache_to_registry: GHCR registry cache + GHA (both used by all targets).
 #   When GHCR is writable it is primary (no ignore-error) and GHA is secondary (ignore-error=true).
-#   When GHCR is not writable, GHA is primary (no ignore-error) and GHCR is secondary (ignore-error=true).
+#   When GHCR is not writable, both cache exporters are best-effort: GHA still uses
+#   ignore-error=true, and GHCR writes also use ignore-error=true.
 
 # ver_key: converts a version string ("8.1") to a key safe for target names ("8_1").
 # Dots are not valid in HCL identifiers (they are the attribute-access operator),
