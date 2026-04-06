@@ -102,7 +102,6 @@ variable "PLATFORM_KEY"                  { default = ""                        }
 variable "VERSIONS_NEEDING_MULTIPART_FIX" { default = "7.4 8.0" }
 
 # ─── Cache helpers ────────────────────────────────────────────────────────────
-# cache_from: read from GHA cache (push workflow only; full-rebuild sets CACHE_FROM_ENABLED=false)
 # cache_from_registry / cache_to_registry: GHCR registry cache + GHA (both used by all targets).
 #   When GHCR is writable it is primary (no ignore-error) and GHA is secondary (ignore-error=true).
 #   When GHCR is not writable, GHA is primary (no ignore-error) and GHCR is secondary (ignore-error=true).
@@ -134,30 +133,18 @@ function "should_push" {
   result = contains(split(" ", trimspace(stage_versions)), v)
 }
 
-function "cache_from" {
-  params = [scope]
-  result = CACHE_FROM_ENABLED == "true" ? ["type=gha,scope=${scope}"] : []
-}
-
 # cache_to_registry: writes both GHCR registry cache and GHA cache.  All targets
-# use this function; the standalone cache_to function is not needed separately.
-# cache_to_registry behaviour depends on GHCR_WRITABLE (set by the workflow's
-# "Check GHCR write access" pre-flight step).  ignore-error is set on whichever
-# backend is secondary in each scenario — the inverse of the other:
+# use this function.  ignore-error is set on whichever backend is secondary —
+# the inverse of the other:
 #   GHCR_WRITABLE=true  → GHCR primary (no ignore-error), GHA secondary (ignore-error=true)
 #   GHCR_WRITABLE=false → GHA primary (no ignore-error), GHCR secondary (ignore-error=true)
 #
-# Cross-branch cache sharing:
-#   actions/cache entries are scoped to the current branch + its base branches
-#   + the default branch, so sibling branches cannot share each other's
-#   actions/cache entries.  The GHCR registry cache is not subject to that
-#   restriction: any branch with pull access to GHCR can read any tag.
-#   cache_from_registry therefore always reads from the branch-specific ref
-#   (the primary source) and, when TAG_SUFFIX is non-empty (i.e. not on main),
-#   also reads from main's cache ref (the same ref with TAG_SUFFIX stripped).
-#   This means any intermediate layer that was previously built and cached by
-#   a main-branch CI run is immediately reusable on any other branch, even for
-#   sibling branches that cannot access each other's actions/cache entries.
+# cache_from_registry reads from the GHCR branch-specific ref and, when TAG_SUFFIX
+# is non-empty (i.e. not on main), also reads from main's cache ref so that layers
+# built by a main-branch CI run are reusable on any other branch.  GHA cache is
+# always included as an additional source.  sibling branches cannot share
+# actions/cache entries (scoped per branch), but the GHCR registry cache is not
+# subject to that restriction.
 #
 # main_cache_ref: strips TAG_SUFFIX from the image tag portion of a GHCR ref,
 # yielding the main-branch equivalent ref.  A greedy regex extracts everything
@@ -183,7 +170,7 @@ function "cache_from_registry" {
   result = CACHE_FROM_ENABLED == "true" ? concat(
     ["type=registry,ref=${ref}"],
     TAG_SUFFIX != "" ? ["type=registry,ref=${main_cache_ref(ref)}"] : [],
-    cache_from(scope)
+    ["type=gha,scope=${scope}"]
   ) : []
 }
 
