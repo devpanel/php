@@ -151,11 +151,14 @@ runs:
             if ! docker pull --quiet "$image" >&2 2>/dev/null; then
               if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
                 echo "  Unauthenticated pull failed; retrying with Docker Hub credentials..." >&2
-                echo "${DOCKERHUB_TOKEN}" \
-                  | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin >&2 2>/dev/null \
-                  || true
-                _DOCKERHUB_LOGGED_IN=true
-                docker pull --quiet "$image" >&2
+                if echo "${DOCKERHUB_TOKEN}" \
+                  | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin >&2; then
+                  _DOCKERHUB_LOGGED_IN=true
+                  docker pull --quiet "$image" >&2
+                else
+                  echo "  Docker Hub login failed; cannot retry authenticated pull for ${image}." >&2
+                  exit 1
+                fi
               else
                 # Re-run without redirection so the error is visible in the log.
                 docker pull --quiet "$image" >&2
