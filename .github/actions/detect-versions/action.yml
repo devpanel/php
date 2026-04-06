@@ -74,6 +74,14 @@ outputs:
       otherwise.  Consumed by build jobs to select whether GHCR is primary
       (when writable) or GHA is primary (when not writable) for layer caches.
     value: ${{ steps.check-ghcr.outputs.writable }}
+  all_versions:
+    description: >
+      Space-separated list of ALL PHP versions present in the repository,
+      regardless of the before_sha / after_sha filter.  Used to run preseed
+      with the full version set so the newest Debian codename is always
+      treated as primary and older codenames receive proper GLIBC
+      compatibility testing.
+    value: ${{ steps.detect.outputs.all_versions }}
 
 runs:
   using: composite
@@ -331,6 +339,13 @@ runs:
         done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*.[0-9]*' \
                    | sed 's|./||' | sort -V)
 
+        # Always compute all_versions (full repo list, unfiltered) so callers
+        # can run preseed with the complete set.  This ensures the newest
+        # Debian codename is always treated as primary when running preseed,
+        # giving older codenames proper GLIBC compatibility testing even
+        # when only a subset of versions changed.
+        ALL_VERSIONS_OUT=$(bash tests/detect-versions.sh | tr '\n' ' ' | xargs)
+
         if [[ -n "${BEFORE_SHA}" && -n "${AFTER_SHA}" ]]; then
           VERSIONS_OUT=$(bash tests/detect-versions.sh \
             --before "${BEFORE_SHA}" --after "${AFTER_SHA}" | tr '\n' ' ' | xargs)
@@ -341,7 +356,7 @@ runs:
             --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage secure \
             | tr '\n' ' ' | xargs)
         else
-          VERSIONS_OUT=$(bash tests/detect-versions.sh | tr '\n' ' ' | xargs)
+          VERSIONS_OUT="$ALL_VERSIONS_OUT"
           VERSIONS_BASE_OUT="$VERSIONS_OUT"
           VERSIONS_SECURE_OUT="$VERSIONS_OUT"
         fi
@@ -350,6 +365,7 @@ runs:
         echo "versions=${VERSIONS_OUT}"                     >> "$GITHUB_OUTPUT"
         echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
         echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
+        echo "all_versions=${ALL_VERSIONS_OUT}"             >> "$GITHUB_OUTPUT"
 
         # Parse configured platforms into an array, trimming whitespace and
         # removing duplicates (duplicates would inflate TOTAL_PLATFORMS and
