@@ -206,7 +206,7 @@ runs:
 
     - name: Upload base digest artifact
       if: steps.base-digest.outputs.has_base == 'true'
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v7
       with:
         name:              digests-${{ steps.platform.outputs.version }}-base-${{ steps.platform.outputs.platform_key }}
         path:              /tmp/digests/base/${{ steps.platform.outputs.platform_key }}.json
@@ -267,7 +267,7 @@ runs:
 
     - name: Upload secure digest artifact
       if: steps.secure-digest.outputs.has_secure == 'true'
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v7
       with:
         name:              digests-${{ steps.platform.outputs.version }}-secure-${{ steps.platform.outputs.platform_key }}
         path:              /tmp/digests/secure/${{ steps.platform.outputs.platform_key }}.json
@@ -327,7 +327,7 @@ runs:
 
     - name: Upload advance digest artifact
       if: steps.advance-digest.outputs.has_advance == 'true'
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v7
       with:
         name:              digests-${{ steps.platform.outputs.version }}-advance-${{ steps.platform.outputs.platform_key }}
         path:              /tmp/digests/advance/${{ steps.platform.outputs.platform_key }}.json
@@ -360,7 +360,7 @@ runs:
 
     - name: Upload build-done artifact
       if: always() && steps.build-done-marker.outputs.platform_key != ''
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v7
       with:
         name:              build-done-${{ steps.build-done-marker.outputs.version }}-${{ steps.build-done-marker.outputs.platform_key }}
         path:              /tmp/build-done/${{ steps.build-done-marker.outputs.platform_key }}.txt

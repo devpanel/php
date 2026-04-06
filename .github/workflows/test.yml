@@ -110,7 +110,7 @@ jobs:
 
       - name: Upload preseed bake overrides
         if: steps.versions.outputs.has_versions == 'true'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: preseed-bake-overrides
           path: ${{ steps.preseed.outputs.bake_overrides_file }}
@@ -124,7 +124,7 @@ jobs:
       # and a cache miss would silently produce an empty pre-downloaded/ dir.
       - name: Upload preseed pre-downloaded artifacts
         if: steps.versions.outputs.has_versions == 'true'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: preseed-pre-downloaded
           path: ${{ steps.preseed.outputs.downloads_dir }}/pre-downloaded/
@@ -164,7 +164,7 @@ jobs:
       # lifetime of the run; a cache miss would silently produce an empty
       # pre-downloaded/ directory and fail the Docker build.
       - name: Download preseed pre-downloaded artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: preseed-pre-downloaded
           path: ${{ runner.temp }}/build-downloads/pre-downloaded
@@ -174,7 +174,7 @@ jobs:
       # SHA256 digests for every detected Debian codename, including the
       # downgraded versions needed for older codenames (Buster / Bullseye).
       - name: Download preseed bake overrides
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: preseed-bake-overrides
           path: ${{ runner.temp }}
