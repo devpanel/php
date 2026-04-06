@@ -102,7 +102,10 @@ PLATFORM_KEY="${PLATFORMS//\//-}"
 # Build using docker-bake.hcl in test mode
 # ---------------------------------------------------------------------------
 # Test-mode overrides:
-#   REPO/GHCR_REPO       Use a local test namespace; no real registry is pushed.
+#   REPO         Use a local test namespace so no real registry is pushed.
+#   GHCR_REPO    Defaults to the local test namespace for standalone runs
+#                (no cache reuse).  Override via environment to point to the
+#                real GHCR registry for cache reads in CI.
 #   VERSIONS_BASE/SECURE Set equal to VERSIONS so every version's stages build.
 #   TAG_SUFFIX           Empty; tags match run-dockerfile.sh's TAG_PREFIX.
 #   CACHE_FROM_ENABLED   Defaults to false (clean build from source) for local
@@ -136,7 +139,7 @@ BAKE_ENV=(
   VERSIONS_BASE="$VERSIONS_LIST"
   VERSIONS_SECURE="$VERSIONS_LIST"
   REPO="$TEST_REPO"
-  GHCR_REPO="$TEST_REPO"
+  GHCR_REPO="${GHCR_REPO:-$TEST_REPO}"
   TAG_SUFFIX=""
   PLATFORMS="$PLATFORMS"
   PLATFORM_KEY="$PLATFORM_KEY"

@@ -3,7 +3,7 @@
   "./.github/actions/detect-versions/action.yml:colons": 3,
   "./.github/actions/merge-manifests/action.yml:colons": 8,
   "./.github/actions/preseed-downloads/action.yml:colons": 1,
-  "./.github/workflows/ci.yml:colons": 4,
   "./.github/workflows/docker-build-all.yml:colons": 33,
-  "./.github/workflows/docker-build-on-push.yml:colons": 36
+  "./.github/workflows/docker-build-on-push.yml:colons": 36,
+  "./.github/workflows/test.yml:colons": 8
 }
