@@ -82,6 +82,7 @@ jobs:
     permissions:
       contents:  read
       packages:  write
+      actions: write
     outputs:
       versions:           ${{ steps.detect.outputs.versions }}
       versions_base:      ${{ steps.detect.outputs.versions_base }}
@@ -147,8 +148,8 @@ jobs:
       #   2. Running preseed once avoids N parallel build jobs competing to
       #      save the same preseed cache entry, which produces spurious
       #      "cache already exists" warnings.
-      # The preseed artifacts cache and bake-overrides artifact are shared with
-      # build jobs via actions/cache/restore and actions/download-artifact.
+      # The pre-downloaded files and bake-overrides output are shared with
+      # build jobs via actions/upload-artifact and actions/download-artifact.
       - name: Pre-seed build downloads
         id: preseed
         if: steps.detect.outputs.versions != ''

@@ -73,6 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: write
     outputs:
       versions:          ${{ steps.versions.outputs.versions }}
       has_versions:      ${{ steps.versions.outputs.has_versions }}

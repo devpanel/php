@@ -37,6 +37,12 @@ inputs:
       Docker Hub token for authenticated pulls.  Used only as a fallback when an
       unauthenticated pull fails (e.g. due to the anonymous rate limit).
     default: ''
+  no_cache:
+    description: >
+      When "true", skip restoring and saving the preseed artifacts cache and
+      always download fresh artifacts.  Set to "true" in workflows whose
+      purpose is to rebuild all caches (e.g. docker-build-all.yml).
+    default: 'false'
 
 outputs:
   downloads_dir:
@@ -372,13 +378,14 @@ runs:
         key: preseed-${{ steps.detect-and-resolve.outputs.cache_key }}
 
     # ── Download step ─────────────────────────────────────────────────────────
-    # Runs only on cache miss.  Downloads primary artifacts, runs compatibility
+    # Runs on cache miss, or unconditionally when no_cache is "true" (e.g. in
+    # the rebuild-all workflow).  Downloads primary artifacts, runs compatibility
     # tests for non-primary Debian codenames (searching backwards for an older
     # compatible version when the primary does not work), writes a final-versions.env
     # into the cache directory (so subsequent cache-hit runs can recover actual
     # per-codename versions without re-downloading), then downloads all artifacts.
     - name: Download artifacts for all detected Debian tiers (cache miss)
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.cache.outputs.cache-hit != 'true' || inputs.no_cache == 'true'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}

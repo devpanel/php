@@ -22,13 +22,9 @@ jobs:
     permissions:
       contents:  read
       packages:  write
+      actions: write
     outputs:
       versions:           ${{ steps.detect.outputs.versions }}
-      versions_base:      ${{ steps.detect.outputs.versions_base }}
-      versions_secure:    ${{ steps.detect.outputs.versions_secure }}
-      latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
-      tag_suffix:         ${{ steps.tag-suffix.outputs.tag_suffix }}
-      total_platforms:    ${{ steps.detect.outputs.total_platforms }}
       # JSON array of {version, stage} objects — one entry per Docker Hub
       # image that needs a manifest merge.  The single merge job consumes
       # this whole array, and the merge-manifests action iterates over the
@@ -76,6 +72,9 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           versions: ${{ steps.detect.outputs.all_versions }}
+          # This workflow's purpose is to rebuild all caches from scratch, so
+          # skip the preseed artifacts cache and always download fresh copies.
+          no_cache: 'true'
 
       - name: Upload preseed bake overrides
         if: steps.detect.outputs.versions != ''

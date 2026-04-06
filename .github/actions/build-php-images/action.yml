@@ -65,18 +65,16 @@ inputs:
   downloads_dir:
     description: >
       Pre-assembled downloads directory whose pre-downloaded/ subdirectory
-      contains the pre-seeded artifacts.  When provided together with
-      bake_overrides_file, the internal pre-seed step is skipped.
-      Pass the output of the detect job's preseed+assemble steps.
-    default: ''
+      contains the pre-seeded artifacts.  Pass the path where the detect
+      job's preseed-pre-downloaded artifact was downloaded.
+    required: true
   bake_overrides_file:
     description: >
       Path to a pre-generated bake overrides JSON file that maps each
       phpX_Y-downloader target to the correct code-server / Copilot Chat
-      versions and SHA256 digests for its Debian tier.  When provided
-      together with downloads_dir, the internal pre-seed step is skipped.
-      Pass the path to the artifact downloaded from the detect job.
-    default: ''
+      versions and SHA256 digests for its Debian tier.  Pass the path to
+      the preseed-bake-overrides artifact downloaded from the detect job.
+    required: true
 
 runs:
   using: composite
@@ -102,34 +100,15 @@ runs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v4
 
-    - name: Pre-seed build downloads
-      id: preseed
-      # Skip when the detect job already ran preseed with the full version set
-      # and passed the results via downloads_dir + bake_overrides_file.
-      # Running preseed per build job is incorrect when only one (old) PHP
-      # version is passed: the old codename becomes primary and GLIBC
-      # compatibility checks are skipped, potentially selecting a code-server
-      # too new for that codename (e.g. GLIBC_2.34 on Debian buster).
-      if: inputs.downloads_dir == '' || inputs.bake_overrides_file == ''
-      uses: ./.github/actions/preseed-downloads
-      with:
-        github_token: ${{ inputs.github_token }}
-        versions:     ${{ inputs.version }}
-        dockerhub_username: ${{ inputs.dockerhub_username }}
-        dockerhub_token: ${{ inputs.dockerhub_token }}
-
-    # Resolve the final preseed paths from either the pre-seeded inputs or the
-    # preseed step that just ran.  Centralised here so every downstream step
-    # uses the same variables regardless of which path was taken.
+    # Publish the preseed inputs as step outputs so every downstream step
+    # references a single consistent set of variables.
     - name: Resolve preseed paths
       id: preseed-paths
       shell: bash
       run: |
         set -euo pipefail
-        DOWNLOADS="${{ inputs.downloads_dir || steps.preseed.outputs.downloads_dir }}"
-        OVERRIDES="${{ inputs.bake_overrides_file || steps.preseed.outputs.bake_overrides_file }}"
-        echo "downloads_dir=${DOWNLOADS}"       >> "$GITHUB_OUTPUT"
-        echo "bake_overrides_file=${OVERRIDES}" >> "$GITHUB_OUTPUT"
+        echo "downloads_dir=${{ inputs.downloads_dir }}"             >> "$GITHUB_OUTPUT"
+        echo "bake_overrides_file=${{ inputs.bake_overrides_file }}" >> "$GITHUB_OUTPUT"
 
     # Docker Hub login is intentionally deferred until after pre-seeding so
     # that any docker pull in the preseed step is unauthenticated (anonymous
