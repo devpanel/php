@@ -95,7 +95,7 @@ runs:
   steps:
     - name: Restore digests cache
       id: restore-cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v5
       with:
         path: ${{ runner.temp }}/merge-manifests-digests
         # Exact key includes run_id so it never conflicts with a prior save.
@@ -660,7 +660,7 @@ runs:
 
     - name: Save digests cache
       if: always()
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v5
       with:
         path: ${{ runner.temp }}/merge-manifests-digests
         key: merge-manifests-${{ inputs.repo }}-${{ inputs.tag_suffix }}-${{ inputs.run_id }}

@@ -79,7 +79,7 @@ runs:
     # finds the most-recently created entry whose key starts with that prefix.
     - name: Restore codenames cache
       id: codenames-cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v5
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
         key: php-codenames-
@@ -378,7 +378,7 @@ runs:
 
     - name: Save codenames cache
       if: always() && steps.codenames-cache-key.outputs.key != '' && steps.codenames-cache.outputs.cache-matched-key != steps.codenames-cache-key.outputs.key
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v5
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
         key: ${{ steps.codenames-cache-key.outputs.key }}
@@ -391,7 +391,7 @@ runs:
     # at most one cache entry per hash.
     - name: Restore preseed artifacts cache
       id: cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v5
       with:
         path: ${{ runner.temp }}/preseed-artifacts
         key: preseed-${{ steps.detect-and-resolve.outputs.cache_key }}
@@ -701,7 +701,7 @@ runs:
     # and no new entry is needed.
     - name: Save preseed artifacts cache
       if: steps.cache.outputs.cache-matched-key != format('preseed-{0}', steps.detect-and-resolve.outputs.cache_key)
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v5
       with:
         path: ${{ runner.temp }}/preseed-artifacts
         key: preseed-${{ steps.detect-and-resolve.outputs.cache_key }}
