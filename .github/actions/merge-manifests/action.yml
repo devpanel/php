@@ -79,6 +79,16 @@ inputs:
       Owner/repo slug of the current repository.
       Pass github.repository from the calling workflow.
     required: true
+  dockerhub_username:
+    description: >
+      Docker Hub username for image push authentication.
+      Used for docker login before imagetools inspect and imagetools create.
+    required: true
+  dockerhub_token:
+    description: >
+      Docker Hub token for image push authentication.
+      Used for docker login before imagetools inspect and imagetools create.
+    required: true
 
 runs:
   using: composite
@@ -93,6 +103,17 @@ runs:
         key: merge-manifests-${{ inputs.repo }}-${{ inputs.tag_suffix }}-${{ inputs.run_id }}
         restore-keys: |
           merge-manifests-${{ inputs.repo }}-${{ inputs.tag_suffix }}-
+
+    # Unauthenticated manifest inspection (anonymous token via curl) is tried
+    # first in the polling step to conserve the authenticated-pull quota.
+    # Login is performed here so that the authenticated fallback
+    # (imagetools inspect) and imagetools create both have valid credentials
+    # without requiring the calling workflow to manage docker login separately.
+    - name: Login to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ inputs.dockerhub_username }}
+        password: ${{ inputs.dockerhub_token }}
 
     - name: Poll and merge manifests
       shell: bash
@@ -643,4 +664,3 @@ runs:
       with:
         path: ${{ runner.temp }}/merge-manifests-digests
         key: merge-manifests-${{ inputs.repo }}-${{ inputs.tag_suffix }}-${{ inputs.run_id }}
-

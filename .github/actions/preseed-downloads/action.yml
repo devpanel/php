@@ -27,6 +27,16 @@ inputs:
       Used to pull the actual php:<version>-apache images and detect which Debian
       codename each version runs on, so compatibility tests use the real target image.
     required: true
+  dockerhub_username:
+    description: >
+      Docker Hub username for authenticated pulls.  Used only as a fallback when an
+      unauthenticated pull fails (e.g. due to the anonymous rate limit).
+    default: ''
+  dockerhub_token:
+    description: >
+      Docker Hub token for authenticated pulls.  Used only as a fallback when an
+      unauthenticated pull fails (e.g. due to the anonymous rate limit).
+    default: ''
 
 outputs:
   downloads_dir:
@@ -66,6 +76,8 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
+        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
+        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
       run: |
         set -euo pipefail
         VERSIONS="${{ inputs.versions }}"
@@ -130,10 +142,32 @@ runs:
             echo "  ${image} → ${codename} (cached for digest ${image_digest})" >&2
           else
             # ── Cache miss: pull the image and detect codename ─────────────
-            echo "Pulling ${image} to detect Debian codename..." >&2
-            docker pull --quiet "$image" >&2
+            # Try unauthenticated pull first to avoid consuming the
+            # authenticated Docker Hub pull quota (200 pulls/6 h per account).
+            # Fall back to authenticated pull only if the anonymous attempt
+            # fails (e.g. IP-based anonymous rate limit exhausted).
+            _DOCKERHUB_LOGGED_IN=false
+            echo "Pulling ${image} to detect Debian codename (unauthenticated)..." >&2
+            if ! docker pull --quiet "$image" >&2 2>/dev/null; then
+              if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+                echo "  Unauthenticated pull failed; retrying with Docker Hub credentials..." >&2
+                echo "${DOCKERHUB_TOKEN}" \
+                  | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin >&2 2>/dev/null \
+                  || true
+                _DOCKERHUB_LOGGED_IN=true
+                docker pull --quiet "$image" >&2
+              else
+                # Re-run without redirection so the error is visible in the log.
+                docker pull --quiet "$image" >&2
+              fi
+            fi
             codename=$(docker run --rm "$image" sh -c \
               '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-}"')
+            # Log out again so subsequent steps start without Docker Hub credentials,
+            # preserving the unauthenticated-first pattern for any later pulls.
+            if [[ "${_DOCKERHUB_LOGGED_IN}" == "true" ]]; then
+              docker logout >&2 2>/dev/null || true
+            fi
             # Update the codenames cache with the new (digest → codename) entry.
             if [[ -n "${image_digest}" && -n "${codename}" ]]; then
               _updated="$(jq --arg d "${image_digest}" --arg c "${codename}" \
