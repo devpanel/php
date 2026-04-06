@@ -71,7 +71,8 @@ variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 # causing all downloads to fall through to the normal network path.
 variable "DOWNLOADS_DIR"                 { default = ""                        }
 variable "CACHE_FROM_ENABLED"            { default = "true"                    }
-# GHCR_WRITABLE is set by the "Check GHCR write access" workflow step.
+# GHCR_WRITABLE is set by the detect-versions action (runs once centrally
+# in the detect job) and propagated to each build job via the build matrix.
 # "true"  → GHCR cache writes proceed without ignore-error: any failure is a
 #            real error that will fail the build (write was expected to succeed).
 # "false" → GHCR cache writes use ignore-error=true: failures surface in the

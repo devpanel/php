@@ -80,7 +80,8 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents:  read
+      packages:  write
     outputs:
       versions:           ${{ steps.detect.outputs.versions }}
       versions_base:      ${{ steps.detect.outputs.versions_base }}
@@ -101,6 +102,10 @@ jobs:
       # entry becomes one parallel build job that builds one version on one
       # platform and uploads per-image digest artifacts immediately.
       build_matrix:       ${{ steps.detect.outputs.build_matrix }}
+      # Whether GHCR is writable with the current token.  Set once here in the
+      # detect job and passed to every build job via the build matrix so that
+      # each job uses GHCR as primary (writable) or GHA as primary (not writable).
+      ghcr_writable:      ${{ steps.detect.outputs.ghcr_writable }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -124,9 +129,11 @@ jobs:
         id: detect
         uses: ./.github/actions/detect-versions
         with:
-          before_sha:      ${{ needs.prepare.outputs.before_sha }}
-          after_sha:       ${{ github.sha }}
+          before_sha:       ${{ needs.prepare.outputs.before_sha }}
+          after_sha:        ${{ github.sha }}
           platforms_filter: ${{ env.PLATFORMS }}
+          github_token:     ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token:       ${{ secrets.GHCR_TOKEN }}
 
   # ── Per-version-platform builds (run in parallel) ──────────────────────────
   # One job per PHP version × platform pair.  Each job builds all stages
@@ -166,6 +173,7 @@ jobs:
           dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
           github_token:       ${{ secrets.GITHUB_TOKEN }}
           ghcr_token:         ${{ secrets.GHCR_TOKEN }}
+          ghcr_writable:      ${{ needs.detect.outputs.ghcr_writable }}
 
   # ── Single manifest merge job ────────────────────────────────────────────────
   # One job handles all Docker Hub images (every version × stage combination).
