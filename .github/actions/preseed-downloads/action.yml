@@ -39,13 +39,13 @@ inputs:
     default: ''
   refresh_cache:
     description: >
-      When "true", always download fresh artifacts and save them under a new
-      cache key (preseed-<hash>-<run_id>) so that future runs pick up the
-      refreshed content via restore-keys prefix matching.  GitHub Actions cache
-      entries are immutable, so the existing entry is not overwritten; instead
-      a new entry is created that future runs prefer as the most-recently created
-      match.  Use this in workflows whose purpose is to rebuild cached artifacts
-      (e.g. docker-build-all.yml).
+      When "true", always download fresh artifacts even when a cache entry
+      already exists.  The cache key is a hash of the downloaded content, so
+      if the content changes the hash changes and a new cache entry is
+      automatically saved for future runs.  If the content is identical the
+      hash (and key) is unchanged, meaning the existing cache entry is already
+      up-to-date and no new entry is written.  Use this in workflows whose
+      purpose is to rebuild cached artifacts (e.g. docker-build-all.yml).
     default: 'false'
 
 outputs:
