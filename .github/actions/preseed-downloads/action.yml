@@ -74,16 +74,14 @@ runs:
     # docker pull is skipped when the codename for that version is known.
     # Keyed by PHP version, not image digest, so the cache survives upstream
     # image rebuilds (the Debian release for a PHP version never changes
-    # mid-lifecycle).  An exact-key miss falls back to the most-recent save
-    # via restore-keys prefix matching.
+    # mid-lifecycle).  The key ends with "-" so GHA's built-in prefix matching
+    # finds the most-recently created entry whose key starts with that prefix.
     - name: Restore codenames cache
       id: codenames-cache
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
-        key:          php-codenames-
-        restore-keys: |
-          php-codenames-
+        key: php-codenames-
 
     - name: Detect Debian codenames and resolve artifact versions
       id: detect-and-resolve
@@ -396,19 +394,15 @@ runs:
     # ── Cache step ────────────────────────────────────────────────────────────
     # A single cache entry covers all detected Debian tiers.  The key is a
     # hash of every (codename, cs_version, cc_version) tuple, so the cache is
-    # invalidated if any resolved version changes for any tier.
-    # The restore key ends with "-" so GHA's built-in prefix matching finds the
-    # most-recently created entry whose key starts with that prefix (e.g.
-    # preseed-<hash>-<run_id>).  restore-keys is not needed.  The save key
-    # appends github.run_id to guarantee uniqueness and avoid the immutable-cache
-    # rule; refresh_cache=true runs create a new entry that future runs prefer
-    # over older entries with the same content hash.
+    # invalidated when any resolved version changes for any tier.  The key is
+    # stable across runs as long as the content hash does not change; there is
+    # at most one cache entry per hash.
     - name: Restore preseed artifacts cache
       id: cache
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/preseed-artifacts
-        key: preseed-${{ steps.detect-and-resolve.outputs.cache_key }}-
+        key: preseed-${{ steps.detect-and-resolve.outputs.cache_key }}
 
     # ── Download step ─────────────────────────────────────────────────────────
     # Runs on cache miss (cache-matched-key is empty), or unconditionally when
@@ -709,18 +703,16 @@ runs:
         done
 
     # ── Save preseed artifacts cache ──────────────────────────────────────────
-    # Runs when artifacts were (re)downloaded (cache miss or refresh_cache=true).
-    # The key always includes github.run_id so it is unique and never collides
-    # with an existing immutable entry.  Future runs find this entry via GHA's
-    # built-in prefix matching on "preseed-<hash>-" and GitHub returns the
-    # most-recently created match, so a refresh_cache=true force-refresh is
-    # automatically preferred over an older entry with the same content hash.
+    # Runs only on cache miss (i.e. when the content hash changed or no entry
+    # exists yet).  The key is the content hash, so there is at most one entry
+    # per hash; an unchanged hash means the cached content is still valid and
+    # no new entry is needed.
     - name: Save preseed artifacts cache
-      if: steps.cache.outputs.cache-matched-key == '' || inputs.refresh_cache == 'true'
+      if: steps.cache.outputs.cache-matched-key == ''
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/preseed-artifacts
-        key: preseed-${{ steps.detect-and-resolve.outputs.cache_key }}-${{ github.run_id }}
+        key: preseed-${{ steps.detect-and-resolve.outputs.cache_key }}
 
     # ── Assemble step ─────────────────────────────────────────────────────────
     # Copies unique artifacts to pre-downloaded/, computes SHA256 digests, and
