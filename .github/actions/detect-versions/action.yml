@@ -106,9 +106,9 @@ runs:
         fi
 
         if [[ -z "${VERSIONS_OUT}" ]]; then
-          echo "total_platforms=0" >> "$GITHUB_OUTPUT"
-          echo "merge_matrix=[]"   >> "$GITHUB_OUTPUT"
-          echo "build_matrix=[]"   >> "$GITHUB_OUTPUT"
+          echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
+          echo "merge_matrix=[]"                    >> "$GITHUB_OUTPUT"
+          echo "build_matrix=[]"                    >> "$GITHUB_OUTPUT"
         else
           echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
 
