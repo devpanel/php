@@ -252,6 +252,72 @@ runs:
           rm -f "${_fmh_body}" "${_fmh_err}"
         }
 
+        # Helper: probe Docker Hub's authenticated pull rate-limit endpoint.
+        # Sets global PULL_REMAINING (remaining pulls as a string, or "" on failure).
+        probe_pull_remaining() {
+          PULL_REMAINING=""
+          local _pr_creds _pr_json _pr_token
+          _pr_creds="$(mktemp)"
+          chmod 600 "${_pr_creds}"
+          printf 'machine auth.docker.io login %s password %s\n' \
+            "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_pr_creds}"
+          _pr_json="$(curl -sf --netrc-file "${_pr_creds}" \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+            2>/dev/null)" || _pr_json=""
+          rm -f "${_pr_creds}"
+          _pr_token="$(printf '%s' "${_pr_json}" | jq -r '.token // ""' 2>/dev/null)" \
+            || _pr_token=""
+          if [[ -n "${_pr_token}" ]]; then
+            PULL_REMAINING="$(curl -sf \
+              -H "Authorization: Bearer ${_pr_token}" \
+              -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
+              2>/dev/null \
+              | grep -i '^ratelimit-remaining:' \
+              | grep -oE '[0-9]+' | head -1)" || PULL_REMAINING=""
+          fi
+        }
+
+        # Helper: fetch an authenticated Docker Hub token for ${REPO}:pull.
+        # Idempotent — skips the network request if AUTH_TOKEN is already set.
+        # Sets global AUTH_TOKEN.
+        get_auth_token() {
+          [[ -n "${AUTH_TOKEN}" ]] && return 0
+          local _ga_creds _ga_json
+          _ga_creds="$(mktemp)"
+          chmod 600 "${_ga_creds}"
+          printf 'machine auth.docker.io login %s password %s\n' \
+            "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_ga_creds}"
+          _ga_json="$(curl -sf --netrc-file "${_ga_creds}" \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
+            2>/dev/null)" || _ga_json=""
+          rm -f "${_ga_creds}"
+          AUTH_TOKEN="$(printf '%s' "${_ga_json}" | jq -r '.token // ""' 2>/dev/null)" \
+            || AUTH_TOKEN=""
+          if [[ -n "${AUTH_TOKEN}" ]]; then
+            echo "  Obtained authenticated Docker Hub token (for inspect fallback)."
+          else
+            echo "  Could not obtain authenticated token; imagetools inspect will be used as fallback."
+          fi
+        }
+
+        # Helper: handle non-200 HTTP codes from fetch_manifest_http; sets
+        # SEED_STATUS="not_found" for 404; logs and returns 1 for all other errors.
+        # Returns 0 on HTTP 200 (caller handles the response body).
+        # $1: label (e.g. "unauthenticated" or "authenticated Registry API")
+        # $2: fallback label (e.g. "trying authenticated inspect")
+        handle_non_200_manifest() {
+          local _label="$1" _fallback="$2"
+          case "${MANIFEST_HTTP_CODE}" in
+            200) return 0 ;;
+            404) SEED_STATUS="not_found" ;;
+            000) echo "  ${IMAGE_SEED}: ${_label} fetch failed" \
+                      "(${MANIFEST_CURL_ERR:-network error}); ${_fallback}." ;;
+            *) echo "  ${IMAGE_SEED}: ${_label} fetch returned HTTP ${MANIFEST_HTTP_CODE};" \
+                    "${_fallback}." ;;
+          esac
+          return 1
+        }
+
         # Obtain a single anonymous Docker Hub token that covers all images in
         # the merge matrix.  One token request is enough because the scope
         # parameter is per-repository, not per-tag.
@@ -266,27 +332,9 @@ runs:
           echo "  Could not obtain anonymous token; will use authenticated inspect."
         fi
 
-        # Obtain a single authenticated Docker Hub token for the consolidated
-        # authenticated fallback path.  One token request covers all images
-        # (the scope is per-repository, not per-tag) so no per-image
-        # re-authentication is needed regardless of how many images fall back
-        # from the anonymous path.
+        # AUTH_TOKEN is fetched lazily (via get_auth_token) only when an
+        # authenticated path is actually needed; it is not fetched upfront.
         AUTH_TOKEN=""
-        _auth_creds_file="$(mktemp)"
-        chmod 600 "${_auth_creds_file}"
-        printf 'machine auth.docker.io login %s password %s\n' \
-          "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_auth_creds_file}"
-        _auth_json="$(curl -sf --netrc-file "${_auth_creds_file}" \
-          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
-          2>/dev/null)" || _auth_json=""
-        rm -f "${_auth_creds_file}"
-        AUTH_TOKEN="$(printf '%s' "${_auth_json}" | jq -r '.token // ""' 2>/dev/null)" \
-          || AUTH_TOKEN=""
-        if [[ -n "${AUTH_TOKEN}" ]]; then
-          echo "  Obtained authenticated Docker Hub token (for inspect fallback)."
-        else
-          echo "  Could not obtain authenticated token; imagetools inspect will be used as fallback."
-        fi
 
         # Pre-check authenticated Docker Hub pull quota.  When ANON_TOKEN is
         # available the anonymous path handles every image (IP-based quota, not
@@ -295,53 +343,38 @@ runs:
         # every manifest inspection requires one authenticated pull, so we must
         # wait until at least as many pulls are available as there are images to
         # seed before proceeding.
-        if [[ -z "${ANON_TOKEN}" && -n "${AUTH_TOKEN}" ]]; then
-          _needed_pulls=${#VERSIONS_STAGES[@]}
-          echo "Checking Docker Hub pull quota (need ${_needed_pulls} authenticated pull(s))..."
-          _ql_elapsed=0
-          _ql_max_wait=19800  # 5h30m to stay below common 6h GitHub job timeouts
-          while true; do
-            _ql_creds_file="$(mktemp)"
-            chmod 600 "${_ql_creds_file}"
-            printf 'machine auth.docker.io login %s password %s\n' \
-              "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_ql_creds_file}"
-            _ql_rl_json="$(curl -sf --netrc-file "${_ql_creds_file}" \
-              "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
-              2>/dev/null)" || _ql_rl_json=""
-            rm -f "${_ql_creds_file}"
-            _ql_token="$(printf '%s' "${_ql_rl_json}" | jq -r '.token // ""' 2>/dev/null)" \
-              || _ql_token=""
-            _ql_remaining=""
-            if [[ -n "${_ql_token}" ]]; then
-              _ql_remaining="$(curl -sf \
-                -H "Authorization: Bearer ${_ql_token}" \
-                -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
-                2>/dev/null \
-                | grep -i '^ratelimit-remaining:' \
-                | grep -oE '[0-9]+' | head -1)" || _ql_remaining=""
-            fi
-            if [[ -z "${_ql_remaining}" ]]; then
-              echo "  Could not check Docker Hub pull quota; proceeding."
-              break
-            fi
-            if (( _ql_remaining >= _needed_pulls )); then
-              echo "  Docker Hub pull quota: ${_ql_remaining} remaining" \
-                   "(need ${_needed_pulls}); proceeding."
-              break
-            fi
-            if (( _ql_elapsed >= _ql_max_wait )); then
-              echo "::error::Docker Hub pull quota: waited ${_ql_elapsed}s but only" \
-                   "${_ql_remaining}/${_needed_pulls} pull(s) available." \
-                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-              exit 1
-            fi
-            echo "::warning::Docker Hub pull quota insufficient" \
-                 "(${_ql_remaining}/${_needed_pulls} available)." \
-                 "Waiting ${POLL_INTERVAL_SECONDS}s" \
-                 "(${_ql_elapsed}/${_ql_max_wait}s elapsed)..."
-            sleep "${POLL_INTERVAL_SECONDS}"
-            _ql_elapsed=$(( _ql_elapsed + POLL_INTERVAL_SECONDS ))
-          done
+        if [[ -z "${ANON_TOKEN}" ]]; then
+          get_auth_token
+          if [[ -n "${AUTH_TOKEN}" ]]; then
+            _needed_pulls=${#VERSIONS_STAGES[@]}
+            echo "Checking Docker Hub pull quota (need ${_needed_pulls} authenticated pull(s))..."
+            _ql_elapsed=0
+            _ql_max_wait=19800  # 5h30m to stay below common 6h GitHub job timeouts
+            while true; do
+              probe_pull_remaining
+              if [[ -z "${PULL_REMAINING}" ]]; then
+                echo "  Could not check Docker Hub pull quota; proceeding."
+                break
+              fi
+              if (( PULL_REMAINING >= _needed_pulls )); then
+                echo "  Docker Hub pull quota: ${PULL_REMAINING} remaining" \
+                     "(need ${_needed_pulls}); proceeding."
+                break
+              fi
+              if (( _ql_elapsed >= _ql_max_wait )); then
+                echo "::error::Docker Hub pull quota: waited ${_ql_elapsed}s but only" \
+                     "${PULL_REMAINING}/${_needed_pulls} pull(s) available." \
+                     "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+                exit 1
+              fi
+              echo "::warning::Docker Hub pull quota insufficient" \
+                   "(${PULL_REMAINING}/${_needed_pulls} available)." \
+                   "Waiting ${POLL_INTERVAL_SECONDS}s" \
+                   "(${_ql_elapsed}/${_ql_max_wait}s elapsed)..."
+              sleep "${POLL_INTERVAL_SECONDS}"
+              _ql_elapsed=$(( _ql_elapsed + POLL_INTERVAL_SECONDS ))
+            done
+          fi
         fi
 
         for vs in "${VERSIONS_STAGES[@]}"; do
@@ -364,69 +397,46 @@ runs:
           if [[ -n "${ANON_TOKEN}" ]]; then
             fetch_manifest_http "${ANON_TOKEN}" \
               "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
-            case "${MANIFEST_HTTP_CODE}" in
-              200)
-                SEED_RAW="${MANIFEST_BODY}"
-                # Only accept the unauthenticated result when it contains at
-                # least one parseable platform entry.  A single-platform
-                # manifest (no "manifests" array) or one where every entry is
-                # filtered as unknown/attestation returns 0 platforms; in that
-                # case fall through to the authenticated path which may return
-                # a manifest-list format not given to anonymous callers.
-                _anon_plat_count=$(printf '%s' "${SEED_RAW}" | jq -r \
-                  '.manifests[]? |
-                   select((.platform.os // "") != "unknown" and
-                          (.platform.architecture // "") != "unknown") |
-                   .digest' 2>/dev/null | wc -l) || _anon_plat_count=0
-                if [[ "${_anon_plat_count}" -gt 0 ]]; then
-                  SEED_STATUS="ok"
-                  echo "  ${IMAGE_SEED}: fetched manifest (unauthenticated," \
-                       "${_anon_plat_count} platform(s))."
-                else
-                  echo "  ${IMAGE_SEED}: unauthenticated manifest has 0 valid" \
-                       "platform(s); trying authenticated inspect."
-                fi
-                ;;
-              404)
-                SEED_STATUS="not_found"
-                ;;
-              000)
-                # curl execution failure (network error, timeout, etc.)
-                echo "  ${IMAGE_SEED}: unauthenticated fetch failed" \
-                     "(${MANIFEST_CURL_ERR:-network error}); trying authenticated inspect."
-                ;;
-              *)
-                # 401, 429, or other HTTP error → fall through to authenticated
-                echo "  ${IMAGE_SEED}: unauthenticated fetch returned HTTP ${MANIFEST_HTTP_CODE};" \
-                     "trying authenticated inspect."
-                ;;
-            esac
+            if handle_non_200_manifest "unauthenticated" \
+                                        "trying authenticated inspect"; then
+              SEED_RAW="${MANIFEST_BODY}"
+              # Only accept the unauthenticated result when it contains at
+              # least one parseable platform entry.  A single-platform
+              # manifest (no "manifests" array) or one where every entry is
+              # filtered as unknown/attestation returns 0 platforms; in that
+              # case fall through to the authenticated path which may return
+              # a manifest-list format not given to anonymous callers.
+              _anon_plat_count=$(printf '%s' "${SEED_RAW}" | jq -r \
+                '.manifests[]? |
+                 select((.platform.os // "") != "unknown" and
+                        (.platform.architecture // "") != "unknown") |
+                 .digest' 2>/dev/null | wc -l) || _anon_plat_count=0
+              if [[ "${_anon_plat_count}" -gt 0 ]]; then
+                SEED_STATUS="ok"
+                echo "  ${IMAGE_SEED}: fetched manifest (unauthenticated," \
+                     "${_anon_plat_count} platform(s))."
+              else
+                echo "  ${IMAGE_SEED}: unauthenticated manifest has 0 valid" \
+                     "platform(s); trying authenticated inspect."
+              fi
+            fi
           fi
 
-          # ── Step 2: authenticated Registry API (consolidated shared token) ─
-          # Uses the single pre-fetched AUTH_TOKEN so that all per-image
-          # manifest requests share one credential round-trip.
-          if [[ -z "${SEED_STATUS}" && -n "${AUTH_TOKEN}" ]]; then
-            fetch_manifest_http "${AUTH_TOKEN}" \
-              "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
-            case "${MANIFEST_HTTP_CODE}" in
-              200)
+          # ── Step 2: authenticated Registry API ────────────────────────────
+          # get_auth_token is idempotent: fetches AUTH_TOKEN only on the first
+          # call (shared across all images in the loop).
+          if [[ -z "${SEED_STATUS}" ]]; then
+            get_auth_token
+            if [[ -n "${AUTH_TOKEN}" ]]; then
+              fetch_manifest_http "${AUTH_TOKEN}" \
+                "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
+              if handle_non_200_manifest "authenticated Registry API" \
+                                          "trying imagetools inspect"; then
                 SEED_RAW="${MANIFEST_BODY}"
                 SEED_STATUS="ok"
                 echo "  ${IMAGE_SEED}: fetched manifest (authenticated)."
-                ;;
-              404)
-                SEED_STATUS="not_found"
-                ;;
-              000)
-                echo "  ${IMAGE_SEED}: authenticated Registry API fetch failed;" \
-                     "trying imagetools inspect."
-                ;;
-              *)
-                echo "  ${IMAGE_SEED}: authenticated Registry API returned HTTP ${MANIFEST_HTTP_CODE};" \
-                     "trying imagetools inspect."
-                ;;
-            esac
+              fi
+            fi
           fi
 
           # ── Step 3: imagetools inspect (last resort) ───────────────────────
@@ -920,30 +930,13 @@ runs:
           done
           # Probe Docker Hub rate-limit status so we can give an actionable
           # suggestion: "rate limit exhausted – retry in 6 hours" vs "retry".
-          _rl_creds_file="$(mktemp)"
-          chmod 600 "${_rl_creds_file}"
-          printf 'machine auth.docker.io login %s password %s\n' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_rl_creds_file}"
-          _rl_auth_json="$(curl -sf \
-            --netrc-file "${_rl_creds_file}" \
-            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
-            2>/dev/null)" || _rl_auth_json=""
-          rm -f "${_rl_creds_file}"
-          _rl_token="$(printf '%s' "${_rl_auth_json}" | jq -r '.token // ""' 2>/dev/null)" || _rl_token=""
-          _rl_remaining=""
-          if [[ -n "${_rl_token}" ]]; then
-            _rl_remaining="$(curl -sf \
-              -H "Authorization: Bearer ${_rl_token}" \
-              -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
-              2>/dev/null \
-              | grep -i '^ratelimit-remaining:' \
-              | grep -oE '[0-9]+' | head -1)" || _rl_remaining=""
-          fi
-          if [[ "${_rl_remaining}" == "0" ]]; then
+          probe_pull_remaining
+          if [[ "${PULL_REMAINING}" == "0" ]]; then
             echo "::error::Docker Hub pull rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
                  "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
-          elif [[ -n "${_rl_remaining}" ]]; then
+          elif [[ -n "${PULL_REMAINING}" ]]; then
             echo "::error::Docker Hub pull rate limit is not exhausted" \
-                 "(${_rl_remaining} request(s) remaining); this is likely a transient error." \
+                 "(${PULL_REMAINING} request(s) remaining); this is likely a transient error." \
                  "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           else
             echo "::error::Could not determine Docker Hub pull rate limit status." \
