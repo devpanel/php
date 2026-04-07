@@ -640,24 +640,23 @@ runs:
             # they are still in NEW_PKEYS and must remain unprocessed so they
             # can be retried if imagetools create fails (e.g. Docker rate limit).
             if [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
+              # Build a set of platform keys downloaded this cycle for O(1) lookup.
+              declare -A _new_pkeys_set=()
+              for _k in "${NEW_PKEYS[@]+"${NEW_PKEYS[@]}"}"; do
+                _new_pkeys_set["${_k}"]=1
+              done
               while IFS=$'\t' read -r aname aid; do
                 [[ -z "${aname}" ]] && continue
                 [[ "${aname}" == "${ARTIFACT_PREFIX}"* ]] || continue
                 grep -qxF "${aname}:${aid}" "${IMG_PROCESSED[$key]}" 2>/dev/null && continue
                 pkey_skip="${aname#"${ARTIFACT_PREFIX}"}"
                 # Skip if already queued for merge this cycle (download succeeded).
-                already_downloaded=false
-                for _k in "${NEW_PKEYS[@]+"${NEW_PKEYS[@]}"}"; do
-                  if [[ "${_k}" == "${pkey_skip}" ]]; then
-                    already_downloaded=true
-                    break
-                  fi
-                done
-                [[ "${already_downloaded}" == "true" ]] && continue
+                [[ -v _new_pkeys_set["${pkey_skip}"] ]] && continue
                 echo "::warning::${aname}: all builds done but cannot be" \
                      "downloaded; skipping."
                 echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
               done <<< "${ALL_ARTIFACTS}"
+              unset _new_pkeys_set
             fi
 
             # ── Merge new platforms into the Docker Hub tag ───────────────
