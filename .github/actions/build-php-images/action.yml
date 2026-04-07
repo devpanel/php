@@ -376,10 +376,13 @@ runs:
         # pull/push quota without consuming any quota.  If RateLimit-Remaining
         # is 0 the account's quota is exhausted; otherwise report a generic
         # push failure and direct the user to the failed step's output.
+        _creds_file="$(mktemp)"
+        printf '%s:%s' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
         auth_json="$(curl -sf \
-          -u "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}" \
+          -u "@${_creds_file}" \
           "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
           2>/dev/null)" || auth_json=""
+        rm -f "${_creds_file}"
         auth_token="$(printf '%s' "${auth_json}" | jq -r '.token // ""' 2>/dev/null)" || auth_token=""
         if [[ -n "${auth_token}" ]]; then
           rl_remaining="$(curl -sf \

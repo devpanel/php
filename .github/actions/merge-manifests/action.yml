@@ -795,10 +795,13 @@ runs:
           done
           # Probe Docker Hub rate-limit status so we can give an actionable
           # suggestion: "rate limit exhausted – retry in 6 hours" vs "retry".
+          _rl_creds_file="$(mktemp)"
+          printf '%s:%s' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_rl_creds_file}"
           _rl_auth_json="$(curl -sf \
-            -u "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}" \
+            -u "@${_rl_creds_file}" \
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
             2>/dev/null)" || _rl_auth_json=""
+          rm -f "${_rl_creds_file}"
           _rl_token="$(printf '%s' "${_rl_auth_json}" | jq -r '.token // ""' 2>/dev/null)" || _rl_token=""
           _rl_remaining=""
           if [[ -n "${_rl_token}" ]]; then
