@@ -244,6 +244,84 @@ runs:
           echo "  Could not obtain anonymous token; will use authenticated inspect."
         fi
 
+        # Obtain a single authenticated Docker Hub token for the consolidated
+        # authenticated fallback path.  One token request covers all images
+        # (the scope is per-repository, not per-tag) so no per-image
+        # re-authentication is needed regardless of how many images fall back
+        # from the anonymous path.
+        AUTH_TOKEN=""
+        _auth_creds_file="$(mktemp)"
+        chmod 600 "${_auth_creds_file}"
+        printf 'machine auth.docker.io login %s password %s\n' \
+          "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_auth_creds_file}"
+        _auth_json="$(curl -sf --netrc-file "${_auth_creds_file}" \
+          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
+          2>/dev/null)" || _auth_json=""
+        rm -f "${_auth_creds_file}"
+        AUTH_TOKEN="$(printf '%s' "${_auth_json}" | jq -r '.token // ""' 2>/dev/null)" \
+          || AUTH_TOKEN=""
+        if [[ -n "${AUTH_TOKEN}" ]]; then
+          echo "  Obtained authenticated Docker Hub token (for inspect fallback)."
+        else
+          echo "  Could not obtain authenticated token; imagetools inspect will be used as fallback."
+        fi
+
+        # Pre-check authenticated Docker Hub pull quota.  When ANON_TOKEN is
+        # available the anonymous path handles every image (IP-based quota, not
+        # counted against the account); authenticated pulls are consumed only by
+        # the fallback path, which is the exception.  When ANON_TOKEN is absent
+        # every manifest inspection requires one authenticated pull, so we must
+        # wait until at least as many pulls are available as there are images to
+        # seed before proceeding.
+        if [[ -z "${ANON_TOKEN}" && -n "${AUTH_TOKEN}" ]]; then
+          _needed_pulls=${#VERSIONS_STAGES[@]}
+          echo "Checking Docker Hub pull quota (need ${_needed_pulls} authenticated pull(s))..."
+          _ql_elapsed=0
+          _ql_max_wait=21600  # 6 hours (one full Docker Hub rate-limit window)
+          while true; do
+            _ql_creds_file="$(mktemp)"
+            chmod 600 "${_ql_creds_file}"
+            printf 'machine auth.docker.io login %s password %s\n' \
+              "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_ql_creds_file}"
+            _ql_rl_json="$(curl -sf --netrc-file "${_ql_creds_file}" \
+              "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+              2>/dev/null)" || _ql_rl_json=""
+            rm -f "${_ql_creds_file}"
+            _ql_token="$(printf '%s' "${_ql_rl_json}" | jq -r '.token // ""' 2>/dev/null)" \
+              || _ql_token=""
+            _ql_remaining=""
+            if [[ -n "${_ql_token}" ]]; then
+              _ql_remaining="$(curl -sf \
+                -H "Authorization: Bearer ${_ql_token}" \
+                -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
+                2>/dev/null \
+                | grep -i '^ratelimit-remaining:' \
+                | grep -oE '[0-9]+' | head -1)" || _ql_remaining=""
+            fi
+            if [[ -z "${_ql_remaining}" ]]; then
+              echo "  Could not check Docker Hub pull quota; proceeding."
+              break
+            fi
+            if (( _ql_remaining >= _needed_pulls )); then
+              echo "  Docker Hub pull quota: ${_ql_remaining} remaining" \
+                   "(need ${_needed_pulls}); proceeding."
+              break
+            fi
+            if (( _ql_elapsed >= _ql_max_wait )); then
+              echo "::error::Docker Hub pull quota: waited ${_ql_elapsed}s but only" \
+                   "${_ql_remaining}/${_needed_pulls} pull(s) available." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+              exit 1
+            fi
+            echo "::warning::Docker Hub pull quota insufficient" \
+                 "(${_ql_remaining}/${_needed_pulls} available)." \
+                 "Waiting ${POLL_INTERVAL_SECONDS}s" \
+                 "(${_ql_elapsed}/${_ql_max_wait}s elapsed)..."
+            sleep "${POLL_INTERVAL_SECONDS}"
+            _ql_elapsed=$(( _ql_elapsed + POLL_INTERVAL_SECONDS ))
+          done
+        fi
+
         for vs in "${VERSIONS_STAGES[@]}"; do
           version="${vs%%:*}"
           stage="${vs##*:}"
@@ -312,13 +390,49 @@ runs:
             rm -f "${manifest_tmp}" "${curl_stderr_tmp}"
           fi
 
-          # ── Step 2: authenticated (docker buildx imagetools inspect) ──────
+          # ── Step 2: authenticated Registry API (consolidated shared token) ─
+          # Uses the single pre-fetched AUTH_TOKEN so that all per-image
+          # manifest requests share one credential round-trip; mirrors the
+          # anonymous curl approach in Step 1.
+          if [[ -z "${SEED_STATUS}" && -n "${AUTH_TOKEN}" ]]; then
+            manifest_auth_tmp="$(mktemp)"
+            HTTP_CODE="$(curl -s \
+              -H "Authorization: Bearer ${AUTH_TOKEN}" \
+              -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
+              -o "${manifest_auth_tmp}" \
+              -w "%{http_code}" \
+              "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
+              2>/dev/null)" || HTTP_CODE="000"
+            case "${HTTP_CODE}" in
+              200)
+                SEED_RAW="$(cat "${manifest_auth_tmp}")"
+                SEED_STATUS="ok"
+                echo "  ${IMAGE_SEED}: fetched manifest (authenticated)."
+                ;;
+              404)
+                SEED_STATUS="not_found"
+                ;;
+              000)
+                echo "  ${IMAGE_SEED}: authenticated Registry API fetch failed;" \
+                     "trying imagetools inspect."
+                ;;
+              *)
+                echo "  ${IMAGE_SEED}: authenticated Registry API returned HTTP ${HTTP_CODE};" \
+                     "trying imagetools inspect."
+                ;;
+            esac
+            rm -f "${manifest_auth_tmp}"
+          fi
+
+          # ── Step 3: imagetools inspect (last resort) ───────────────────────
+          # Reached only when both the anonymous and authenticated Registry API
+          # fetches failed (e.g. network error or unexpected HTTP status).
           if [[ -z "${SEED_STATUS}" ]]; then
             seed_stderr="$(mktemp)"
             if SEED_RAW="$(docker buildx imagetools inspect \
                              "${IMAGE_SEED}" --raw 2>"${seed_stderr}")"; then
               SEED_STATUS="ok"
-              echo "  ${IMAGE_SEED}: fetched manifest (authenticated)."
+              echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
             else
               if grep -qi \
                    "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
