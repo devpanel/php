@@ -431,7 +431,8 @@ runs:
                 IFS=$'\t' read -r _si_digest _si_platform <<< "${_si_pair}"
                 if [[ -n "${_si_digest}" && -n "${_si_platform}" ]]; then
                   # Normalize the platform key using the same logic as for
-                  # manifest-list entries above (strip default arm64/v8 variant).
+                  # manifest-list entries above (strip default arm64/v8 and
+                  # amd64/v1 variants).
                   IFS='/' read -r _si_os _si_arch _si_var <<< "${_si_platform}"
                   # Skip attestation / unknown-platform entries (same filter
                   # used for manifest-list parsing above).
@@ -440,7 +441,8 @@ runs:
                      [[ "${_si_arch}" != "unknown" ]]; then
                     _si_norm="${_si_os}/${_si_arch}"
                     if [[ -n "${_si_var:-}" ]] && \
-                       ! [[ "${_si_arch}" == "arm64" && "${_si_var}" == "v8" ]]; then
+                       ! [[ "${_si_arch}" == "arm64" && "${_si_var}" == "v8" ]] && \
+                       ! [[ "${_si_arch}" == "amd64" && "${_si_var}" == "v1" ]]; then
                       _si_norm="${_si_os}/${_si_arch}/${_si_var}"
                     fi
                     _si_pkey="${_si_norm//\//-}"
