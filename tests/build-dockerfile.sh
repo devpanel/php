@@ -92,11 +92,18 @@ if [[ "$PLATFORMS" == *","* || "$PLATFORMS" == *" "* ]]; then
   exit 1
 fi
 
-# Derive PLATFORM_KEY from the target platform so the test build uses the same
-# GHA/GHCR cache scopes as the CI build matrix job for the same platform (e.g.
-# "php8_3-base-linux-amd64" instead of the unkeyed "php8_3-base").  This lets the
-# test job hit the caches already populated by the corresponding build job.
-PLATFORM_KEY="${PLATFORMS//\//-}"
+# Normalize default variants before deriving PLATFORM_KEY so the test build
+# uses the same GHA/GHCR cache scopes as the CI build matrix job for the same
+# effective platform (e.g. CI treats "linux/arm64/v8" as "linux/arm64", so use
+# "php8_3-base-linux-arm64" instead of an unshared "php8_3-base-linux-arm64-v8").
+# This lets the test job hit the caches already populated by the corresponding
+# build job without changing the actual platform passed to the build.
+NORMALIZED_PLATFORM="$PLATFORMS"
+case "$NORMALIZED_PLATFORM" in
+  linux/amd64/v1) NORMALIZED_PLATFORM="linux/amd64" ;;
+  linux/arm64/v8) NORMALIZED_PLATFORM="linux/arm64" ;;
+esac
+PLATFORM_KEY="${NORMALIZED_PLATFORM//\//-}"
 
 # ---------------------------------------------------------------------------
 # Build using docker-bake.hcl in test mode
