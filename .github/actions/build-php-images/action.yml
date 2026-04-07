@@ -377,6 +377,7 @@ runs:
         # is 0 the account's quota is exhausted; otherwise report a generic
         # push failure and direct the user to the failed step's output.
         _creds_file="$(mktemp)"
+        chmod 600 "${_creds_file}"
         printf '%s:%s' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
         auth_json="$(curl -sf \
           -u "@${_creds_file}" \

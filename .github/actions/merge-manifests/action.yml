@@ -796,6 +796,7 @@ runs:
           # Probe Docker Hub rate-limit status so we can give an actionable
           # suggestion: "rate limit exhausted – retry in 6 hours" vs "retry".
           _rl_creds_file="$(mktemp)"
+          chmod 600 "${_rl_creds_file}"
           printf '%s:%s' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_rl_creds_file}"
           _rl_auth_json="$(curl -sf \
             -u "@${_rl_creds_file}" \
