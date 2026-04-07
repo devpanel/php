@@ -182,7 +182,7 @@ runs:
         needed_pulls=1
         echo "Checking Docker Hub pull quota" \
              "(need ${needed_pulls} pull for php:${VERSION}-apache)..."
-        MAX_WAIT=21600  # 6 hours (one full Docker Hub rate-limit window)
+        MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
         POLL_INTERVAL=60
         elapsed=0
         while true; do
@@ -424,9 +424,8 @@ runs:
     # Named "build-done-{VERSION}-{platform_key}" so each merge job can count
     # how many platform builds are complete for its version.
 
-    # Diagnostic step: when any bake stage failed, probe Docker Hub's rate-limit
-    # endpoint to determine whether the failure was caused by exhausted push quota
-    # and emit an actionable error message.
+    # Diagnostic step: when any bake stage failed, probe Docker Hub's pull
+    # rate-limit endpoint and emit an actionable error message.
     - name: Check for Docker Hub rate limit errors
       if: failure() && (steps.bake-base.outcome == 'failure' || steps.bake-secure.outcome == 'failure' || steps.bake-advance.outcome == 'failure')
       shell: bash
@@ -438,9 +437,10 @@ runs:
       run: |
         set -euo pipefail
         # Use the Docker Hub ratelimitpreview endpoint to inspect the current
-        # pull/push quota without consuming any quota.  If RateLimit-Remaining
-        # is 0 the account's quota is exhausted; otherwise report a generic
-        # push failure and direct the user to the failed step's output.
+        # pull rate limit without consuming any quota.  If RateLimit-Remaining
+        # is 0 the pull rate limit is exhausted; a base-image pull throttle
+        # may have caused the bake failure.  Otherwise report a generic
+        # build failure and direct the user to the failed step's output.
         _creds_file="$(mktemp)"
         chmod 600 "${_creds_file}"
         printf 'machine auth.docker.io login %s password %s\n' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"

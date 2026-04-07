@@ -221,14 +221,36 @@ runs:
         #
         # Inspect order (to conserve the Docker Hub authenticated-pull quota):
         #   1. Unauthenticated via Docker Hub Registry API (anonymous token).
-        #   2. Authenticated via docker buildx imagetools inspect (uses stored
-        #      Docker Hub credentials from a docker login step).
+        #   2. Authenticated via Docker Hub Registry API (shared AUTH_TOKEN).
+        #   3. docker buildx imagetools inspect (last resort, network fallback).
         #
         # If the tag does not exist → empty state (first push).
         # If both attempts fail for any other reason → fall back to the cached
         # state from the previous run and emit a warning.  The job is NOT
         # failed; a stale baseline is better than dropping all platforms.
         echo "Seeding platform-digest state from existing manifests..."
+
+        # Helper: fetch a Docker Hub manifest via the Registry HTTP API using a
+        # Bearer token.  Sets three global variables (no subshell needed):
+        #   MANIFEST_HTTP_CODE  HTTP status code, or "000" on curl failure
+        #   MANIFEST_BODY       Raw response body
+        #   MANIFEST_CURL_ERR   curl stderr (only meaningful when code is "000")
+        fetch_manifest_http() {
+          local _fmh_token="$1" _fmh_url="$2"
+          local _fmh_body _fmh_err
+          _fmh_body="$(mktemp)"
+          _fmh_err="$(mktemp)"
+          MANIFEST_HTTP_CODE="$(curl -s \
+            -H "Authorization: Bearer ${_fmh_token}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
+            -o "${_fmh_body}" \
+            -w "%{http_code}" \
+            "${_fmh_url}" \
+            2>"${_fmh_err}")" || MANIFEST_HTTP_CODE="000"
+          MANIFEST_BODY="$(cat "${_fmh_body}")"
+          MANIFEST_CURL_ERR="$(cat "${_fmh_err}" 2>/dev/null || true)"
+          rm -f "${_fmh_body}" "${_fmh_err}"
+        }
 
         # Obtain a single anonymous Docker Hub token that covers all images in
         # the merge matrix.  One token request is enough because the scope
@@ -277,7 +299,7 @@ runs:
           _needed_pulls=${#VERSIONS_STAGES[@]}
           echo "Checking Docker Hub pull quota (need ${_needed_pulls} authenticated pull(s))..."
           _ql_elapsed=0
-          _ql_max_wait=21600  # 6 hours (one full Docker Hub rate-limit window)
+          _ql_max_wait=19800  # 5h30m to stay below common 6h GitHub job timeouts
           while true; do
             _ql_creds_file="$(mktemp)"
             chmod 600 "${_ql_creds_file}"
@@ -340,18 +362,11 @@ runs:
 
           # ── Step 1: unauthenticated (anonymous token) ─────────────────────
           if [[ -n "${ANON_TOKEN}" ]]; then
-            manifest_tmp="$(mktemp)"
-            curl_stderr_tmp="$(mktemp)"
-            HTTP_CODE="$(curl -s \
-              -H "Authorization: Bearer ${ANON_TOKEN}" \
-              -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
-              -o "${manifest_tmp}" \
-              -w "%{http_code}" \
-              "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
-              2>"${curl_stderr_tmp}")" || HTTP_CODE="000"
-            case "${HTTP_CODE}" in
+            fetch_manifest_http "${ANON_TOKEN}" \
+              "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
+            case "${MANIFEST_HTTP_CODE}" in
               200)
-                SEED_RAW="$(cat "${manifest_tmp}")"
+                SEED_RAW="${MANIFEST_BODY}"
                 # Only accept the unauthenticated result when it contains at
                 # least one parseable platform entry.  A single-platform
                 # manifest (no "manifests" array) or one where every entry is
@@ -377,35 +392,26 @@ runs:
                 ;;
               000)
                 # curl execution failure (network error, timeout, etc.)
-                curl_err="$(cat "${curl_stderr_tmp}" 2>/dev/null || true)"
                 echo "  ${IMAGE_SEED}: unauthenticated fetch failed" \
-                     "(${curl_err:-network error}); trying authenticated inspect."
+                     "(${MANIFEST_CURL_ERR:-network error}); trying authenticated inspect."
                 ;;
               *)
                 # 401, 429, or other HTTP error → fall through to authenticated
-                echo "  ${IMAGE_SEED}: unauthenticated fetch returned HTTP ${HTTP_CODE};" \
+                echo "  ${IMAGE_SEED}: unauthenticated fetch returned HTTP ${MANIFEST_HTTP_CODE};" \
                      "trying authenticated inspect."
                 ;;
             esac
-            rm -f "${manifest_tmp}" "${curl_stderr_tmp}"
           fi
 
           # ── Step 2: authenticated Registry API (consolidated shared token) ─
           # Uses the single pre-fetched AUTH_TOKEN so that all per-image
-          # manifest requests share one credential round-trip; mirrors the
-          # anonymous curl approach in Step 1.
+          # manifest requests share one credential round-trip.
           if [[ -z "${SEED_STATUS}" && -n "${AUTH_TOKEN}" ]]; then
-            manifest_auth_tmp="$(mktemp)"
-            HTTP_CODE="$(curl -s \
-              -H "Authorization: Bearer ${AUTH_TOKEN}" \
-              -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
-              -o "${manifest_auth_tmp}" \
-              -w "%{http_code}" \
-              "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
-              2>/dev/null)" || HTTP_CODE="000"
-            case "${HTTP_CODE}" in
+            fetch_manifest_http "${AUTH_TOKEN}" \
+              "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
+            case "${MANIFEST_HTTP_CODE}" in
               200)
-                SEED_RAW="$(cat "${manifest_auth_tmp}")"
+                SEED_RAW="${MANIFEST_BODY}"
                 SEED_STATUS="ok"
                 echo "  ${IMAGE_SEED}: fetched manifest (authenticated)."
                 ;;
@@ -417,11 +423,10 @@ runs:
                      "trying imagetools inspect."
                 ;;
               *)
-                echo "  ${IMAGE_SEED}: authenticated Registry API returned HTTP ${HTTP_CODE};" \
+                echo "  ${IMAGE_SEED}: authenticated Registry API returned HTTP ${MANIFEST_HTTP_CODE};" \
                      "trying imagetools inspect."
                 ;;
             esac
-            rm -f "${manifest_auth_tmp}"
           fi
 
           # ── Step 3: imagetools inspect (last resort) ───────────────────────
@@ -895,7 +900,8 @@ runs:
           fi
         done
         if [[ ${#INCOMPLETE_KEYS[@]} -gt 0 ]]; then
-          echo "::error::The following images were not fully pushed to Docker Hub:"
+          echo "::error::The following images were not fully merged (fewer platforms" \
+               "merged than expected — check per-platform build jobs for failures):"
           for key in "${INCOMPLETE_KEYS[@]}"; do
             version="${key%%:*}"
             stage="${key##*:}"
@@ -933,14 +939,14 @@ runs:
               | grep -oE '[0-9]+' | head -1)" || _rl_remaining=""
           fi
           if [[ "${_rl_remaining}" == "0" ]]; then
-            echo "::error::Docker Hub rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
+            echo "::error::Docker Hub pull rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
                  "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
           elif [[ -n "${_rl_remaining}" ]]; then
-            echo "::error::Docker Hub rate limit is not exhausted" \
+            echo "::error::Docker Hub pull rate limit is not exhausted" \
                  "(${_rl_remaining} request(s) remaining); this is likely a transient error." \
                  "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           else
-            echo "::error::Could not determine Docker Hub rate limit status." \
+            echo "::error::Could not determine Docker Hub pull rate limit status." \
                  "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           fi
           exit 1
