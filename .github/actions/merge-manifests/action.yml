@@ -257,8 +257,7 @@ runs:
         probe_pull_remaining() {
           PULL_REMAINING=""
           local _pr_creds _pr_json _pr_token
-          _pr_creds="$(mktemp)"
-          chmod 600 "${_pr_creds}"
+          _pr_creds="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
             "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_pr_creds}"
           _pr_json="$(curl -sf --netrc-file "${_pr_creds}" \
@@ -283,8 +282,7 @@ runs:
         get_auth_token() {
           [[ -n "${AUTH_TOKEN}" ]] && return 0
           local _ga_creds _ga_json
-          _ga_creds="$(mktemp)"
-          chmod 600 "${_ga_creds}"
+          _ga_creds="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
             "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_ga_creds}"
           _ga_json="$(curl -sf --netrc-file "${_ga_creds}" \
