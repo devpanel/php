@@ -136,6 +136,8 @@ runs:
         RUN_ID:                ${{ inputs.run_id }}
         GITHUB_REPO:           ${{ inputs.repository }}
         DIGESTS_CACHE_DIR:     ${{ runner.temp }}/merge-manifests-digests
+        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
+        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
       run: |
         set -euo pipefail
 
@@ -790,7 +792,33 @@ runs:
               echo "::error::  Last error: ${last_err}"
             fi
           done
-          echo "::error::Please retry in 6 hours."
+          # Probe Docker Hub rate-limit status so we can give an actionable
+          # suggestion: "rate limit exhausted – retry in 6 hours" vs "retry".
+          _rl_auth_json="$(curl -sf \
+            -u "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}" \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+            2>/dev/null)" || _rl_auth_json=""
+          _rl_token="$(printf '%s' "${_rl_auth_json}" | jq -r '.token // ""' 2>/dev/null)" || _rl_token=""
+          _rl_remaining=""
+          if [[ -n "${_rl_token}" ]]; then
+            _rl_remaining="$(curl -sf \
+              -H "Authorization: Bearer ${_rl_token}" \
+              -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
+              2>/dev/null \
+              | grep -i '^ratelimit-remaining:' \
+              | grep -oE '[0-9]+' | head -1)" || _rl_remaining=""
+          fi
+          if [[ "${_rl_remaining}" == "0" ]]; then
+            echo "::error::Docker Hub push rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
+                 "Please retry in 6 hours."
+          elif [[ -n "${_rl_remaining}" ]]; then
+            echo "::error::Docker Hub push rate limit is not exhausted" \
+                 "(${_rl_remaining} request(s) remaining)." \
+                 "Please retry the job."
+          else
+            echo "::error::Could not determine Docker Hub rate limit status." \
+                 "Please retry the job."
+          fi
           exit 1
         fi
 
