@@ -135,17 +135,23 @@ runs:
         echo "platform_key=${platform_trimmed//\//-}" >> "$GITHUB_OUTPUT"
         echo "version=${VERSION}"                     >> "$GITHUB_OUTPUT"
 
-    # Pull the base PHP image before logging in to Docker Hub so that this
-    # pull uses the anonymous (IP-based) pull quota rather than the shared
-    # per-account authenticated quota (200 pulls/6 h).  The cached layers
-    # are then reused by the bake steps below.  A failure here is non-fatal:
-    # bake will re-pull authenticated if the layer is not in the local cache.
+    # Pull the base PHP image into the active Buildx builder's content store
+    # before logging in to Docker Hub so that this pull uses the anonymous
+    # (IP-based) pull quota rather than the shared per-account authenticated
+    # quota (200 pulls/6 h).  Using "docker buildx build" (rather than plain
+    # "docker pull") ensures the layers land in the BuildKit content store of
+    # the builder created by docker/setup-buildx-action, which is the same
+    # builder used by the bake steps below — they therefore find the base image
+    # already cached and do not re-pull it authenticated.  A failure here is
+    # non-fatal: bake will re-pull authenticated if the cache miss occurs.
     - name: Pre-pull base PHP image (unauthenticated)
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
         PLATFORM: ${{ steps.platform.outputs.platform }}
-      run: docker pull --platform "${PLATFORM}" "php:${VERSION}-apache" || true
+      run: |
+        printf 'FROM php:%s-apache\n' "${VERSION}" \
+          | docker buildx build --platform "${PLATFORM}" - || true
 
     # Docker Hub login is required so that the bake steps below can push
     # images by digest.  The base image pull above runs before this login
