@@ -633,11 +633,27 @@ runs:
             done <<< "${ALL_ARTIFACTS}"
 
             # ── Skip permanently inaccessible artifacts once all builds done ─
+            # Only mark an artifact as permanently skipped if it was NOT
+            # successfully downloaded this cycle (i.e. its platform_key is not
+            # in NEW_PKEYS).  Artifacts that were just downloaded but whose
+            # imagetools create has not yet succeeded must not be marked here —
+            # they are still in NEW_PKEYS and must remain unprocessed so they
+            # can be retried if imagetools create fails (e.g. Docker rate limit).
             if [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
               while IFS=$'\t' read -r aname aid; do
                 [[ -z "${aname}" ]] && continue
                 [[ "${aname}" == "${ARTIFACT_PREFIX}"* ]] || continue
                 grep -qxF "${aname}:${aid}" "${IMG_PROCESSED[$key]}" 2>/dev/null && continue
+                pkey_skip="${aname#"${ARTIFACT_PREFIX}"}"
+                # Skip if already queued for merge this cycle (download succeeded).
+                already_downloaded=false
+                for _k in "${NEW_PKEYS[@]+"${NEW_PKEYS[@]}"}"; do
+                  if [[ "${_k}" == "${pkey_skip}" ]]; then
+                    already_downloaded=true
+                    break
+                  fi
+                done
+                [[ "${already_downloaded}" == "true" ]] && continue
                 echo "::warning::${aname}: all builds done but cannot be" \
                      "downloaded; skipping."
                 echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
