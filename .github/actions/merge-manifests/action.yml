@@ -372,7 +372,42 @@ runs:
                   var:    (.platform.variant      // ""),
                   digest: (.digest                // "")}')
               n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
-              echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
+              if [[ "${n}" -gt 0 ]]; then
+                echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
+              else
+                # No .manifests[] entries: the tag is either a single-platform
+                # manifest (no manifests array) or every entry was filtered as
+                # unknown/attestation.  Try to extract the manifest digest and
+                # platform via imagetools inspect (non-raw), which fetches the
+                # image config so it can report platform info even for schema2
+                # single-platform manifests.
+                echo "  ${IMAGE_SEED}: 0 manifest-list entries; checking for" \
+                     "single-platform manifest via imagetools inspect..."
+                _si_out="$(docker buildx imagetools inspect "${IMAGE_SEED}" \
+                             2>/dev/null)" || _si_out=""
+                _si_digest="$(printf '%s' "${_si_out}" \
+                  | awk '/^Digest:/{print $2; exit}')" || _si_digest=""
+                _si_platform="$(printf '%s' "${_si_out}" \
+                  | awk '/Platform:/{print $2; exit}')" || _si_platform=""
+                if [[ -n "${_si_digest}" && -n "${_si_platform}" ]]; then
+                  # Normalize the platform key using the same logic as for
+                  # manifest-list entries above (strip default arm64/v8 variant).
+                  IFS='/' read -r _si_os _si_arch _si_var <<< "${_si_platform}"
+                  _si_norm="${_si_os}/${_si_arch}"
+                  if [[ -n "${_si_var:-}" ]] && \
+                     ! [[ "${_si_arch}" == "arm64" && "${_si_var}" == "v8" ]]; then
+                    _si_norm="${_si_os}/${_si_arch}/${_si_var}"
+                  fi
+                  _si_pkey="${_si_norm//\//-}"
+                  printf '%s\t%s\n' "${_si_pkey}" "${_si_digest}" \
+                    >> "${IMG_PLATFORM_DIGESTS[$key]}"
+                  echo "  ${IMAGE_SEED}: seeded 1 platform from single-platform" \
+                       "manifest (${_si_platform}, ${_si_digest})."
+                else
+                  echo "::warning::${IMAGE_SEED}: could not extract platform/digest" \
+                       "from single-platform manifest; starting with empty state."
+                fi
+              fi
               ;;
             not_found)
               # Tag doesn't exist yet — start fresh (clear any cached content).
