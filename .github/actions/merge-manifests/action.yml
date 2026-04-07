@@ -385,24 +385,42 @@ runs:
                      "single-platform manifest via imagetools inspect..."
                 _si_out="$(docker buildx imagetools inspect "${IMAGE_SEED}" \
                              2>/dev/null)" || _si_out=""
-                _si_digest="$(printf '%s' "${_si_out}" \
-                  | awk '/^Digest:/{print $2; exit}')" || _si_digest=""
-                _si_platform="$(printf '%s' "${_si_out}" \
-                  | awk '/Platform:/{print $2; exit}')" || _si_platform=""
+                # Use a single awk pass to pair the Digest: immediately
+                # preceding a Platform: line.  For manifest-list output,
+                # imagetools prints a top-level Digest: (the index digest)
+                # before listing per-entry Digest: + Platform: pairs.
+                # Tracking the most-recent Digest: before Platform: ensures
+                # we pair each platform with its own manifest digest rather
+                # than the index digest.
+                _si_pair="$(printf '%s' "${_si_out}" \
+                  | awk '
+                      /^Digest:/   { digest=$2; next }
+                      /^Platform:/ && digest != "" { print digest "\t" $2; exit }
+                    ')" || _si_pair=""
+                IFS=$'\t' read -r _si_digest _si_platform <<< "${_si_pair}"
                 if [[ -n "${_si_digest}" && -n "${_si_platform}" ]]; then
                   # Normalize the platform key using the same logic as for
                   # manifest-list entries above (strip default arm64/v8 variant).
                   IFS='/' read -r _si_os _si_arch _si_var <<< "${_si_platform}"
-                  _si_norm="${_si_os}/${_si_arch}"
-                  if [[ -n "${_si_var:-}" ]] && \
-                     ! [[ "${_si_arch}" == "arm64" && "${_si_var}" == "v8" ]]; then
-                    _si_norm="${_si_os}/${_si_arch}/${_si_var}"
+                  # Skip attestation / unknown-platform entries (same filter
+                  # used for manifest-list parsing above).
+                  if [[ -n "${_si_os}" && -n "${_si_arch}" ]] && \
+                     [[ "${_si_os}" != "unknown" ]] && \
+                     [[ "${_si_arch}" != "unknown" ]]; then
+                    _si_norm="${_si_os}/${_si_arch}"
+                    if [[ -n "${_si_var:-}" ]] && \
+                       ! [[ "${_si_arch}" == "arm64" && "${_si_var}" == "v8" ]]; then
+                      _si_norm="${_si_os}/${_si_arch}/${_si_var}"
+                    fi
+                    _si_pkey="${_si_norm//\//-}"
+                    printf '%s\t%s\n' "${_si_pkey}" "${_si_digest}" \
+                      >> "${IMG_PLATFORM_DIGESTS[$key]}"
+                    echo "  ${IMAGE_SEED}: seeded 1 platform from single-platform" \
+                         "manifest (${_si_platform}, ${_si_digest})."
+                  else
+                    echo "::warning::${IMAGE_SEED}: ignoring invalid single-platform" \
+                         "platform '${_si_platform}'; starting with empty state."
                   fi
-                  _si_pkey="${_si_norm//\//-}"
-                  printf '%s\t%s\n' "${_si_pkey}" "${_si_digest}" \
-                    >> "${IMG_PLATFORM_DIGESTS[$key]}"
-                  echo "  ${IMAGE_SEED}: seeded 1 platform from single-platform" \
-                       "manifest (${_si_platform}, ${_si_digest})."
                 else
                   echo "::warning::${IMAGE_SEED}: could not extract platform/digest" \
                        "from single-platform manifest; starting with empty state."
