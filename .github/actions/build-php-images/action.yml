@@ -390,15 +390,16 @@ runs:
             | grep -oE '[0-9]+' | head -1)" || rl_remaining=""
           if [[ "${rl_remaining}" == "0" ]]; then
             echo "::error::Docker Hub rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
-                 "Please retry in 6 hours."
+                 "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
           else
             echo "::error::One or more image push stages failed for PHP ${VERSION} on ${PLATFORM}." \
-                 "See the failed bake step output above for details."
+                 "See the failed bake step above for details." \
+                 "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           fi
         else
           echo "::error::One or more image push stages failed for PHP ${VERSION} on ${PLATFORM}." \
-               "Could not check Docker Hub rate limit status." \
-               "See the failed bake step output above for details."
+               "Could not check Docker Hub rate limit status; see the failed bake step above." \
+               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
         fi
 
     - name: Prepare build-done marker

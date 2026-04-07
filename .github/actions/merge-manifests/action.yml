@@ -526,7 +526,8 @@ runs:
                  "(${API_FAILURE_COUNT}/${MAX_API_FAILURES} consecutive failures)."
             if (( API_FAILURE_COUNT >= MAX_API_FAILURES )); then
               echo "::error::Artifact list API call failed ${MAX_API_FAILURES}" \
-                   "times in a row; aborting merge loop."
+                   "times in a row; aborting merge loop." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
               exit 1
             fi
             sleep "${POLL_INTERVAL_SECONDS}"
@@ -810,14 +811,14 @@ runs:
           fi
           if [[ "${_rl_remaining}" == "0" ]]; then
             echo "::error::Docker Hub push rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
-                 "Please retry in 6 hours."
+                 "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
           elif [[ -n "${_rl_remaining}" ]]; then
             echo "::error::Docker Hub push rate limit is not exhausted" \
-                 "(${_rl_remaining} request(s) remaining)." \
-                 "Please retry the job."
+                 "(${_rl_remaining} request(s) remaining); this is likely a transient error." \
+                 "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           else
             echo "::error::Could not determine Docker Hub rate limit status." \
-                 "Please retry the job."
+                 "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           fi
           exit 1
         fi
