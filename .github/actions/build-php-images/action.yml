@@ -131,6 +131,7 @@ runs:
           echo "::error::Platform must not contain whitespace or newlines. Got '${PLATFORM}'."
           exit 1
         fi
+        echo "platform=${platform_trimmed}"             >> "$GITHUB_OUTPUT"
         echo "platform_key=${platform_trimmed//\//-}" >> "$GITHUB_OUTPUT"
         echo "version=${VERSION}"                     >> "$GITHUB_OUTPUT"
 
@@ -143,7 +144,7 @@ runs:
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
-        PLATFORM: ${{ inputs.platform }}
+        PLATFORM: ${{ steps.platform.outputs.platform }}
       run: docker pull --platform "${PLATFORM}" "php:${VERSION}-apache" || true
 
     # Docker Hub login is required so that the bake steps below can push
@@ -173,7 +174,7 @@ runs:
         VERSIONS:                    ${{ inputs.version }}
         VERSIONS_BASE:               ${{ inputs.versions_base }}
         VERSIONS_SECURE:             ''
-        PLATFORMS:                   ${{ inputs.platform }}
+        PLATFORMS:                   ${{ steps.platform.outputs.platform }}
         PLATFORM_KEY:                ${{ steps.platform.outputs.platform_key }}
         REPO:                        ${{ inputs.repo }}
         PUSH_BY_DIGEST:              'true'
@@ -234,7 +235,7 @@ runs:
         VERSIONS:                    ${{ inputs.version }}
         VERSIONS_BASE:               ''
         VERSIONS_SECURE:             ${{ inputs.versions_secure }}
-        PLATFORMS:                   ${{ inputs.platform }}
+        PLATFORMS:                   ${{ steps.platform.outputs.platform }}
         PLATFORM_KEY:                ${{ steps.platform.outputs.platform_key }}
         REPO:                        ${{ inputs.repo }}
         PUSH_BY_DIGEST:              'true'
@@ -294,7 +295,7 @@ runs:
         VERSIONS:                    ${{ inputs.version }}
         VERSIONS_BASE:               ''
         VERSIONS_SECURE:             ''
-        PLATFORMS:                   ${{ inputs.platform }}
+        PLATFORMS:                   ${{ steps.platform.outputs.platform }}
         PLATFORM_KEY:                ${{ steps.platform.outputs.platform_key }}
         REPO:                        ${{ inputs.repo }}
         PUSH_BY_DIGEST:              'true'
