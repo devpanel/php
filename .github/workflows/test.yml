@@ -296,3 +296,30 @@ jobs:
               echo "::warning::Set ARG CODESERVER_DEB_SHA256_${ARCH_UPPER}=${ACTUAL_SHA} in base/Dockerfile to enable integrity verification."
             fi
           done
+
+  # Aggregates all jobs for branch protection.  The `build` job is a matrix
+  # and may be skipped entirely when no PHP versions are detected; the other
+  # jobs always run.  Checking result values here lets a single required
+  # status check ("Test") cover the whole workflow.
+  status:
+    name: Test
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - lint-yaml
+      - lint-shell
+      - lint-dockerfile
+      - verify-extension
+      - verify-code-server
+      - detect
+      - build
+    steps:
+      - name: Check all jobs passed
+        run: |
+          results='${{ toJSON(needs.*.result) }}'
+          echo "Job results: ${results}"
+          if echo "${results}" | grep -qE '"(failure|cancelled)"'; then
+            echo "One or more required jobs failed or were cancelled."
+            exit 1
+          fi
+          echo "All jobs passed or were skipped."
