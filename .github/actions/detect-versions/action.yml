@@ -367,10 +367,25 @@ runs:
         echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
         echo "all_versions=${ALL_VERSIONS_OUT}"             >> "$GITHUB_OUTPUT"
 
-        # Parse configured platforms into an array, trimming whitespace and
-        # removing duplicates (duplicates would inflate TOTAL_PLATFORMS and
-        # produce colliding artifact names in the build matrix).
-        readarray -t PLATFORM_LIST < <(printf '%s\n' "${PLATFORMS}" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' | sort -u)
+        # Parse configured platforms into an array, trimming whitespace,
+        # normalizing default variants to canonical keys, and removing
+        # duplicates (duplicates would inflate TOTAL_PLATFORMS and produce
+        # colliding artifact names in the build matrix).
+        # Canonical normalization: strip well-known default variants so that
+        # artifact names match the seeded state in merge-manifests:
+        #   linux/arm64/v8 → linux/arm64  (arm64 default variant is v8)
+        # Non-default variants (linux/arm/v6, linux/arm/v7) are kept as-is.
+        readarray -t PLATFORM_LIST < <(
+          printf '%s\n' "${PLATFORMS}" | tr ',' '\n' \
+            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' \
+            | while IFS= read -r _plat; do
+                case "${_plat}" in
+                  linux/arm64/v8) echo "linux/arm64" ;;
+                  *)              echo "${_plat}" ;;
+                esac
+              done \
+            | sort -u
+        )
         TOTAL_PLATFORMS="${#PLATFORM_LIST[@]}"
 
         if [[ "${TOTAL_PLATFORMS}" -eq 0 ]]; then
