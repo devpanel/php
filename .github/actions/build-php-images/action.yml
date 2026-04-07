@@ -143,7 +143,8 @@ runs:
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
-      run: docker pull "php:${VERSION}-apache" || true
+        PLATFORM: ${{ inputs.platform }}
+      run: docker pull --platform "${PLATFORM}" "php:${VERSION}-apache" || true
 
     # Docker Hub login is required so that the bake steps below can push
     # images by digest.  The base image pull above runs before this login

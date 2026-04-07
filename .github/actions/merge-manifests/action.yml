@@ -385,17 +385,47 @@ runs:
                      "single-platform manifest via imagetools inspect..."
                 _si_out="$(docker buildx imagetools inspect "${IMAGE_SEED}" \
                              2>/dev/null)" || _si_out=""
-                # Use a single awk pass to pair the Digest: immediately
-                # preceding a Platform: line.  For manifest-list output,
-                # imagetools prints a top-level Digest: (the index digest)
-                # before listing per-entry Digest: + Platform: pairs.
-                # Tracking the most-recent Digest: before Platform: ensures
-                # we pair each platform with its own manifest digest rather
-                # than the index digest.
+                # Parse imagetools inspect output in a way that tolerates
+                # leading whitespace and either Digest:/Platform: ordering.
+                # Keep top-level fields separate from indented per-manifest
+                # fields so we do not accidentally pair a manifest-list index
+                # digest with a platform from a nested manifest entry.  If
+                # per-manifest pairs are present, use the first complete one;
+                # otherwise fall back to the top-level digest/platform pair
+                # for true single-platform manifests.
                 _si_pair="$(printf '%s' "${_si_out}" \
                   | awk '
-                      /^Digest:/   { digest=$2; next }
-                      /^Platform:/ && digest != "" { print digest "\t" $2; exit }
+                      /^[[:space:]]*Digest:[[:space:]]+/ {
+                        value = $2
+                        if ($0 ~ /^[[:space:]]+/) {
+                          entry_digest = value
+                          if (entry_platform != "") {
+                            print entry_digest "\t" entry_platform
+                            exit
+                          }
+                        } else {
+                          top_digest = value
+                        }
+                        next
+                      }
+                      /^[[:space:]]*Platform:[[:space:]]+/ {
+                        value = $2
+                        if ($0 ~ /^[[:space:]]+/) {
+                          entry_platform = value
+                          if (entry_digest != "") {
+                            print entry_digest "\t" entry_platform
+                            exit
+                          }
+                        } else {
+                          top_platform = value
+                        }
+                        next
+                      }
+                      END {
+                        if (top_digest != "" && top_platform != "") {
+                          print top_digest "\t" top_platform
+                        }
+                      }
                     ')" || _si_pair=""
                 IFS=$'\t' read -r _si_digest _si_platform <<< "${_si_pair}"
                 if [[ -n "${_si_digest}" && -n "${_si_platform}" ]]; then
