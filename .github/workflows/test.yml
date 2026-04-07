@@ -304,6 +304,7 @@ jobs:
   status:
     name: Test
     runs-on: ubuntu-latest
+    permissions: {}
     if: always()
     needs:
       - lint-yaml
