@@ -723,9 +723,9 @@ runs:
 
             if [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
               if [[ "${digest_merged}" -lt "${TOTAL_PLATFORMS}" ]]; then
-                echo "::warning::Only ${digest_merged}/${TOTAL_PLATFORMS}" \
+                echo "::error::Only ${digest_merged}/${TOTAL_PLATFORMS}" \
                      "platform(s) merged for ${IMAGE}; some builds may have" \
-                     "failed."
+                     "failed or Docker Hub rate limits were hit."
               fi
               IMG_DONE[$key]="true"
               echo "Image ${IMAGE} complete" \
@@ -752,6 +752,30 @@ runs:
             sleep "${POLL_INTERVAL_SECONDS}"
           fi
         done
+
+        # ── Final check: fail if any image is missing platform merges ─────────
+        # When imagetools create is blocked by Docker Hub rate limits the merge
+        # loop exits with some images unpushed.  Exit 1 here so the job reports
+        # failure and can be retried.
+        INCOMPLETE_IMAGES=()
+        for vs in "${VERSIONS_STAGES[@]}"; do
+          version="${vs%%:*}"
+          stage="${vs##*:}"
+          key="${version}:${stage}"
+          digest_merged="${IMG_DIGEST_MERGED[$key]}"
+          if [[ "${digest_merged}" -lt "${TOTAL_PLATFORMS}" ]]; then
+            INCOMPLETE_IMAGES+=("${REPO}:${version}-${stage}${TAG_SUFFIX}" \
+              "(${digest_merged}/${TOTAL_PLATFORMS} platform(s) merged)")
+          fi
+        done
+        if [[ ${#INCOMPLETE_IMAGES[@]} -gt 0 ]]; then
+          echo "::error::The following images were not fully pushed to Docker Hub:"
+          for img in "${INCOMPLETE_IMAGES[@]}"; do
+            echo "::error::  ${img}"
+          done
+          echo "::error::This is likely caused by Docker Hub rate limits. Please retry in 6 hours."
+          exit 1
+        fi
 
     - name: Compute digests cache key
       if: always()
