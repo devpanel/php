@@ -790,7 +790,12 @@ runs:
             echo "::error::  ${IMAGE} (${digest_merged}/${TOTAL_PLATFORMS} platform(s) merged)"
             last_err="${IMG_LAST_ERROR[$key]:-}"
             if [[ -n "${last_err}" ]]; then
-              echo "::error::  Last error: ${last_err}"
+              # Sanitize for use in a GHA annotation: collapse newlines to spaces
+              # and escape workflow-command reserved characters ('%', '\r', '\n').
+              safe_err="$(printf '%s' "${last_err}" \
+                | tr '\n\r' '  ' \
+                | sed 's/%/%25/g')"
+              echo "::error::  Last error: ${safe_err}"
             fi
           done
           # Probe Docker Hub rate-limit status so we can give an actionable
@@ -814,10 +819,10 @@ runs:
               | grep -oE '[0-9]+' | head -1)" || _rl_remaining=""
           fi
           if [[ "${_rl_remaining}" == "0" ]]; then
-            echo "::error::Docker Hub push rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
+            echo "::error::Docker Hub rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
                  "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
           elif [[ -n "${_rl_remaining}" ]]; then
-            echo "::error::Docker Hub push rate limit is not exhausted" \
+            echo "::error::Docker Hub rate limit is not exhausted" \
                  "(${_rl_remaining} request(s) remaining); this is likely a transient error." \
                  "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           else
