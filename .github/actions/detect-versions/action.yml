@@ -374,6 +374,7 @@ runs:
         # Canonical normalization: strip well-known default variants so that
         # artifact names match the seeded state in merge-manifests:
         #   linux/arm64/v8 → linux/arm64  (arm64 default variant is v8)
+        #   linux/amd64/v1 → linux/amd64  (amd64 default variant is v1)
         # Non-default variants (linux/arm/v6, linux/arm/v7) are kept as-is.
         readarray -t PLATFORM_LIST < <(
           printf '%s\n' "${PLATFORMS}" | tr ',' '\n' \
@@ -381,6 +382,7 @@ runs:
             | while IFS= read -r _plat; do
                 case "${_plat}" in
                   linux/arm64/v8) echo "linux/arm64" ;;
+                  linux/amd64/v1) echo "linux/amd64" ;;
                   *)              echo "${_plat}" ;;
                 esac
               done \

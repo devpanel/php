@@ -354,12 +354,13 @@ runs:
                 # not "linux-arm64-v8".  Strip default variants so that seeded
                 # keys match artifact keys and avoid duplicate platform entries
                 # in subsequent imagetools create calls.
-                # Known default variants to strip: arm64/v8.
+                # Known default variants to strip: arm64/v8, amd64/v1.
                 # Non-default variants (arm/v6, arm/v7) are kept as-is because
                 # they identify distinct platforms.
                 _normalized_plat="${p_os}/${p_arch}"
                 if [[ -n "${p_var}" ]] && \
-                   ! [[ "${p_arch}" == "arm64" && "${p_var}" == "v8" ]]; then
+                   ! [[ "${p_arch}" == "arm64" && "${p_var}" == "v8" ]] && \
+                   ! [[ "${p_arch}" == "amd64" && "${p_var}" == "v1" ]]; then
                   _normalized_plat="${p_os}/${p_arch}/${p_var}"
                 fi
                 pkey="${_normalized_plat//\//-}"
