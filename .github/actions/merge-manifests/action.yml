@@ -797,9 +797,9 @@ runs:
           # suggestion: "rate limit exhausted – retry in 6 hours" vs "retry".
           _rl_creds_file="$(mktemp)"
           chmod 600 "${_rl_creds_file}"
-          printf '%s:%s' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_rl_creds_file}"
+          printf 'machine auth.docker.io login %s password %s\n' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_rl_creds_file}"
           _rl_auth_json="$(curl -sf \
-            -u "@${_rl_creds_file}" \
+            --netrc-file "${_rl_creds_file}" \
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
             2>/dev/null)" || _rl_auth_json=""
           rm -f "${_rl_creds_file}"

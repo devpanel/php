@@ -378,9 +378,9 @@ runs:
         # push failure and direct the user to the failed step's output.
         _creds_file="$(mktemp)"
         chmod 600 "${_creds_file}"
-        printf '%s:%s' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
+        printf 'machine auth.docker.io login %s password %s\n' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
         auth_json="$(curl -sf \
-          -u "@${_creds_file}" \
+          --netrc-file "${_creds_file}" \
           "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
           2>/dev/null)" || auth_json=""
         rm -f "${_creds_file}"
