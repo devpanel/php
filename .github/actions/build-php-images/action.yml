@@ -358,6 +358,49 @@ runs:
     # when all per-platform builds have finished — without querying the jobs API.
     # Named "build-done-{VERSION}-{platform_key}" so each merge job can count
     # how many platform builds are complete for its version.
+
+    # Diagnostic step: when any bake stage failed, probe Docker Hub's rate-limit
+    # endpoint to determine whether the failure was caused by exhausted push quota
+    # and emit an actionable error message.
+    - name: Check for Docker Hub rate limit errors
+      if: failure() && (steps.bake-base.outcome == 'failure' || steps.bake-secure.outcome == 'failure' || steps.bake-advance.outcome == 'failure')
+      shell: bash
+      env:
+        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
+        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
+        VERSION: ${{ inputs.version }}
+        PLATFORM: ${{ steps.platform.outputs.platform }}
+      run: |
+        set -euo pipefail
+        # Use the Docker Hub ratelimitpreview endpoint to inspect the current
+        # pull/push quota without consuming any quota.  If RateLimit-Remaining
+        # is 0 the account's quota is exhausted; otherwise report a generic
+        # push failure and direct the user to the failed step's output.
+        auth_json="$(curl -sf \
+          -u "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}" \
+          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+          2>/dev/null)" || auth_json=""
+        auth_token="$(printf '%s' "${auth_json}" | jq -r '.token // ""' 2>/dev/null)" || auth_token=""
+        if [[ -n "${auth_token}" ]]; then
+          rl_remaining="$(curl -sf \
+            -H "Authorization: Bearer ${auth_token}" \
+            -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
+            2>/dev/null \
+            | grep -i '^ratelimit-remaining:' \
+            | grep -oE '[0-9]+' | head -1)" || rl_remaining=""
+          if [[ "${rl_remaining}" == "0" ]]; then
+            echo "::error::Docker Hub rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
+                 "Please retry in 6 hours."
+          else
+            echo "::error::One or more image push stages failed for PHP ${VERSION} on ${PLATFORM}." \
+                 "See the failed bake step output above for details."
+          fi
+        else
+          echo "::error::One or more image push stages failed for PHP ${VERSION} on ${PLATFORM}." \
+               "Could not check Docker Hub rate limit status." \
+               "See the failed bake step output above for details."
+        fi
+
     - name: Prepare build-done marker
       if: always()
       id: build-done-marker

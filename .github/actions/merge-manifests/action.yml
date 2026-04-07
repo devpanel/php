@@ -166,6 +166,7 @@ runs:
         declare -A IMG_MERGED_PKEYS     # image_key → path to merged-platform-keys set file
         declare -A IMG_DONE             # image_key → "true"/"false"
         declare -A IMG_PLATFORM_DIGESTS # image_key → path to platform-digest state file
+        declare -A IMG_LAST_ERROR       # image_key → last imagetools create error text
         #   State file format: one "platform_key<TAB>sha256:digest" per line.
         #   Seeded from the existing manifest at startup; updated after each
         #   successful imagetools create.  Provides within-run preservation
@@ -193,6 +194,7 @@ runs:
           IMG_PLATFORM_DIGESTS[$key]="${DIGESTS_CACHE_DIR}/digests-${safe_key}.txt"
           IMG_DIGEST_MERGED[$key]=0
           IMG_DONE[$key]="false"
+          IMG_LAST_ERROR[$key]=""
           touch "${IMG_PROCESSED[$key]}"
           touch "${IMG_MERGED_PKEYS[$key]}"
           # Only create the digests file if it wasn't pre-populated by the
@@ -681,8 +683,10 @@ runs:
               done < "${REFS_MAP}"
 
               if [[ ${#REFS[@]} -gt 0 ]]; then
+                _create_err_file="$(mktemp)"
                 if docker buildx imagetools create \
-                     --tag "${IMAGE}" "${REFS[@]}"; then
+                     --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}"; then
+                  rm -f "${_create_err_file}"
                   echo "  Updated ${IMAGE} with ${#REFS[@]} platform ref(s)."
                   # Promote temp map to the persistent state file
                   cp "${REFS_MAP}" "${IMG_PLATFORM_DIGESTS[$key]}"
@@ -709,8 +713,15 @@ runs:
                     fi
                   done
                 else
-                  echo "::warning::imagetools create failed for ${IMAGE};" \
-                       "will retry next cycle."
+                  _create_err="$(cat "${_create_err_file}" 2>/dev/null || true)"
+                  rm -f "${_create_err_file}"
+                  IMG_LAST_ERROR[$key]="${_create_err}"
+                  if [[ -n "${_create_err}" ]]; then
+                    echo "imagetools create failed for ${IMAGE}: ${_create_err}"
+                  else
+                    echo "imagetools create failed for ${IMAGE}."
+                  fi
+                  echo "Will retry next cycle."
                   # State file (IMG_PLATFORM_DIGESTS) is unchanged; the temp
                   # map is discarded.  New artifacts remain unprocessed so they
                   # will be retried on the next cycle.
@@ -723,9 +734,8 @@ runs:
 
             if [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
               if [[ "${digest_merged}" -lt "${TOTAL_PLATFORMS}" ]]; then
-                echo "::error::Only ${digest_merged}/${TOTAL_PLATFORMS}" \
-                     "platform(s) merged for ${IMAGE}; some builds may have" \
-                     "failed or Docker Hub rate limits were hit."
+                echo "::warning::Only ${digest_merged}/${TOTAL_PLATFORMS}" \
+                     "platform(s) merged for ${IMAGE}; will report at end."
               fi
               IMG_DONE[$key]="true"
               echo "Image ${IMAGE} complete" \
@@ -754,26 +764,33 @@ runs:
         done
 
         # ── Final check: fail if any image is missing platform merges ─────────
-        # When imagetools create is blocked by Docker Hub rate limits the merge
-        # loop exits with some images unpushed.  Exit 1 here so the job reports
-        # failure and can be retried.
-        INCOMPLETE_IMAGES=()
+        # When imagetools create is blocked (e.g. Docker Hub rate limits) the
+        # merge loop exits with some images unpushed.  Exit 1 here so the job
+        # reports failure and can be retried.
+        INCOMPLETE_KEYS=()
         for vs in "${VERSIONS_STAGES[@]}"; do
           version="${vs%%:*}"
           stage="${vs##*:}"
           key="${version}:${stage}"
           digest_merged="${IMG_DIGEST_MERGED[$key]}"
           if [[ "${digest_merged}" -lt "${TOTAL_PLATFORMS}" ]]; then
-            INCOMPLETE_IMAGES+=("${REPO}:${version}-${stage}${TAG_SUFFIX}" \
-              "(${digest_merged}/${TOTAL_PLATFORMS} platform(s) merged)")
+            INCOMPLETE_KEYS+=("${key}")
           fi
         done
-        if [[ ${#INCOMPLETE_IMAGES[@]} -gt 0 ]]; then
+        if [[ ${#INCOMPLETE_KEYS[@]} -gt 0 ]]; then
           echo "::error::The following images were not fully pushed to Docker Hub:"
-          for img in "${INCOMPLETE_IMAGES[@]}"; do
-            echo "::error::  ${img}"
+          for key in "${INCOMPLETE_KEYS[@]}"; do
+            version="${key%%:*}"
+            stage="${key##*:}"
+            IMAGE="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+            digest_merged="${IMG_DIGEST_MERGED[$key]}"
+            echo "::error::  ${IMAGE} (${digest_merged}/${TOTAL_PLATFORMS} platform(s) merged)"
+            last_err="${IMG_LAST_ERROR[$key]:-}"
+            if [[ -n "${last_err}" ]]; then
+              echo "::error::  Last error: ${last_err}"
+            fi
           done
-          echo "::error::This is likely caused by Docker Hub rate limits. Please retry in 6 hours."
+          echo "::error::Please retry in 6 hours."
           exit 1
         fi
 
