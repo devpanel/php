@@ -305,6 +305,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     if: always()
+    permissions: {}
     needs:
       - lint-yaml
       - lint-shell
