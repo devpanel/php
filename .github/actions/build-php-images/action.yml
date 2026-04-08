@@ -390,6 +390,7 @@ runs:
           # failure (exit non-zero).  With -f, curl exits non-zero for
           # HTTP >= 400; exit 0 means we got a 2xx response.
           rl_remaining=""
+          _rl_unlimited=false
           _rl_curl_exit=0
           _rl_headers="$(curl -sf --connect-timeout 5 --max-time 15 \
             -H "Authorization: Bearer ${auth_token}" \
@@ -400,19 +401,20 @@ runs:
               | grep -i '^ratelimit-remaining:' \
               | grep -oE '[0-9]+' | head -1)" || rl_remaining=""
             if [[ -z "${rl_remaining}" ]]; then
-              # 2xx but no RateLimit-Remaining header → unlimited plan.
-              rl_remaining="unlimited"
+              # 2xx but no RateLimit-Remaining header → Docker Hub account
+              # has no pull-rate limit (Pro / Team / Business plan).
+              _rl_unlimited=true
             fi
           fi
-          if [[ "${rl_remaining}" == "0" ]]; then
-            echo "::error::Docker Hub pull rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
-                 "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
-          elif [[ "${rl_remaining}" == "unlimited" ]]; then
+          if [[ "${_rl_unlimited}" == "true" ]]; then
             echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                  "Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \
                  "quota exhaustion is not the cause of this failure." \
                  "See the failed bake step above for details." \
                  "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+          elif [[ "${rl_remaining}" == "0" ]]; then
+            echo "::error::Docker Hub pull rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
+                 "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
           elif [[ -n "${rl_remaining}" ]]; then
             echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                  "Docker Hub pull rate limit is not exhausted (${rl_remaining} request(s) remaining)." \
