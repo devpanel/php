@@ -115,7 +115,7 @@ runs:
       shell: bash
       env:
         PLATFORM: ${{ inputs.platform }}
-        VERSION:  ${{ inputs.version }}
+        VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
         platform_trimmed="$(printf '%s' "${PLATFORM}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
@@ -176,25 +176,25 @@ runs:
       if: inputs.versions_base != ''
       uses: docker/bake-action@v7
       env:
-        TAG_SUFFIX:                  ${{ inputs.tag_suffix }}
-        VERSIONS:                    ${{ inputs.version }}
-        VERSIONS_BASE:               ${{ inputs.versions_base }}
-        VERSIONS_SECURE:             ''
-        PLATFORMS:                   ${{ steps.platform.outputs.platform }}
-        PLATFORM_KEY:                ${{ steps.platform.outputs.platform_key }}
-        REPO:                        ${{ inputs.repo }}
-        PUSH_BY_DIGEST:              'true'
-        CACHE_FROM_ENABLED:          ${{ inputs.cache_from_enabled }}
-        GHCR_REPO:                   ${{ steps.ghcr.outputs.repo }}
-        GHCR_WRITABLE:               ${{ inputs.ghcr_writable }}
-        DOWNLOADS_DIR:               ${{ steps.preseed-paths.outputs.downloads_dir }}
+        TAG_SUFFIX: ${{ inputs.tag_suffix }}
+        VERSIONS: ${{ inputs.version }}
+        VERSIONS_BASE: ${{ inputs.versions_base }}
+        VERSIONS_SECURE: ''
+        PLATFORMS: ${{ steps.platform.outputs.platform }}
+        PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
+        REPO: ${{ inputs.repo }}
+        PUSH_BY_DIGEST: 'true'
+        CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
+        GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+        GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
+        DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
       with:
         source: .
         files: |
           docker-bake.hcl
           ${{ steps.preseed-paths.outputs.bake_overrides_file }}
-        targets:       php-base
+        targets: php-base
 
     - name: Extract base digest
       id: base-digest
@@ -202,7 +202,7 @@ runs:
       shell: bash
       env:
         PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
-        VERSION:      ${{ inputs.version }}
+        VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
         VER_KEY="${VERSION//./_}"
@@ -226,10 +226,10 @@ runs:
       if: steps.base-digest.outputs.has_base == 'true'
       uses: actions/upload-artifact@v7
       with:
-        name:              digests-${{ steps.platform.outputs.version }}-base-${{ steps.platform.outputs.platform_key }}
-        path:              /tmp/digests/base/${{ steps.platform.outputs.platform_key }}.json
+        name: digests-${{ steps.platform.outputs.version }}-base-${{ steps.platform.outputs.platform_key }}
+        path: /tmp/digests/base/${{ steps.platform.outputs.platform_key }}.json
         if-no-files-found: error
-        retention-days:    1
+        retention-days: 1
         overwrite: true
 
     - name: Build secure image
@@ -237,25 +237,25 @@ runs:
       if: inputs.versions_secure != ''
       uses: docker/bake-action@v7
       env:
-        TAG_SUFFIX:                  ${{ inputs.tag_suffix }}
-        VERSIONS:                    ${{ inputs.version }}
-        VERSIONS_BASE:               ''
-        VERSIONS_SECURE:             ${{ inputs.versions_secure }}
-        PLATFORMS:                   ${{ steps.platform.outputs.platform }}
-        PLATFORM_KEY:                ${{ steps.platform.outputs.platform_key }}
-        REPO:                        ${{ inputs.repo }}
-        PUSH_BY_DIGEST:              'true'
-        CACHE_FROM_ENABLED:          ${{ inputs.cache_from_enabled }}
-        GHCR_REPO:                   ${{ steps.ghcr.outputs.repo }}
-        GHCR_WRITABLE:               ${{ inputs.ghcr_writable }}
-        DOWNLOADS_DIR:               ${{ steps.preseed-paths.outputs.downloads_dir }}
+        TAG_SUFFIX: ${{ inputs.tag_suffix }}
+        VERSIONS: ${{ inputs.version }}
+        VERSIONS_BASE: ''
+        VERSIONS_SECURE: ${{ inputs.versions_secure }}
+        PLATFORMS: ${{ steps.platform.outputs.platform }}
+        PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
+        REPO: ${{ inputs.repo }}
+        PUSH_BY_DIGEST: 'true'
+        CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
+        GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+        GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
+        DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
       with:
         source: .
         files: |
           docker-bake.hcl
           ${{ steps.preseed-paths.outputs.bake_overrides_file }}
-        targets:       php-secure
+        targets: php-secure
 
     - name: Extract secure digest
       id: secure-digest
@@ -263,7 +263,7 @@ runs:
       shell: bash
       env:
         PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
-        VERSION:      ${{ inputs.version }}
+        VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
         VER_KEY="${VERSION//./_}"
@@ -287,35 +287,35 @@ runs:
       if: steps.secure-digest.outputs.has_secure == 'true'
       uses: actions/upload-artifact@v7
       with:
-        name:              digests-${{ steps.platform.outputs.version }}-secure-${{ steps.platform.outputs.platform_key }}
-        path:              /tmp/digests/secure/${{ steps.platform.outputs.platform_key }}.json
+        name: digests-${{ steps.platform.outputs.version }}-secure-${{ steps.platform.outputs.platform_key }}
+        path: /tmp/digests/secure/${{ steps.platform.outputs.platform_key }}.json
         if-no-files-found: error
-        retention-days:    1
+        retention-days: 1
         overwrite: true
 
     - name: Build advance image
       id: bake-advance
       uses: docker/bake-action@v7
       env:
-        TAG_SUFFIX:                  ${{ inputs.tag_suffix }}
-        VERSIONS:                    ${{ inputs.version }}
-        VERSIONS_BASE:               ''
-        VERSIONS_SECURE:             ''
-        PLATFORMS:                   ${{ steps.platform.outputs.platform }}
-        PLATFORM_KEY:                ${{ steps.platform.outputs.platform_key }}
-        REPO:                        ${{ inputs.repo }}
-        PUSH_BY_DIGEST:              'true'
-        CACHE_FROM_ENABLED:          ${{ inputs.cache_from_enabled }}
-        GHCR_REPO:                   ${{ steps.ghcr.outputs.repo }}
-        GHCR_WRITABLE:               ${{ inputs.ghcr_writable }}
-        DOWNLOADS_DIR:               ${{ steps.preseed-paths.outputs.downloads_dir }}
+        TAG_SUFFIX: ${{ inputs.tag_suffix }}
+        VERSIONS: ${{ inputs.version }}
+        VERSIONS_BASE: ''
+        VERSIONS_SECURE: ''
+        PLATFORMS: ${{ steps.platform.outputs.platform }}
+        PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
+        REPO: ${{ inputs.repo }}
+        PUSH_BY_DIGEST: 'true'
+        CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
+        GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+        GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
+        DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
       with:
         source: .
         files: |
           docker-bake.hcl
           ${{ steps.preseed-paths.outputs.bake_overrides_file }}
-        targets:       php-advance
+        targets: php-advance
 
     - name: Extract advance digest
       id: advance-digest
@@ -323,7 +323,7 @@ runs:
       shell: bash
       env:
         PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
-        VERSION:      ${{ inputs.version }}
+        VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
         VER_KEY="${VERSION//./_}"
@@ -347,10 +347,10 @@ runs:
       if: steps.advance-digest.outputs.has_advance == 'true'
       uses: actions/upload-artifact@v7
       with:
-        name:              digests-${{ steps.platform.outputs.version }}-advance-${{ steps.platform.outputs.platform_key }}
-        path:              /tmp/digests/advance/${{ steps.platform.outputs.platform_key }}.json
+        name: digests-${{ steps.platform.outputs.version }}-advance-${{ steps.platform.outputs.platform_key }}
+        path: /tmp/digests/advance/${{ steps.platform.outputs.platform_key }}.json
         if-no-files-found: error
-        retention-days:    1
+        retention-days: 1
         overwrite: true
 
     # ── Build-done marker ──────────────────────────────────────────────────────
@@ -444,7 +444,7 @@ runs:
       id: build-done-marker
       shell: bash
       env:
-        VERSION:      ${{ inputs.version }}
+        VERSION: ${{ inputs.version }}
         PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
       run: |
         set -euo pipefail
@@ -461,8 +461,8 @@ runs:
       if: always() && steps.build-done-marker.outputs.platform_key != ''
       uses: actions/upload-artifact@v7
       with:
-        name:              build-done-${{ steps.build-done-marker.outputs.version }}-${{ steps.build-done-marker.outputs.platform_key }}
-        path:              /tmp/build-done/${{ steps.build-done-marker.outputs.platform_key }}.txt
+        name: build-done-${{ steps.build-done-marker.outputs.version }}-${{ steps.build-done-marker.outputs.platform_key }}
+        path: /tmp/build-done/${{ steps.build-done-marker.outputs.platform_key }}.txt
         if-no-files-found: error
-        retention-days:    1
+        retention-days: 1
         overwrite: true

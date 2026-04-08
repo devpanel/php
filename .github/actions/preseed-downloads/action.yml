@@ -404,7 +404,7 @@ runs:
     # not work), writes a final-versions.env into the cache directory (so
     # subsequent cache-hit runs can recover actual per-codename versions without
     # re-downloading), then downloads all artifacts.
-    - name: Download artifacts for all detected Debian tiers (cache miss)
+    - name: Download artifacts for all detected Debian tiers (cache miss or refresh)
       if: steps.cache.outputs.cache-matched-key == '' || inputs.refresh_cache == 'true'
       shell: bash
       env:

@@ -20,20 +20,20 @@ jobs:
   detect:
     runs-on: ubuntu-latest
     permissions:
-      contents:  read
-      packages:  write
+      contents: read
+      packages: write
       actions: write
     outputs:
-      versions:           ${{ steps.detect.outputs.versions }}
+      versions: ${{ steps.detect.outputs.versions }}
       latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
       # JSON array of {version, stage} objects — one entry per Docker Hub
       # image that needs a manifest merge.  The single merge job consumes
       # this whole array, and the merge-manifests action iterates over the
       # entries internally to merge each image's tags.
-      merge_matrix:       ${{ steps.detect.outputs.merge_matrix }}
+      merge_matrix: ${{ steps.detect.outputs.merge_matrix }}
       # JSON array of {version, platform, versions_base, versions_secure}
       # objects — one entry per PHP-version × platform combination.
-      build_matrix:         ${{ steps.detect.outputs.build_matrix }}
+      build_matrix: ${{ steps.detect.outputs.build_matrix }}
       # Total number of build matrix jobs (versions × platforms).  Passed to
       # the merge job so it can account for in-progress build pulls when
       # deciding whether the quota allows seeding existing manifests.
@@ -41,13 +41,13 @@ jobs:
       # Whether GHCR is writable with the current token.  Set once here in the
       # detect job and passed to every build job via the build matrix so that
       # each job uses GHCR as primary (writable) or GHA as primary (not writable).
-      ghcr_writable:        ${{ steps.detect.outputs.ghcr_writable }}
+      ghcr_writable: ${{ steps.detect.outputs.ghcr_writable }}
       # Tag suffix computed from the branch name (empty for main, -rc for develop,
       # or a sanitised branch slug for all other branches).
-      tag_suffix:         ${{ steps.tag-suffix.outputs.tag_suffix }}
+      tag_suffix: ${{ steps.tag-suffix.outputs.tag_suffix }}
       # Total number of platforms being built; used by the merge job to know
       # when all platform digests have been uploaded.
-      total_platforms:    ${{ steps.detect.outputs.total_platforms }}
+      total_platforms: ${{ steps.detect.outputs.total_platforms }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -70,8 +70,8 @@ jobs:
         uses: ./.github/actions/detect-versions
         with:
           platforms_filter: ${{ inputs.platforms || vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
-          github_token:     ${{ secrets.GITHUB_TOKEN }}
-          ghcr_token:       ${{ secrets.GHCR_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token: ${{ secrets.GHCR_TOKEN }}
 
       # Pre-seed is run here in the detect job (once, with ALL PHP versions in
       # the repo) rather than inside each parallel build job.  See the comment
@@ -140,7 +140,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-      actions:  write
+      actions: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -167,17 +167,17 @@ jobs:
         uses: ./.github/actions/build-php-images
         with:
           cache_from_enabled: 'false'
-          version:            ${{ matrix.version }}
-          versions_base:      ${{ matrix.versions_base }}
-          versions_secure:    ${{ matrix.versions_secure }}
-          tag_suffix:         ${{ needs.detect.outputs.tag_suffix }}
-          platform:           ${{ matrix.platform }}
-          repo:               ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
+          version: ${{ matrix.version }}
+          versions_base: ${{ matrix.versions_base }}
+          versions_secure: ${{ matrix.versions_secure }}
+          tag_suffix: ${{ needs.detect.outputs.tag_suffix }}
+          platform: ${{ matrix.platform }}
+          repo: ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token:    ${{ secrets.DOCKERHUB_TOKEN }}
-          github_token:       ${{ secrets.GITHUB_TOKEN }}
-          ghcr_token:         ${{ secrets.GHCR_TOKEN }}
-          ghcr_writable:      ${{ needs.detect.outputs.ghcr_writable }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token: ${{ secrets.GHCR_TOKEN }}
+          ghcr_writable: ${{ needs.detect.outputs.ghcr_writable }}
           downloads_dir: ${{ runner.temp }}/build-downloads
           bake_overrides_file: ${{ runner.temp }}/preseed-bake-overrides.json
 
@@ -201,7 +201,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions:  write
+      actions: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -212,13 +212,13 @@ jobs:
       - name: Poll and merge platform manifests
         uses: ./.github/actions/merge-manifests
         with:
-          merge_matrix:         ${{ needs.detect.outputs.merge_matrix }}
-          repo:                 ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
-          tag_suffix:           ${{ needs.detect.outputs.tag_suffix }}
-          total_platforms:      ${{ needs.detect.outputs.total_platforms }}
+          merge_matrix: ${{ needs.detect.outputs.merge_matrix }}
+          repo: ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
+          tag_suffix: ${{ needs.detect.outputs.tag_suffix }}
+          total_platforms: ${{ needs.detect.outputs.total_platforms }}
           build_matrix_length: ${{ needs.detect.outputs.build_matrix_length }}
-          github_token:         ${{ secrets.GITHUB_TOKEN }}
-          run_id:               ${{ github.run_id }}
-          repository:           ${{ github.repository }}
-          dockerhub_username:   ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token:      ${{ secrets.DOCKERHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          run_id: ${{ github.run_id }}
+          repository: ${{ github.repository }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
