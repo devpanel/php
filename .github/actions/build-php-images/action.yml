@@ -407,7 +407,7 @@ runs:
           fi
         else
           echo "::error::One or more image push stages failed for PHP ${VERSION} on ${PLATFORM}." \
-               "Could not check Docker Hub pull rate limit status; see the failed bake step above." \
+               "Could not determine Docker Hub pull rate limit status; see the failed bake step above." \
                "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
         fi
 
