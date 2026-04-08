@@ -31,8 +31,8 @@
 # is preserved for other workflow caches (e.g. dependency caches).  When
 # GHCR_WRITABLE=false, both GHCR and GHA are used as best-effort caches
 # (ignore-error=true for both).  Intermediate targets (downloader, php-ext,
-# secure-int) participate in that GHCR-backed registry cache as build cache
-# only; this bake file does not publish them as standalone GHCR images.
+# secure-int) are stored as full images in GHCR when GHCR is writable
+# (type=registry,mode=max exports all layers); they are not pushed to Docker Hub.
 # GHA cache eviction ("cache entry no longer exists") is non-fatal for all
 # targets.
 
