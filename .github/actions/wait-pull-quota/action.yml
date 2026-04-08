@@ -117,10 +117,17 @@ runs:
             # 3xx redirects or network/auth failures.  curl -s (no -f)
             # never exits non-zero for HTTP errors, so the exit status
             # only reflects network/TLS failures.
+            # Use --head (not -X HEAD) so curl uses proper HEAD semantics
+            # and does not wait for a response body.  MITM proxies on
+            # GitHub-hosted runners downgrade HTTP/2 to HTTP/1.1; with
+            # -X HEAD over HTTP/1.1, curl waits for a body that never
+            # arrives and always times out (exit 28), making _rl_http_code
+            # unreliable.  With --head -o /dev/null, -D captures the
+            # response headers, and -w writes only the HTTP code to stdout.
             _rl_tmpheaders="$(mktemp)"
             _rl_http_code="$(curl -s --connect-timeout 10 --max-time 30 \
               -H "Authorization: Bearer ${_token}" \
-              -X HEAD -D "${_rl_tmpheaders}" -o /dev/null \
+              --head -D "${_rl_tmpheaders}" -o /dev/null \
               -w '%{http_code}' \
               "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
               2>/dev/null)" || { _rl_curl_status=$?; _rl_http_code=""; }
