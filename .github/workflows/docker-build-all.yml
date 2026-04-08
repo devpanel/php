@@ -60,7 +60,7 @@ jobs:
           elif [[ "${GITHUB_REF}" == "refs/heads/develop" ]]; then
             echo "tag_suffix=-rc" >> "$GITHUB_OUTPUT"
           else
-            sanitized_ref_name="$(printf '%s' "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's/[^[:alnum:]_.-]/-/g')"
+            sanitized_ref_name="$(printf '%s' "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
             echo "tag_suffix=-${sanitized_ref_name}" >> "$GITHUB_OUTPUT"
           fi
         shell: bash
