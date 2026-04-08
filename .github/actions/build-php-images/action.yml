@@ -385,15 +385,33 @@ runs:
         rm -f "${_creds_file}"
         auth_token="$(printf '%s' "${auth_json}" | jq -r '.token // ""' 2>/dev/null)" || auth_token=""
         if [[ -n "${auth_token}" ]]; then
-          rl_remaining="$(curl -sf --connect-timeout 5 --max-time 15 \
+          # Capture curl exit status separately so we can distinguish a
+          # successful HTTP 2xx response (exit 0) from a network/auth
+          # failure (exit non-zero).  With -f, curl exits non-zero for
+          # HTTP >= 400; exit 0 means we got a 2xx response.
+          _rl_curl_exit=0
+          _rl_headers="$(curl -sf --connect-timeout 5 --max-time 15 \
             -H "Authorization: Bearer ${auth_token}" \
             -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
-            2>/dev/null \
-            | grep -i '^ratelimit-remaining:' \
-            | grep -oE '[0-9]+' | head -1)" || rl_remaining=""
+            2>/dev/null)" || _rl_curl_exit=$?
+          if [[ ${_rl_curl_exit} -eq 0 ]]; then
+            rl_remaining="$(printf '%s' "${_rl_headers}" \
+              | grep -i '^ratelimit-remaining:' \
+              | grep -oE '[0-9]+' | head -1)" || rl_remaining=""
+            if [[ -z "${rl_remaining}" ]]; then
+              # 2xx but no RateLimit-Remaining header → unlimited plan.
+              rl_remaining="unlimited"
+            fi
+          fi
           if [[ "${rl_remaining}" == "0" ]]; then
             echo "::error::Docker Hub pull rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
                  "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
+          elif [[ "${rl_remaining}" == "unlimited" ]]; then
+            echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
+                 "Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \
+                 "quota exhaustion is not the cause of this failure." \
+                 "See the failed bake step above for details." \
+                 "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           elif [[ -n "${rl_remaining}" ]]; then
             echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                  "Docker Hub pull rate limit is not exhausted (${rl_remaining} request(s) remaining)." \

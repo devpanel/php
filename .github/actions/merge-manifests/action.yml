@@ -279,10 +279,14 @@ runs:
         }
 
         # Helper: probe Docker Hub's authenticated pull rate-limit endpoint.
-        # Sets global PULL_REMAINING (remaining pulls as a string, or "" on failure).
+        # Sets global PULL_REMAINING to one of:
+        #   "<n>"       – numeric remaining pulls
+        #   "unlimited" – 2xx response but no RateLimit-Remaining header
+        #                 (Pro/Team/Business plan with no pull quota)
+        #   ""          – probe failed (curl error / no auth token)
         probe_pull_remaining() {
           PULL_REMAINING=""
-          local _pr_creds _pr_json _pr_token
+          local _pr_creds _pr_json _pr_token _pr_curl_exit _pr_headers
           _pr_creds="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
             "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_pr_creds}"
@@ -293,12 +297,29 @@ runs:
           _pr_token="$(printf '%s' "${_pr_json}" | jq -r '.token // ""' 2>/dev/null)" \
             || _pr_token=""
           if [[ -n "${_pr_token}" ]]; then
-            PULL_REMAINING="$(curl -sf --connect-timeout 5 --max-time 15 \
+            # Capture curl exit status separately so we can distinguish a
+            # successful HTTP 2xx response (exit 0) from a network/auth
+            # failure (exit non-zero).  With -f, curl exits non-zero for
+            # HTTP >= 400; exit 0 means we got a 2xx response.
+            _pr_curl_exit=0
+            _pr_headers="$(curl -sf --connect-timeout 5 --max-time 15 \
               -H "Authorization: Bearer ${_pr_token}" \
               -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
-              2>/dev/null \
-              | grep -i '^ratelimit-remaining:' \
-              | grep -oE '[0-9]+' | head -1)" || PULL_REMAINING=""
+              2>/dev/null)" || _pr_curl_exit=$?
+            if [[ ${_pr_curl_exit} -eq 0 ]]; then
+              PULL_REMAINING="$(printf '%s' "${_pr_headers}" \
+                | grep -i '^ratelimit-remaining:' \
+                | grep -oE '[0-9]+' | head -1)" || PULL_REMAINING=""
+              if [[ -z "${PULL_REMAINING}" ]]; then
+                # 2xx but no RateLimit-Remaining header → Docker Hub account
+                # has no pull-rate limit (Pro / Team / Business plan).
+                echo "No Docker Hub rate-limit header in response;" \
+                     "assuming unlimited pull quota."
+                PULL_REMAINING="unlimited"
+              fi
+            fi
+            # If _pr_curl_exit != 0 (network/auth error), PULL_REMAINING stays
+            # "" and the caller treats it as a transient probe failure.
           fi
         }
 
@@ -484,7 +505,9 @@ runs:
             # Treat empty PULL_REMAINING (probe failure) the same as insufficient
             # quota: defer seeding until the quota can be verified.  Only reset
             # QUOTA_WAIT_ELAPSED when quota is confirmed sufficient.
-            if [[ -z "${PULL_REMAINING}" ]] || (( PULL_REMAINING < _needed )); then
+            # "unlimited" means the account has no pull-rate limit → always sufficient.
+            if [[ -z "${PULL_REMAINING}" ]] || \
+               { [[ "${PULL_REMAINING}" != "unlimited" ]] && (( PULL_REMAINING < _needed )); }; then
               _do_seed=false
               if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
                 if [[ -z "${PULL_REMAINING}" ]]; then
@@ -523,7 +546,7 @@ runs:
               fi
               QUOTA_WAIT_ELAPSED=$(( QUOTA_WAIT_ELAPSED + POLL_INTERVAL_SECONDS ))
             else
-              # Quota verified sufficient; reset the elapsed counter.
+              # Quota verified sufficient (or unlimited); reset the elapsed counter.
               QUOTA_WAIT_ELAPSED=0
             fi
           fi
@@ -1026,6 +1049,10 @@ runs:
           if [[ "${PULL_REMAINING}" == "0" ]]; then
             echo "::error::Docker Hub pull rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
                  "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
+          elif [[ "${PULL_REMAINING}" == "unlimited" ]]; then
+            echo "::error::Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \
+                 "this failure is not caused by quota exhaustion." \
+                 "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           elif [[ -n "${PULL_REMAINING}" ]]; then
             echo "::error::Docker Hub pull rate limit is not exhausted" \
                  "(${PULL_REMAINING} request(s) remaining); this is likely a transient error." \
