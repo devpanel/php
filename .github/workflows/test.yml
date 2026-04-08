@@ -7,6 +7,20 @@ on:
       - main
       - develop
   pull_request:
+  workflow_dispatch:
+    inputs:
+      all_versions:
+        description: >
+          Test all PHP versions regardless of what changed.
+          When false, only versions affected by recent commits are tested.
+        type: boolean
+        default: false
+      no_cache:
+        description: >
+          Disable Docker layer cache for build tests.
+          When false, the cache is used as normal.
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -56,6 +70,10 @@ jobs:
   # For pull_request events the PR base is always the right anchor.  For push
   # events, use the head SHA of the last *successful* test run on this branch
   # so that commits covered by cancelled runs are not silently skipped.
+  #
+  # When all_versions is requested via workflow_dispatch the step is skipped;
+  # the empty before_sha output causes the detect job to test every version
+  # rather than diff against a previous commit.
   prepare:
     runs-on: ubuntu-latest
     permissions:
@@ -68,6 +86,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Compute effective before_sha
         id: effective_sha
+        if: github.event_name != 'workflow_dispatch' || inputs.all_versions != true
         uses: ./.github/actions/effective-before-sha
         with:
           workflow_files: test.yml
@@ -219,7 +238,7 @@ jobs:
 
       - name: Build PHP images
         env:
-          CACHE_FROM_ENABLED:   true
+          CACHE_FROM_ENABLED:   ${{ inputs.no_cache != true && 'true' || 'false' }}
           GHCR_REPO:            ${{ needs.detect.outputs.ghcr_repo }}
           PLATFORMS:            linux/amd64
           DOWNLOADS_DIR:        ${{ runner.temp }}/build-downloads
