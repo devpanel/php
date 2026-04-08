@@ -1028,7 +1028,7 @@ runs:
 
           if [[ ${DONE_COUNT} -lt ${#VERSIONS_STAGES[@]} ]]; then
             echo "Cycle ${POLL_CYCLE}:" \
-                 "${DONE_COUNT}/${#VERSIONS_STAGES[@]} image(s) complete;" \
+                 "${DONE_COUNT}/${#VERSIONS_STAGES[@]} manifest(s) complete;" \
                  "polling again in ${POLL_INTERVAL_SECONDS}s..."
             sleep "${POLL_INTERVAL_SECONDS}"
           fi
