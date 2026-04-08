@@ -110,12 +110,30 @@ runs:
             || _token=""
           _remaining=""
           if [[ -n "${_token}" ]]; then
-            _remaining="$(curl -sf --connect-timeout 10 --max-time 30 \
+            # Capture curl exit status separately so we can distinguish a
+            # successful HTTP 2xx response (exit 0) from a network/auth
+            # failure (exit non-zero).  With -f, curl exits non-zero for
+            # HTTP >= 400; exit 0 means we got a 2xx response.
+            _curl_exit=0
+            _headers="$(curl -sf --connect-timeout 10 --max-time 30 \
               -H "Authorization: Bearer ${_token}" \
               -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
-              2>/dev/null \
-              | grep -i '^ratelimit-remaining:' \
-              | grep -oE '[0-9]+' | head -1)" || _remaining=""
+              2>/dev/null)" || _curl_exit=$?
+            if [[ ${_curl_exit} -eq 0 ]]; then
+              # Got a 2xx response — try to parse the rate-limit header.
+              _remaining="$(printf '%s' "${_headers}" \
+                | grep -i '^ratelimit-remaining:' \
+                | grep -oE '[0-9]+' | head -1)" || _remaining=""
+              if [[ -z "${_remaining}" ]]; then
+                # 2xx but no RateLimit-Remaining header → Docker Hub account
+                # has no pull-rate limit (Pro / Team / Business plan).
+                echo "No Docker Hub rate-limit header in response;" \
+                     "assuming unlimited pull quota. Proceeding."
+                break
+              fi
+            fi
+            # If _curl_exit != 0 (network/auth error), _remaining stays empty
+            # and we fall through to the transient-failure retry below.
           fi
           if [[ -z "${_remaining}" ]]; then
             if (( elapsed >= MAX_WAIT )); then
