@@ -119,8 +119,9 @@ PLATFORM_KEY="${NORMALIZED_PLATFORM//\//-}"
 #                        runs.  Set to true (e.g. in CI) to read from GHA cache
 #                        and benefit from layer reuse on re-runs.
 #   GHCR_WRITABLE        false; registry cache write failures are non-fatal
-#                        (ignore-error=true).  GHA cache writes are unconditional
-#                        and unaffected by this flag.
+#                        (ignore-error=true).  When true in docker-bake.hcl,
+#                        GHCR cache writes are enabled and GHA cache writes are
+#                        skipped.
 #   PLATFORM_KEY         Matches the key used by the build matrix job for this
 #                        platform so the test reads from the same cache scopes.
 #   DOWNLOADS_DIR        Path to a directory whose pre-downloaded/ subdirectory
