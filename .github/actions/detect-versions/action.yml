@@ -68,6 +68,12 @@ outputs:
       JSON array of {version, platform, versions_base, versions_secure} objects
       — one entry per PHP-version x platform combination.
     value: ${{ steps.detect.outputs.build_matrix }}
+  build_matrix_length:
+    description: >
+      Total number of entries in the build matrix (versions × platforms).
+      Equals the number of parallel build jobs that may each need one
+      authenticated Docker Hub pull for the base PHP image.
+    value: ${{ steps.detect.outputs.build_matrix_length }}
   ghcr_writable:
     description: >
       "true" if the GHCR write-access pre-flight check passed, "false"
@@ -399,6 +405,7 @@ runs:
           echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
           echo "merge_matrix=[]"                    >> "$GITHUB_OUTPUT"
           echo "build_matrix=[]"                    >> "$GITHUB_OUTPUT"
+          echo "build_matrix_length=0"              >> "$GITHUB_OUTPUT"
         else
           echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
 
@@ -444,4 +451,6 @@ runs:
             } | jq -sc '.'
           )"
           echo "build_matrix=${BUILD_MATRIX}" >> "$GITHUB_OUTPUT"
+          BUILD_MATRIX_LENGTH="$(printf '%s' "${BUILD_MATRIX}" | jq 'length')"
+          echo "build_matrix_length=${BUILD_MATRIX_LENGTH}" >> "$GITHUB_OUTPUT"
         fi

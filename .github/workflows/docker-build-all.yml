@@ -33,11 +33,15 @@ jobs:
       merge_matrix:       ${{ steps.detect.outputs.merge_matrix }}
       # JSON array of {version, platform, versions_base, versions_secure}
       # objects — one entry per PHP-version × platform combination.
-      build_matrix:       ${{ steps.detect.outputs.build_matrix }}
+      build_matrix:         ${{ steps.detect.outputs.build_matrix }}
+      # Total number of build matrix jobs (versions × platforms).  Passed to
+      # the merge job so it can account for in-progress build pulls when
+      # deciding whether the quota allows seeding existing manifests.
+      build_matrix_length: ${{ steps.detect.outputs.build_matrix_length }}
       # Whether GHCR is writable with the current token.  Set once here in the
       # detect job and passed to every build job via the build matrix so that
       # each job uses GHCR as primary (writable) or GHA as primary (not writable).
-      ghcr_writable:      ${{ steps.detect.outputs.ghcr_writable }}
+      ghcr_writable:        ${{ steps.detect.outputs.ghcr_writable }}
       # Tag suffix computed from the branch name (empty for main, -rc for develop,
       # or a sanitised branch slug for all other branches).
       tag_suffix:         ${{ steps.tag-suffix.outputs.tag_suffix }}
@@ -107,70 +111,6 @@ jobs:
           name: preseed-pre-downloaded
           path: ${{ steps.preseed.outputs.downloads_dir }}/pre-downloaded/
           retention-days: 1
-
-      # Wait here — in the single detect job that runs before the build matrix —
-      # until enough authenticated Docker Hub pulls are available for all
-      # parallel build jobs.  Each build job may need 1 pull for the base PHP
-      # image (the unauthenticated pre-pull is non-fatal; the GHCR layer cache
-      # can miss after a base-image update or Dockerfile change).  Waiting once
-      # here prevents N matrix jobs from racing each other to use the same pool
-      # of available pulls.
-      - name: Wait for Docker Hub pull quota
-        if: steps.detect.outputs.versions != ''
-        shell: bash
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          BUILD_MATRIX: ${{ steps.detect.outputs.build_matrix }}
-        run: |
-          set -euo pipefail
-          # One pull per matrix job (worst-case: every job misses the GHCR cache).
-          needed_pulls="$(printf '%s' "${BUILD_MATRIX}" | jq 'length')"
-          echo "Checking Docker Hub pull quota" \
-               "(need ${needed_pulls} pull(s) for ${needed_pulls} parallel build job(s))..."
-          MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
-          POLL_INTERVAL=60
-          elapsed=0
-          while true; do
-            _creds_file="$(umask 077; mktemp)"
-            printf 'machine auth.docker.io login %s password %s\n' \
-              "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
-            _auth_json="$(curl -sf --netrc-file "${_creds_file}" \
-              "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
-              2>/dev/null)" || _auth_json=""
-            rm -f "${_creds_file}"
-            _token="$(printf '%s' "${_auth_json}" | jq -r '.token // ""' 2>/dev/null)" \
-              || _token=""
-            _remaining=""
-            if [[ -n "${_token}" ]]; then
-              _remaining="$(curl -sf \
-                -H "Authorization: Bearer ${_token}" \
-                -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
-                2>/dev/null \
-                | grep -i '^ratelimit-remaining:' \
-                | grep -oE '[0-9]+' | head -1)" || _remaining=""
-            fi
-            if [[ -z "${_remaining}" ]]; then
-              echo "Could not check Docker Hub pull quota; proceeding."
-              break
-            fi
-            if (( _remaining >= needed_pulls )); then
-              echo "Docker Hub pull quota: ${_remaining} remaining" \
-                   "(need ${needed_pulls}); proceeding."
-              break
-            fi
-            if (( elapsed >= MAX_WAIT )); then
-              echo "::error::Docker Hub pull quota: waited ${elapsed}s but only " \
-                   "${_remaining}/${needed_pulls} pull(s) available." \
-                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-              exit 1
-            fi
-            echo "::warning::Docker Hub pull quota insufficient" \
-                 "(${_remaining}/${needed_pulls} available)." \
-                 "Waiting ${POLL_INTERVAL}s (${elapsed}/${MAX_WAIT}s elapsed)..."
-            sleep "${POLL_INTERVAL}"
-            elapsed=$(( elapsed + POLL_INTERVAL ))
-          done
 
   # ── Per-version-platform builds (run in parallel, no cache) ─────────────────
   build:
@@ -257,12 +197,13 @@ jobs:
       - name: Poll and merge platform manifests
         uses: ./.github/actions/merge-manifests
         with:
-          merge_matrix:        ${{ needs.detect.outputs.merge_matrix }}
-          repo:                ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
-          tag_suffix:          ${{ needs.detect.outputs.tag_suffix }}
-          total_platforms:     ${{ needs.detect.outputs.total_platforms }}
-          github_token:        ${{ secrets.GITHUB_TOKEN }}
-          run_id:              ${{ github.run_id }}
-          repository:          ${{ github.repository }}
-          dockerhub_username:  ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token:     ${{ secrets.DOCKERHUB_TOKEN }}
+          merge_matrix:         ${{ needs.detect.outputs.merge_matrix }}
+          repo:                 ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
+          tag_suffix:           ${{ needs.detect.outputs.tag_suffix }}
+          total_platforms:      ${{ needs.detect.outputs.total_platforms }}
+          build_matrix_length: ${{ needs.detect.outputs.build_matrix_length }}
+          github_token:         ${{ secrets.GITHUB_TOKEN }}
+          run_id:               ${{ github.run_id }}
+          repository:           ${{ github.repository }}
+          dockerhub_username:   ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token:      ${{ secrets.DOCKERHUB_TOKEN }}

@@ -89,6 +89,14 @@ inputs:
       Docker Hub token for image push authentication.
       Used for docker login before imagetools inspect and imagetools create.
     required: true
+  build_matrix_length:
+    description: >
+      Total number of parallel build matrix jobs (versions × platforms).
+      Used in the pull-quota check within the polling loop to account for
+      Docker Hub authenticated pulls that in-progress build jobs may still
+      need.  As build-done markers arrive the count decrements, allowing
+      seeding to proceed sooner.  Defaults to 0 (no build-job quota reserved).
+    default: '0'
 
 runs:
   using: composite
@@ -138,6 +146,7 @@ runs:
         DIGESTS_CACHE_DIR:     ${{ runner.temp }}/merge-manifests-digests
         DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
+        BUILD_MATRIX_LENGTH: ${{ inputs.build_matrix_length }}
       run: |
         set -euo pipefail
 
@@ -167,12 +176,14 @@ runs:
         declare -A IMG_DIGEST_MERGED    # image_key → count of distinct merged platforms
         declare -A IMG_MERGED_PKEYS     # image_key → path to merged-platform-keys set file
         declare -A IMG_DONE             # image_key → "true"/"false"
+        declare -A IMG_SEEDED           # image_key → "true" (seeded) / "false" (pending)
         declare -A IMG_PLATFORM_DIGESTS # image_key → path to platform-digest state file
         declare -A IMG_LAST_ERROR       # image_key → last imagetools create error text
         #   State file format: one "platform_key<TAB>sha256:digest" per line.
-        #   Seeded from the existing manifest at startup; updated after each
-        #   successful imagetools create.  Provides within-run preservation
-        #   without relying on a per-cycle inspect.
+        #   Seeded from the existing manifest during the first polling cycle
+        #   where the pull quota allows it; updated after each successful
+        #   imagetools create.  Provides within-run preservation without
+        #   relying on a per-cycle inspect.
 
         # Per-version build-done state.  A single "build-done-{VERSION}-*"
         # marker covers all stages (base/secure/advance) for that version,
@@ -196,6 +207,7 @@ runs:
           IMG_PLATFORM_DIGESTS[$key]="${DIGESTS_CACHE_DIR}/digests-${safe_key}.txt"
           IMG_DIGEST_MERGED[$key]=0
           IMG_DONE[$key]="false"
+          IMG_SEEDED[$key]="false"
           IMG_LAST_ERROR[$key]=""
           touch "${IMG_PROCESSED[$key]}"
           touch "${IMG_MERGED_PKEYS[$key]}"
@@ -213,22 +225,19 @@ runs:
 
         POLL_CYCLE=0
 
-        # ── Seed platform-digest state from existing manifests ────────────────
-        # Inspect each image once before polling to capture platforms already
-        # published (e.g. from previous workflow runs).  This seeds the state
-        # file so that later imagetools create calls always include every
-        # platform, not just the ones built in this run.
-        #
-        # Inspect order (to conserve the Docker Hub authenticated-pull quota):
-        #   1. Unauthenticated via Docker Hub Registry API (anonymous token).
-        #   2. Authenticated via Docker Hub Registry API (shared AUTH_TOKEN).
-        #   3. docker buildx imagetools inspect (last resort, network fallback).
-        #
-        # If the tag does not exist → empty state (first push).
-        # If both attempts fail for any other reason → fall back to the cached
-        # state from the previous run and emit a warning.  The job is NOT
-        # failed; a stale baseline is better than dropping all platforms.
-        echo "Seeding platform-digest state from existing manifests..."
+        # AUTH_TOKEN is fetched lazily (via get_auth_token) only when an
+        # authenticated path is actually needed; it is not fetched upfront.
+        AUTH_TOKEN=""
+
+        # Pull-quota accounting: tracks how long seeding has been deferred
+        # due to insufficient Docker Hub quota.
+        QUOTA_WAIT_ELAPSED=0
+        QUOTA_MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
+
+        # Total parallel build jobs that may each still need one authenticated
+        # Docker Hub pull for the base PHP image.  Decremented as build-done
+        # markers arrive so the quota check becomes less conservative over time.
+        _build_matrix_length="${BUILD_MATRIX_LENGTH:-0}"
 
         # Helper: fetch a Docker Hub manifest via the Registry HTTP API using a
         # Bearer token.  Sets three global variables (no subshell needed):
@@ -330,289 +339,6 @@ runs:
           echo "  Could not obtain anonymous token; will use authenticated inspect."
         fi
 
-        # AUTH_TOKEN is fetched lazily (via get_auth_token) only when an
-        # authenticated path is actually needed; it is not fetched upfront.
-        AUTH_TOKEN=""
-
-        # Pre-check authenticated Docker Hub pull quota.  When ANON_TOKEN is
-        # available the anonymous path handles every image (IP-based quota, not
-        # counted against the account); authenticated pulls are consumed only by
-        # the fallback path, which is the exception.  When ANON_TOKEN is absent
-        # every manifest inspection requires one authenticated pull, so we must
-        # wait until at least as many pulls are available as there are images to
-        # seed before proceeding.
-        if [[ -z "${ANON_TOKEN}" ]]; then
-          get_auth_token
-          if [[ -n "${AUTH_TOKEN}" ]]; then
-            _needed_pulls=${#VERSIONS_STAGES[@]}
-            echo "Checking Docker Hub pull quota (need ${_needed_pulls} authenticated pull(s))..."
-            _ql_elapsed=0
-            _ql_max_wait=19800  # 5h30m to stay below common 6h GitHub job timeouts
-            while true; do
-              probe_pull_remaining
-              if [[ -z "${PULL_REMAINING}" ]]; then
-                echo "  Could not check Docker Hub pull quota; proceeding."
-                break
-              fi
-              if (( PULL_REMAINING >= _needed_pulls )); then
-                echo "  Docker Hub pull quota: ${PULL_REMAINING} remaining" \
-                     "(need ${_needed_pulls}); proceeding."
-                break
-              fi
-              if (( _ql_elapsed >= _ql_max_wait )); then
-                echo "::error::Docker Hub pull quota: waited ${_ql_elapsed}s but only" \
-                     "${PULL_REMAINING}/${_needed_pulls} pull(s) available." \
-                     "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-                exit 1
-              fi
-              echo "::warning::Docker Hub pull quota insufficient" \
-                   "(${PULL_REMAINING}/${_needed_pulls} available)." \
-                   "Waiting ${POLL_INTERVAL_SECONDS}s" \
-                   "(${_ql_elapsed}/${_ql_max_wait}s elapsed)..."
-              sleep "${POLL_INTERVAL_SECONDS}"
-              _ql_elapsed=$(( _ql_elapsed + POLL_INTERVAL_SECONDS ))
-            done
-          fi
-        fi
-
-        for vs in "${VERSIONS_STAGES[@]}"; do
-          version="${vs%%:*}"
-          stage="${vs##*:}"
-          key="${version}:${stage}"
-          safe_key="${key//:/_}"
-          IMAGE_SEED="${REPO}:${version}-${stage}${TAG_SUFFIX}"
-          manifest_tag="${version}-${stage}${TAG_SUFFIX}"
-
-          # Back up any cached content (restored from a previous run) so we
-          # can fall back to it if both inspect attempts fail.
-          cached_backup="${WORK_DIR}/cached-backup-${safe_key}.txt"
-          cp "${IMG_PLATFORM_DIGESTS[$key]}" "${cached_backup}" 2>/dev/null || true
-
-          SEED_STATUS=""  # "ok" | "not_found" | "error"
-          SEED_RAW=""
-
-          # ── Step 1: unauthenticated (anonymous token) ─────────────────────
-          if [[ -n "${ANON_TOKEN}" ]]; then
-            fetch_manifest_http "${ANON_TOKEN}" \
-              "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
-            if handle_non_200_manifest "unauthenticated" \
-                                        "trying authenticated inspect"; then
-              SEED_RAW="${MANIFEST_BODY}"
-              # Only accept the unauthenticated result when it contains at
-              # least one parseable platform entry.  A single-platform
-              # manifest (no "manifests" array) or one where every entry is
-              # filtered as unknown/attestation returns 0 platforms; in that
-              # case fall through to the authenticated path which may return
-              # a manifest-list format not given to anonymous callers.
-              _anon_plat_count=$(printf '%s' "${SEED_RAW}" | jq -r \
-                '.manifests[]? |
-                 select((.platform.os // "") != "unknown" and
-                        (.platform.architecture // "") != "unknown") |
-                 .digest' 2>/dev/null | wc -l) || _anon_plat_count=0
-              if [[ "${_anon_plat_count}" -gt 0 ]]; then
-                SEED_STATUS="ok"
-                echo "  ${IMAGE_SEED}: fetched manifest (unauthenticated," \
-                     "${_anon_plat_count} platform(s))."
-              else
-                echo "  ${IMAGE_SEED}: unauthenticated manifest has 0 valid" \
-                     "platform(s); trying authenticated inspect."
-              fi
-            fi
-          fi
-
-          # ── Step 2: authenticated Registry API ────────────────────────────
-          # get_auth_token is idempotent: fetches AUTH_TOKEN only on the first
-          # call (shared across all images in the loop).
-          if [[ -z "${SEED_STATUS}" ]]; then
-            get_auth_token
-            if [[ -n "${AUTH_TOKEN}" ]]; then
-              fetch_manifest_http "${AUTH_TOKEN}" \
-                "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
-              if handle_non_200_manifest "authenticated Registry API" \
-                                          "trying imagetools inspect"; then
-                SEED_RAW="${MANIFEST_BODY}"
-                SEED_STATUS="ok"
-                echo "  ${IMAGE_SEED}: fetched manifest (authenticated)."
-              fi
-            fi
-          fi
-
-          # ── Step 3: imagetools inspect (last resort) ───────────────────────
-          # Reached only when both the anonymous and authenticated Registry API
-          # fetches failed (e.g. network error or unexpected HTTP status).
-          if [[ -z "${SEED_STATUS}" ]]; then
-            seed_stderr="$(mktemp)"
-            if SEED_RAW="$(docker buildx imagetools inspect \
-                             "${IMAGE_SEED}" --raw 2>"${seed_stderr}")"; then
-              SEED_STATUS="ok"
-              echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
-            else
-              if grep -qi \
-                   "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
-                   "${seed_stderr}"; then
-                SEED_STATUS="not_found"
-              else
-                seed_err="$(cat "${seed_stderr}" 2>/dev/null || true)"
-                echo "::warning::${IMAGE_SEED}: authenticated inspect failed" \
-                     "(${seed_err:-unknown error})."
-                SEED_STATUS="error"
-              fi
-            fi
-            rm -f "${seed_stderr}"
-          fi
-
-          # ── Handle inspect result ─────────────────────────────────────────
-          case "${SEED_STATUS}" in
-            ok)
-              # Fresh manifest obtained; rewrite state file from it.
-              > "${IMG_PLATFORM_DIGESTS[$key]}"
-              # Parse each manifest entry as a JSON object (one per line) to
-              # avoid the bash IFS=$'\t' whitespace-collapsing issue that
-              # incorrectly merges consecutive tab delimiters (empty variant
-              # field) and shifts digest into the variant variable.
-              while IFS= read -r _entry; do
-                p_os="$(    printf '%s' "${_entry}" | jq -r '.os')"
-                p_arch="$(  printf '%s' "${_entry}" | jq -r '.arch')"
-                p_var="$(   printf '%s' "${_entry}" | jq -r '.var')"
-                p_digest="$(printf '%s' "${_entry}" | jq -r '.digest')"
-                # Skip attestation / unknown-platform entries.
-                [[ "${p_os}" == "unknown" || "${p_arch}" == "unknown" ]] && continue
-                # Skip entries with empty digest, os, or architecture.
-                [[ -n "${p_digest}" && -n "${p_os}" && -n "${p_arch}" ]] || continue
-                # Normalize the platform key to match what build jobs produce.
-                # Build jobs specify platforms like "linux/arm64" (without the
-                # default variant), so their artifact names use "linux-arm64"
-                # not "linux-arm64-v8".  Strip default variants so that seeded
-                # keys match artifact keys and avoid duplicate platform entries
-                # in subsequent imagetools create calls.
-                # Known default variants to strip: arm64/v8, amd64/v1.
-                # Non-default variants (arm/v6, arm/v7) are kept as-is because
-                # they identify distinct platforms.
-                _normalized_plat="${p_os}/${p_arch}"
-                if [[ -n "${p_var}" ]] && \
-                   ! [[ "${p_arch}" == "arm64" && "${p_var}" == "v8" ]] && \
-                   ! [[ "${p_arch}" == "amd64" && "${p_var}" == "v1" ]]; then
-                  _normalized_plat="${p_os}/${p_arch}/${p_var}"
-                fi
-                pkey="${_normalized_plat//\//-}"
-                printf '%s\t%s\n' "${pkey}" "${p_digest}" \
-                  >> "${IMG_PLATFORM_DIGESTS[$key]}"
-              done < <(printf '%s' "${SEED_RAW}" | jq -c \
-                '.manifests[]? |
-                 {os:     (.platform.os           // ""),
-                  arch:   (.platform.architecture // ""),
-                  var:    (.platform.variant      // ""),
-                  digest: (.digest                // "")}')
-              n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
-              if [[ "${n}" -gt 0 ]]; then
-                echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
-              else
-                # No .manifests[] entries: the tag is either a single-platform
-                # manifest (no manifests array) or every entry was filtered as
-                # unknown/attestation.  Try to extract the manifest digest and
-                # platform via imagetools inspect (non-raw), which fetches the
-                # image config so it can report platform info even for schema2
-                # single-platform manifests.
-                echo "  ${IMAGE_SEED}: 0 manifest-list entries; checking for" \
-                     "single-platform manifest via imagetools inspect..."
-                _si_out="$(docker buildx imagetools inspect "${IMAGE_SEED}" \
-                             2>/dev/null)" || _si_out=""
-                # Parse imagetools inspect output in a way that tolerates
-                # leading whitespace and either Digest:/Platform: ordering.
-                # Keep top-level fields separate from indented per-manifest
-                # fields so we do not accidentally pair a manifest-list index
-                # digest with a platform from a nested manifest entry.  If
-                # per-manifest pairs are present, use the first complete one;
-                # otherwise fall back to the top-level digest/platform pair
-                # for true single-platform manifests.
-                _si_pair="$(printf '%s' "${_si_out}" \
-                  | awk '
-                      /^[[:space:]]*Digest:[[:space:]]+/ {
-                        value = $2
-                        if ($0 ~ /^[[:space:]]+/) {
-                          entry_digest = value
-                          if (entry_platform != "") {
-                            print entry_digest "\t" entry_platform
-                            exit
-                          }
-                        } else {
-                          top_digest = value
-                        }
-                        next
-                      }
-                      /^[[:space:]]*Platform:[[:space:]]+/ {
-                        value = $2
-                        if ($0 ~ /^[[:space:]]+/) {
-                          entry_platform = value
-                          if (entry_digest != "") {
-                            print entry_digest "\t" entry_platform
-                            exit
-                          }
-                        } else {
-                          top_platform = value
-                        }
-                        next
-                      }
-                      END {
-                        if (top_digest != "" && top_platform != "") {
-                          print top_digest "\t" top_platform
-                        }
-                      }
-                    ')" || _si_pair=""
-                IFS=$'\t' read -r _si_digest _si_platform <<< "${_si_pair}"
-                if [[ -n "${_si_digest}" && -n "${_si_platform}" ]]; then
-                  # Normalize the platform key using the same logic as for
-                  # manifest-list entries above (strip default arm64/v8 and
-                  # amd64/v1 variants).
-                  IFS='/' read -r _si_os _si_arch _si_var <<< "${_si_platform}"
-                  # Skip attestation / unknown-platform entries (same filter
-                  # used for manifest-list parsing above).
-                  if [[ -n "${_si_os}" && -n "${_si_arch}" ]] && \
-                     [[ "${_si_os}" != "unknown" ]] && \
-                     [[ "${_si_arch}" != "unknown" ]]; then
-                    _si_norm="${_si_os}/${_si_arch}"
-                    if [[ -n "${_si_var:-}" ]] && \
-                       ! [[ "${_si_arch}" == "arm64" && "${_si_var}" == "v8" ]] && \
-                       ! [[ "${_si_arch}" == "amd64" && "${_si_var}" == "v1" ]]; then
-                      _si_norm="${_si_os}/${_si_arch}/${_si_var}"
-                    fi
-                    _si_pkey="${_si_norm//\//-}"
-                    printf '%s\t%s\n' "${_si_pkey}" "${_si_digest}" \
-                      >> "${IMG_PLATFORM_DIGESTS[$key]}"
-                    echo "  ${IMAGE_SEED}: seeded 1 platform from single-platform" \
-                         "manifest (${_si_platform}, ${_si_digest})."
-                  else
-                    echo "::warning::${IMAGE_SEED}: ignoring invalid single-platform" \
-                         "platform '${_si_platform}'; starting with empty state."
-                  fi
-                else
-                  echo "::warning::${IMAGE_SEED}: could not extract platform/digest" \
-                       "from single-platform manifest; starting with empty state."
-                fi
-              fi
-              ;;
-            not_found)
-              # Tag doesn't exist yet — start fresh (clear any cached content).
-              > "${IMG_PLATFORM_DIGESTS[$key]}"
-              echo "  ${IMAGE_SEED}: no existing manifest (first push)."
-              ;;
-            error)
-              # Both inspect attempts failed; fall back to cached state rather
-              # than failing the job.
-              if [[ -s "${cached_backup}" ]]; then
-                cp "${cached_backup}" "${IMG_PLATFORM_DIGESTS[$key]}"
-                n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
-                echo "::warning::${IMAGE_SEED}: inspect failed;" \
-                     "falling back to ${n} cached platform(s) from previous run."
-              else
-                > "${IMG_PLATFORM_DIGESTS[$key]}"
-                echo "::warning::${IMAGE_SEED}: inspect failed and no cached state" \
-                     "available; starting with empty state."
-              fi
-              ;;
-          esac
-        done
-
         # Consecutive artifact-list API failure counter.  After this many
         # back-to-back failures the loop aborts so the job fails instead of
         # hanging forever (e.g. if the token lacks actions:read or the API is
@@ -678,6 +404,278 @@ runs:
               fi
             done
           done <<< "${ALL_ARTIFACTS}"
+
+          # ── Seed unseeded images when pull quota allows ────────────────────
+          # Inspect each image's existing manifest once to seed the
+          # platform-digest state.  This is done lazily — on the first polling
+          # cycle where the pull quota is sufficient — rather than upfront, so
+          # that completed build jobs no longer counted as needing pulls are
+          # subtracted before deciding whether to begin.
+          #
+          # Inspect order (to conserve the Docker Hub authenticated-pull quota):
+          #   1. Unauthenticated via Docker Hub Registry API (anonymous token).
+          #   2. Authenticated via Docker Hub Registry API (shared AUTH_TOKEN).
+          #   3. docker buildx imagetools inspect (last resort, network fallback).
+          #
+          # If the tag does not exist → empty state (first push).
+          # If all attempts fail → fall back to cached state from previous run.
+          _unseeded=()
+          for vs in "${VERSIONS_STAGES[@]}"; do
+            key="${vs%%:*}:${vs##*:}"
+            [[ "${IMG_SEEDED[$key]}" == "false" ]] && _unseeded+=("${vs}")
+          done
+
+          _do_seed=true
+          if [[ ${#_unseeded[@]} -gt 0 && -z "${ANON_TOKEN}" ]]; then
+            # Anonymous path unavailable; each inspect uses an authenticated
+            # pull.  Check that enough quota remains for both the unseeded
+            # images and build jobs that are still running (each may pull once).
+            _completed_builds=0
+            for _bv in "${!VER_BUILD_DONE[@]}"; do
+              _completed_builds=$(( _completed_builds + VER_BUILD_DONE[$_bv] ))
+            done
+            _remaining_builds=$(( _build_matrix_length > _completed_builds \
+                                    ? _build_matrix_length - _completed_builds : 0 ))
+            _needed=$(( ${#_unseeded[@]} + _remaining_builds ))
+            probe_pull_remaining
+            if [[ -n "${PULL_REMAINING}" ]] && (( PULL_REMAINING < _needed )); then
+              _do_seed=false
+              if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
+                echo "::error::Docker Hub pull quota: deferred seeding for" \
+                     "${QUOTA_WAIT_ELAPSED}s but only ${PULL_REMAINING}/${_needed}" \
+                     "pull(s) available (${_remaining_builds} build job(s) still in" \
+                     "progress)." \
+                     "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+                exit 1
+              fi
+              echo "::warning::Deferring manifest seeding: Docker Hub pull quota" \
+                   "${PULL_REMAINING}/${_needed} (${#_unseeded[@]} image(s) to seed +" \
+                   "${_remaining_builds} build job(s) still in progress)." \
+                   "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+              QUOTA_WAIT_ELAPSED=$(( QUOTA_WAIT_ELAPSED + POLL_INTERVAL_SECONDS ))
+            else
+              QUOTA_WAIT_ELAPSED=0
+            fi
+          fi
+
+          if [[ "${_do_seed}" == "true" && ${#_unseeded[@]} -gt 0 ]]; then
+            echo "Seeding platform-digest state from existing manifests..."
+            for vs in "${_unseeded[@]}"; do
+              version="${vs%%:*}"
+              stage="${vs##*:}"
+              key="${version}:${stage}"
+              safe_key="${key//:/_}"
+              IMAGE_SEED="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+              manifest_tag="${version}-${stage}${TAG_SUFFIX}"
+
+              # Back up any cached content (restored from a previous run) so we
+              # can fall back to it if both inspect attempts fail.
+              cached_backup="${WORK_DIR}/cached-backup-${safe_key}.txt"
+              cp "${IMG_PLATFORM_DIGESTS[$key]}" "${cached_backup}" 2>/dev/null || true
+
+              SEED_STATUS=""  # "ok" | "not_found" | "error"
+              SEED_RAW=""
+
+              # ── Step 1: unauthenticated (anonymous token) ──────────────────
+              if [[ -n "${ANON_TOKEN}" ]]; then
+                fetch_manifest_http "${ANON_TOKEN}" \
+                  "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
+                if handle_non_200_manifest "unauthenticated" \
+                                            "trying authenticated inspect"; then
+                  SEED_RAW="${MANIFEST_BODY}"
+                  # Only accept the unauthenticated result when it contains at
+                  # least one parseable platform entry.  A single-platform
+                  # manifest (no "manifests" array) or one where every entry is
+                  # filtered as unknown/attestation returns 0 platforms; in that
+                  # case fall through to the authenticated path which may return
+                  # a manifest-list format not given to anonymous callers.
+                  _anon_plat_count=$(printf '%s' "${SEED_RAW}" | jq -r \
+                    '.manifests[]? |
+                     select((.platform.os // "") != "unknown" and
+                            (.platform.architecture // "") != "unknown") |
+                     .digest' 2>/dev/null | wc -l) || _anon_plat_count=0
+                  if [[ "${_anon_plat_count}" -gt 0 ]]; then
+                    SEED_STATUS="ok"
+                    echo "  ${IMAGE_SEED}: fetched manifest (unauthenticated," \
+                         "${_anon_plat_count} platform(s))."
+                  else
+                    echo "  ${IMAGE_SEED}: unauthenticated manifest has 0 valid" \
+                         "platform(s); trying authenticated inspect."
+                  fi
+                fi
+              fi
+
+              # ── Step 2: authenticated Registry API ───────────────────────
+              # get_auth_token is idempotent: fetches AUTH_TOKEN only on the
+              # first call (shared across all images in the loop).
+              if [[ -z "${SEED_STATUS}" ]]; then
+                get_auth_token
+                if [[ -n "${AUTH_TOKEN}" ]]; then
+                  fetch_manifest_http "${AUTH_TOKEN}" \
+                    "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
+                  if handle_non_200_manifest "authenticated Registry API" \
+                                              "trying imagetools inspect"; then
+                    SEED_RAW="${MANIFEST_BODY}"
+                    SEED_STATUS="ok"
+                    echo "  ${IMAGE_SEED}: fetched manifest (authenticated)."
+                  fi
+                fi
+              fi
+
+              # ── Step 3: imagetools inspect (last resort) ─────────────────
+              # Reached only when both Registry API fetches failed (e.g.
+              # network error or unexpected HTTP status).
+              if [[ -z "${SEED_STATUS}" ]]; then
+                seed_stderr="$(mktemp)"
+                if SEED_RAW="$(docker buildx imagetools inspect \
+                                 "${IMAGE_SEED}" --raw 2>"${seed_stderr}")"; then
+                  SEED_STATUS="ok"
+                  echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
+                else
+                  if grep -qi \
+                       "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
+                       "${seed_stderr}"; then
+                    SEED_STATUS="not_found"
+                  else
+                    seed_err="$(cat "${seed_stderr}" 2>/dev/null || true)"
+                    echo "::warning::${IMAGE_SEED}: authenticated inspect failed" \
+                         "(${seed_err:-unknown error})."
+                    SEED_STATUS="error"
+                  fi
+                fi
+                rm -f "${seed_stderr}"
+              fi
+
+              # ── Handle inspect result ───────────────────────────────────
+              case "${SEED_STATUS}" in
+                ok)
+                  # Fresh manifest obtained; rewrite state file from it.
+                  > "${IMG_PLATFORM_DIGESTS[$key]}"
+                  # Parse each manifest entry as a JSON object (one per line)
+                  # to avoid the bash IFS=$'\t' whitespace-collapsing issue
+                  # that incorrectly merges consecutive tab delimiters (empty
+                  # variant field) and shifts digest into the variant variable.
+                  while IFS= read -r _entry; do
+                    p_os="$(    printf '%s' "${_entry}" | jq -r '.os')"
+                    p_arch="$(  printf '%s' "${_entry}" | jq -r '.arch')"
+                    p_var="$(   printf '%s' "${_entry}" | jq -r '.var')"
+                    p_digest="$(printf '%s' "${_entry}" | jq -r '.digest')"
+                    # Skip attestation / unknown-platform entries.
+                    [[ "${p_os}" == "unknown" || "${p_arch}" == "unknown" ]] && continue
+                    # Skip entries with empty digest, os, or architecture.
+                    [[ -n "${p_digest}" && -n "${p_os}" && -n "${p_arch}" ]] || continue
+                    # Normalize platform key: strip default variants (arm64/v8,
+                    # amd64/v1) so keys match build-job artifact names.
+                    _normalized_plat="${p_os}/${p_arch}"
+                    if [[ -n "${p_var}" ]] && \
+                       ! [[ "${p_arch}" == "arm64" && "${p_var}" == "v8" ]] && \
+                       ! [[ "${p_arch}" == "amd64" && "${p_var}" == "v1" ]]; then
+                      _normalized_plat="${p_os}/${p_arch}/${p_var}"
+                    fi
+                    pkey="${_normalized_plat//\//-}"
+                    printf '%s\t%s\n' "${pkey}" "${p_digest}" \
+                      >> "${IMG_PLATFORM_DIGESTS[$key]}"
+                  done < <(printf '%s' "${SEED_RAW}" | jq -c \
+                    '.manifests[]? |
+                     {os:     (.platform.os           // ""),
+                      arch:   (.platform.architecture // ""),
+                      var:    (.platform.variant      // ""),
+                      digest: (.digest                // "")}')
+                  n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
+                  if [[ "${n}" -gt 0 ]]; then
+                    echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
+                  else
+                    # No .manifests[] entries: single-platform or all-unknown.
+                    # Try imagetools inspect (non-raw) which can report platform
+                    # info even for schema2 single-platform manifests.
+                    echo "  ${IMAGE_SEED}: 0 manifest-list entries; checking for" \
+                         "single-platform manifest via imagetools inspect..."
+                    _si_out="$(docker buildx imagetools inspect "${IMAGE_SEED}" \
+                                 2>/dev/null)" || _si_out=""
+                    _si_pair="$(printf '%s' "${_si_out}" \
+                      | awk '
+                          /^[[:space:]]*Digest:[[:space:]]+/ {
+                            value = $2
+                            if ($0 ~ /^[[:space:]]+/) {
+                              entry_digest = value
+                              if (entry_platform != "") {
+                                print entry_digest "\t" entry_platform
+                                exit
+                              }
+                            } else {
+                              top_digest = value
+                            }
+                            next
+                          }
+                          /^[[:space:]]*Platform:[[:space:]]+/ {
+                            value = $2
+                            if ($0 ~ /^[[:space:]]+/) {
+                              entry_platform = value
+                              if (entry_digest != "") {
+                                print entry_digest "\t" entry_platform
+                                exit
+                              }
+                            } else {
+                              top_platform = value
+                            }
+                            next
+                          }
+                          END {
+                            if (top_digest != "" && top_platform != "") {
+                              print top_digest "\t" top_platform
+                            }
+                          }
+                        ')" || _si_pair=""
+                    IFS=$'\t' read -r _si_digest _si_platform <<< "${_si_pair}"
+                    if [[ -n "${_si_digest}" && -n "${_si_platform}" ]]; then
+                      IFS='/' read -r _si_os _si_arch _si_var <<< "${_si_platform}"
+                      if [[ -n "${_si_os}" && -n "${_si_arch}" ]] && \
+                         [[ "${_si_os}" != "unknown" ]] && \
+                         [[ "${_si_arch}" != "unknown" ]]; then
+                        _si_norm="${_si_os}/${_si_arch}"
+                        if [[ -n "${_si_var:-}" ]] && \
+                           ! [[ "${_si_arch}" == "arm64" && "${_si_var}" == "v8" ]] && \
+                           ! [[ "${_si_arch}" == "amd64" && "${_si_var}" == "v1" ]]; then
+                          _si_norm="${_si_os}/${_si_arch}/${_si_var}"
+                        fi
+                        _si_pkey="${_si_norm//\//-}"
+                        printf '%s\t%s\n' "${_si_pkey}" "${_si_digest}" \
+                          >> "${IMG_PLATFORM_DIGESTS[$key]}"
+                        echo "  ${IMAGE_SEED}: seeded 1 platform from single-platform" \
+                             "manifest (${_si_platform}, ${_si_digest})."
+                      else
+                        echo "::warning::${IMAGE_SEED}: ignoring invalid single-platform" \
+                             "platform '${_si_platform}'; starting with empty state."
+                      fi
+                    else
+                      echo "::warning::${IMAGE_SEED}: could not extract platform/digest" \
+                           "from single-platform manifest; starting with empty state."
+                    fi
+                  fi
+                  ;;
+                not_found)
+                  # Tag doesn't exist yet — start fresh.
+                  > "${IMG_PLATFORM_DIGESTS[$key]}"
+                  echo "  ${IMAGE_SEED}: no existing manifest (first push)."
+                  ;;
+                error)
+                  # Both inspect attempts failed; fall back to cached state.
+                  if [[ -s "${cached_backup}" ]]; then
+                    cp "${cached_backup}" "${IMG_PLATFORM_DIGESTS[$key]}"
+                    n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
+                    echo "::warning::${IMAGE_SEED}: inspect failed;" \
+                         "falling back to ${n} cached platform(s) from previous run."
+                  else
+                    > "${IMG_PLATFORM_DIGESTS[$key]}"
+                    echo "::warning::${IMAGE_SEED}: inspect failed and no cached state" \
+                         "available; starting with empty state."
+                  fi
+                  ;;
+              esac
+
+              IMG_SEEDED[$key]="true"
+            done
+          fi
 
           # ── Process each pending image ─────────────────────────────────
           CYCLE_DIR="${WORK_DIR}/cycle"
