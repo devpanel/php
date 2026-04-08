@@ -286,7 +286,7 @@ runs:
         probe_pull_remaining() {
           PULL_REMAINING=""
           PULL_QUOTA_UNLIMITED=false
-          local _pr_creds _pr_json _pr_token _pr_curl_exit _pr_headers
+          local _pr_creds _pr_json _pr_token _pr_tmpheaders _pr_http_code _pr_headers
           _pr_creds="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
             "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_pr_creds}"
@@ -297,16 +297,21 @@ runs:
           _pr_token="$(printf '%s' "${_pr_json}" | jq -r '.token // ""' 2>/dev/null)" \
             || _pr_token=""
           if [[ -n "${_pr_token}" ]]; then
-            # Capture curl exit status separately so we can distinguish a
-            # successful HTTP 2xx response (exit 0) from a network/auth
-            # failure (exit non-zero).  With -f, curl exits non-zero for
-            # HTTP >= 400; exit 0 means we got a 2xx response.
-            _pr_curl_exit=0
-            _pr_headers="$(curl -sf --connect-timeout 5 --max-time 15 \
+            # Fetch the rate-limit headers; capture the HTTP status code
+            # separately so we can distinguish a true 2xx success from
+            # 3xx redirects or network/auth failures.  curl -s (no -f)
+            # never exits non-zero for HTTP errors, so the exit status
+            # only reflects network/TLS failures.
+            _pr_tmpheaders="$(mktemp)"
+            _pr_http_code="$(curl -s --connect-timeout 5 --max-time 15 \
               -H "Authorization: Bearer ${_pr_token}" \
-              -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
-              2>/dev/null)" || _pr_curl_exit=$?
-            if [[ ${_pr_curl_exit} -eq 0 ]]; then
+              -I -D "${_pr_tmpheaders}" -o /dev/null \
+              -w '%{http_code}' \
+              "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
+              2>/dev/null)" || _pr_http_code=""
+            _pr_headers="$(cat "${_pr_tmpheaders}" 2>/dev/null || true)"
+            rm -f "${_pr_tmpheaders}"
+            if [[ "${_pr_http_code:0:1}" == "2" ]]; then
               PULL_REMAINING="$(printf '%s' "${_pr_headers}" \
                 | grep -i '^ratelimit-remaining:' \
                 | grep -oE '[0-9]+' | head -1)" || PULL_REMAINING=""
@@ -318,8 +323,9 @@ runs:
                 PULL_QUOTA_UNLIMITED=true
               fi
             fi
-            # If _pr_curl_exit != 0 (network/auth error), PULL_REMAINING stays
-            # "" and the caller treats it as a transient probe failure.
+            # If _pr_http_code is empty or non-2xx (network/auth/redirect
+            # error), PULL_REMAINING stays "" and the caller treats it as a
+            # transient probe failure.
           fi
         }
 

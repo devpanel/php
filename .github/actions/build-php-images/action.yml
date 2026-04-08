@@ -385,18 +385,24 @@ runs:
         rm -f "${_creds_file}"
         auth_token="$(printf '%s' "${auth_json}" | jq -r '.token // ""' 2>/dev/null)" || auth_token=""
         if [[ -n "${auth_token}" ]]; then
-          # Capture curl exit status separately so we can distinguish a
-          # successful HTTP 2xx response (exit 0) from a network/auth
-          # failure (exit non-zero).  With -f, curl exits non-zero for
-          # HTTP >= 400; exit 0 means we got a 2xx response.
+          # Fetch the rate-limit headers; capture the HTTP status code
+          # separately so we can distinguish a true 2xx success from
+          # 3xx redirects or network/auth failures.  curl -s (no -f)
+          # never exits non-zero for HTTP errors, so the exit status
+          # only reflects network/TLS failures.
           rl_remaining=""
           _rl_unlimited=false
-          _rl_curl_exit=0
-          _rl_headers="$(curl -sf --connect-timeout 5 --max-time 15 \
+          _rl_tmpheaders="$(mktemp)"
+          _rl_http_code="$(curl -s --connect-timeout 5 --max-time 15 \
             -H "Authorization: Bearer ${auth_token}" \
-            -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
-            2>/dev/null)" || _rl_curl_exit=$?
-          if [[ ${_rl_curl_exit} -eq 0 ]]; then
+            -I -D "${_rl_tmpheaders}" -o /dev/null \
+            -w '%{http_code}' \
+            "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
+            2>/dev/null)" || _rl_http_code=""
+          _rl_headers="$(cat "${_rl_tmpheaders}" 2>/dev/null || true)"
+          rm -f "${_rl_tmpheaders}"
+          if [[ "${_rl_http_code:0:1}" == "2" ]]; then
+            # Got a 2xx response — try to parse the rate-limit header.
             rl_remaining="$(printf '%s' "${_rl_headers}" \
               | grep -i '^ratelimit-remaining:' \
               | grep -oE '[0-9]+' | head -1)" || rl_remaining=""
@@ -406,6 +412,8 @@ runs:
               _rl_unlimited=true
             fi
           fi
+          # If _rl_http_code is empty or non-2xx (network/auth/redirect
+          # error), rl_remaining stays empty.
           if [[ "${_rl_unlimited}" == "true" ]]; then
             echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                  "Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \
