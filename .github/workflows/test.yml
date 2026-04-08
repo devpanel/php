@@ -65,58 +65,16 @@ jobs:
     steps:
       - name: Compute effective before_sha
         id: effective_sha
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          ZERO_SHA=0000000000000000000000000000000000000000
-
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "before_sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
-            echo "needs_history=true" >> "$GITHUB_OUTPUT"
-          else
-            # For push events, find the last successful test run on this branch
-            # so that commits from cancelled runs are not silently skipped.
-            CANDIDATES=$(
-              gh api \
-                "repos/${{ github.repository }}/actions/workflows/test.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=10" \
-                --jq '.workflow_runs[].head_sha // empty' \
-              | (grep . || true) | sort -u
-            )
-
-            LAST_SUCCESS_SHA=""
-            BEST_AHEAD=""
-            while IFS= read -r SHA; do
-              [[ -z "$SHA" || "$SHA" == "${{ github.sha }}" ]] && continue
-              COMPARE=$(gh api \
-                "repos/${{ github.repository }}/compare/${SHA}...${{ github.sha }}" \
-                --jq '{status: .status, ahead_by: .ahead_by}' 2>/dev/null || true)
-              STATUS=$(printf '%s' "$COMPARE" | jq -r '.status // ""')
-              AHEAD=$(printf '%s' "$COMPARE" | jq -r '.ahead_by // empty')
-              if [[ "$STATUS" == "ahead" || "$STATUS" == "identical" ]] && [[ "$AHEAD" =~ ^[0-9]+$ ]]; then
-                if [[ -z "$BEST_AHEAD" || "$AHEAD" -lt "$BEST_AHEAD" ]]; then
-                  BEST_AHEAD="$AHEAD"
-                  LAST_SUCCESS_SHA="$SHA"
-                fi
-              fi
-            done <<< "$CANDIDATES"
-
-            if [[ -n "$LAST_SUCCESS_SHA" ]]; then
-              echo "before_sha=${LAST_SUCCESS_SHA}" >> "$GITHUB_OUTPUT"
-              echo "needs_history=true" >> "$GITHUB_OUTPUT"
-            else
-              # No successful prior run found — fall back to github.event.before.
-              # The all-zeros SHA on a brand-new branch is handled by
-              # detect-versions.sh (it falls through to returning all versions).
-              BEFORE="${{ github.event.before }}"
-              echo "before_sha=${BEFORE}" >> "$GITHUB_OUTPUT"
-              if [[ "${BEFORE}" != "${ZERO_SHA}" ]]; then
-                echo "needs_history=true" >> "$GITHUB_OUTPUT"
-              else
-                echo "needs_history=false" >> "$GITHUB_OUTPUT"
-              fi
-            fi
-          fi
+        uses: ./.github/actions/effective-before-sha
+        with:
+          workflow_files: test.yml
+          current_sha:    ${{ github.sha }}
+          ref_name:       ${{ github.ref_name }}
+          repository:     ${{ github.repository }}
+          github_token:   ${{ github.token }}
+          event_name:     ${{ github.event_name }}
+          pr_base_sha:    ${{ github.event.pull_request.base.sha }}
+          event_before:   ${{ github.event.before }}
 
   # Detect PHP versions to test, compute the lowercase GHCR repo name, and
   # pre-seed build downloads for ALL detected versions at once.  Running
