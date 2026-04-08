@@ -4,5 +4,5 @@
   "./.github/actions/merge-manifests/action.yml:colons": 8,
   "./.github/workflows/docker-build-all.yml:colons": 31,
   "./.github/workflows/docker-build-on-push.yml:colons": 41,
-  "./.github/workflows/test.yml:colons": 15
+  "./.github/workflows/test.yml:colons": 16
 }
