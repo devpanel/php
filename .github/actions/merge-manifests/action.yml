@@ -249,7 +249,12 @@ runs:
         # Docker Hub pull for the base PHP image.  Decremented as digest
         # artifacts arrive (the first digest from a job means its pull already
         # happened) so the quota check becomes less conservative over time.
-        _build_matrix_length="${BUILD_MATRIX_LENGTH:-0}"
+        _build_matrix_length_raw="${BUILD_MATRIX_LENGTH:-0}"
+        if [[ "${_build_matrix_length_raw}" =~ ^[0-9]+$ ]]; then
+          _build_matrix_length="${_build_matrix_length_raw}"
+        else
+          _build_matrix_length=0
+        fi
 
         # Helper: fetch a Docker Hub manifest via the Registry HTTP API using a
         # Bearer token.  Sets three global variables (no subshell needed):
@@ -261,7 +266,7 @@ runs:
           local _fmh_body _fmh_err
           _fmh_body="$(mktemp)"
           _fmh_err="$(mktemp)"
-          MANIFEST_HTTP_CODE="$(curl -s \
+          MANIFEST_HTTP_CODE="$(curl -s --connect-timeout 10 --max-time 30 \
             -H "Authorization: Bearer ${_fmh_token}" \
             -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
             -o "${_fmh_body}" \
@@ -306,7 +311,7 @@ runs:
           _ga_creds="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
             "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_ga_creds}"
-          _ga_json="$(curl -sf --netrc-file "${_ga_creds}" \
+          _ga_json="$(curl -sf --connect-timeout 5 --max-time 15 --netrc-file "${_ga_creds}" \
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
             2>/dev/null)" || _ga_json=""
           rm -f "${_ga_creds}"
