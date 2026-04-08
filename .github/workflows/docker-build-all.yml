@@ -85,9 +85,9 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           versions: ${{ steps.detect.outputs.all_versions }}
-          # Force a fresh download and save it under a new cache key
-          # (preseed-<hash>-<run_id>) so that subsequent runs pick up the
-          # refreshed artifacts via restore-keys prefix matching.
+          # Force a fresh download/refresh of the preseeded artifacts.
+          # The action controls the cache keying behavior; this workflow only
+          # requests a refresh and does not rely on a run-specific cache key.
           refresh_cache: 'true'
 
       - name: Upload preseed bake overrides
