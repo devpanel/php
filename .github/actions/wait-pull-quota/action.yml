@@ -35,6 +35,37 @@ runs:
       run: |
         set -euo pipefail
         needed_pulls="${NEEDED_PULLS}"
+
+        # Preflight: verify required tools are available.
+        for _cmd in curl jq; do
+          if ! command -v "${_cmd}" >/dev/null 2>&1; then
+            echo "::error::Required command '${_cmd}' not found in PATH." \
+                 "Ensure the runner has '${_cmd}' installed."
+            exit 1
+          fi
+        done
+
+        # Preflight: verify Docker Hub credentials can obtain an auth token.
+        # Fail fast here rather than burning 5h30m on unresolvable credential errors.
+        echo "Verifying Docker Hub credentials..."
+        _pre_creds="$(umask 077; mktemp)"
+        printf 'machine auth.docker.io login %s password %s\n' \
+          "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_pre_creds}"
+        _pre_json="$(curl -sf --connect-timeout 10 --max-time 30 \
+          --netrc-file "${_pre_creds}" \
+          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+          2>/dev/null)" || _pre_json=""
+        rm -f "${_pre_creds}"
+        _pre_token="$(printf '%s' "${_pre_json}" | jq -r '.token // ""' 2>/dev/null)" \
+          || _pre_token=""
+        if [[ -z "${_pre_token}" ]]; then
+          echo "::error::Could not obtain a Docker Hub auth token." \
+               "Verify that the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are set and valid." \
+               "To retry after fixing credentials: click 'Re-run failed jobs' on this workflow run's summary page."
+          exit 1
+        fi
+        echo "Docker Hub credentials verified."
+
         echo "Checking Docker Hub pull quota" \
              "(need ${needed_pulls} pull(s) for ${needed_pulls} parallel build job(s))..."
         MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
