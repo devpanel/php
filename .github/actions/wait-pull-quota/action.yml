@@ -109,6 +109,8 @@ runs:
           _token="$(printf '%s' "${_auth_json}" | jq -r '.token // ""' 2>/dev/null)" \
             || _token=""
           _remaining=""
+          _rl_http_code=""
+          _rl_curl_status=0
           if [[ -n "${_token}" ]]; then
             # Fetch the rate-limit headers; capture the HTTP status code
             # separately so we can distinguish a true 2xx success from
@@ -121,7 +123,7 @@ runs:
               -X HEAD -D "${_rl_tmpheaders}" -o /dev/null \
               -w '%{http_code}' \
               "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
-              2>/dev/null)" || _rl_http_code=""
+              2>/dev/null)" || { _rl_curl_status=$?; _rl_http_code=""; }
             _headers="$(cat "${_rl_tmpheaders}" 2>/dev/null || true)"
             rm -f "${_rl_tmpheaders}"
             if [[ "${_rl_http_code:0:1}" == "2" ]]; then
@@ -142,12 +144,22 @@ runs:
             # transient-failure retry below.
           fi
           if [[ -z "${_remaining}" ]]; then
+            # Build a human-readable reason for the failure so the log is
+            # actionable without needing to re-run with extra debug output.
+            if [[ -z "${_token}" ]]; then
+              _fail_detail="auth token fetch from auth.docker.io failed"
+            elif [[ -z "${_rl_http_code}" ]]; then
+              _fail_detail="registry-1.docker.io unreachable (curl exit ${_rl_curl_status})"
+            else
+              _fail_detail="registry-1.docker.io returned HTTP ${_rl_http_code}"
+            fi
             if (( elapsed >= MAX_WAIT )); then
-              echo "::error::Could not verify Docker Hub pull quota after ${elapsed}s." \
+              echo "::error::Could not verify Docker Hub pull quota after ${elapsed}s" \
+                   "(${_fail_detail})." \
                    "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
               exit 1
             fi
-            echo "Could not check Docker Hub pull quota." \
+            echo "Could not check Docker Hub pull quota (${_fail_detail})." \
                  "Retrying in ${POLL_INTERVAL}s (${elapsed}/${MAX_WAIT}s elapsed)..."
             sleep "${POLL_INTERVAL}"
             elapsed=$(( elapsed + POLL_INTERVAL ))
