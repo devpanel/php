@@ -461,12 +461,16 @@ runs:
           done
 
           _do_seed=true
-          if [[ ${#_unseeded[@]} -gt 0 && -z "${ANON_TOKEN}" ]]; then
-            # Anonymous path unavailable; each inspect uses an authenticated
-            # pull.  Check that enough quota remains for both the unseeded
-            # images and build jobs that are still running (each may pull once).
-            # Use DIGEST_JOBS_SEEN (first digest per job) rather than build-done
-            # markers so the headroom shrinks as soon as each job's pull is done.
+          if [[ ${#_unseeded[@]} -gt 0 ]]; then
+            # Check that enough Docker Hub pull quota remains for both the
+            # unseeded images and build jobs that are still running.  When
+            # ANON_TOKEN is empty every inspect uses an authenticated pull;
+            # when ANON_TOKEN exists some images may still fall through to the
+            # authenticated Registry API or imagetools inspect (e.g. anonymous
+            # manifest has 0 valid platforms), so we gate conservatively in all
+            # cases.  Use DIGEST_JOBS_SEEN (first digest per job) rather than
+            # build-done markers so the headroom shrinks as soon as each job's
+            # pull is done.
             _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
                                     ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
             _needed=$(( ${#_unseeded[@]} + _remaining_builds ))
@@ -481,10 +485,17 @@ runs:
                      "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
                 exit 1
               fi
-              echo "::warning::Deferring manifest seeding: Docker Hub pull quota" \
-                   "${PULL_REMAINING}/${_needed} (${#_unseeded[@]} image(s) to seed +" \
-                   "${_remaining_builds} build job(s) still in progress)." \
-                   "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+              if (( QUOTA_WAIT_ELAPSED == 0 )); then
+                echo "::warning::Deferring manifest seeding: Docker Hub pull quota" \
+                     "${PULL_REMAINING}/${_needed} (${#_unseeded[@]} image(s) to seed +" \
+                     "${_remaining_builds} build job(s) still in progress)." \
+                     "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+              else
+                echo "Deferring manifest seeding: Docker Hub pull quota" \
+                     "${PULL_REMAINING}/${_needed} (${#_unseeded[@]} image(s) to seed +" \
+                     "${_remaining_builds} build job(s) still in progress)." \
+                     "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+              fi
               QUOTA_WAIT_ELAPSED=$(( QUOTA_WAIT_ELAPSED + POLL_INTERVAL_SECONDS ))
             else
               QUOTA_WAIT_ELAPSED=0

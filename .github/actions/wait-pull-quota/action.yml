@@ -74,7 +74,7 @@ runs:
                  "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
             exit 1
           fi
-          echo "::warning::Docker Hub pull quota insufficient" \
+          echo "Docker Hub pull quota insufficient" \
                "(${_remaining}/${needed_pulls} available)." \
                "Waiting ${POLL_INTERVAL}s (${elapsed}/${MAX_WAIT}s elapsed)..."
           sleep "${POLL_INTERVAL}"
