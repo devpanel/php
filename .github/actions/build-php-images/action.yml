@@ -379,14 +379,14 @@ runs:
         _creds_file="$(mktemp)"
         chmod 600 "${_creds_file}"
         printf 'machine auth.docker.io login %s password %s\n' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
-        auth_json="$(curl -sf \
+        auth_json="$(curl -sf --connect-timeout 5 --max-time 15 \
           --netrc-file "${_creds_file}" \
           "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
           2>/dev/null)" || auth_json=""
         rm -f "${_creds_file}"
         auth_token="$(printf '%s' "${auth_json}" | jq -r '.token // ""' 2>/dev/null)" || auth_token=""
         if [[ -n "${auth_token}" ]]; then
-          rl_remaining="$(curl -sf \
+          rl_remaining="$(curl -sf --connect-timeout 5 --max-time 15 \
             -H "Authorization: Bearer ${auth_token}" \
             -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
             2>/dev/null \
@@ -396,17 +396,17 @@ runs:
             echo "::error::Docker Hub pull rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
                  "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
           elif [[ -n "${rl_remaining}" ]]; then
-            echo "::error::One or more image push stages failed for PHP ${VERSION} on ${PLATFORM}." \
+            echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                  "Docker Hub pull rate limit is not exhausted (${rl_remaining} request(s) remaining)." \
                  "See the failed bake step above for details." \
                  "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           else
-            echo "::error::One or more image push stages failed for PHP ${VERSION} on ${PLATFORM}." \
+            echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                  "Could not determine Docker Hub pull rate limit status; see the failed bake step above." \
                  "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           fi
         else
-          echo "::error::One or more image push stages failed for PHP ${VERSION} on ${PLATFORM}." \
+          echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                "Could not determine Docker Hub pull rate limit status; see the failed bake step above." \
                "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
         fi
