@@ -395,7 +395,7 @@ runs:
           _rl_tmpheaders="$(mktemp)"
           _rl_http_code="$(curl -s --connect-timeout 5 --max-time 15 \
             -H "Authorization: Bearer ${auth_token}" \
-            -I -D "${_rl_tmpheaders}" -o /dev/null \
+            -X HEAD -D "${_rl_tmpheaders}" -o /dev/null \
             -w '%{http_code}' \
             "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
             2>/dev/null)" || _rl_http_code=""

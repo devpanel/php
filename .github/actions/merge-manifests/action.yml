@@ -305,7 +305,7 @@ runs:
             _pr_tmpheaders="$(mktemp)"
             _pr_http_code="$(curl -s --connect-timeout 5 --max-time 15 \
               -H "Authorization: Bearer ${_pr_token}" \
-              -I -D "${_pr_tmpheaders}" -o /dev/null \
+              -X HEAD -D "${_pr_tmpheaders}" -o /dev/null \
               -w '%{http_code}' \
               "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
               2>/dev/null)" || _pr_http_code=""
