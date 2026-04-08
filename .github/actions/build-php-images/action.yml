@@ -376,8 +376,7 @@ runs:
         # is 0 the pull rate limit is exhausted; a base-image pull throttle
         # may have caused the bake failure.  Otherwise report a generic
         # build failure and direct the user to the failed step's output.
-        _creds_file="$(mktemp)"
-        chmod 600 "${_creds_file}"
+        _creds_file="$(umask 077; mktemp)"
         printf 'machine auth.docker.io login %s password %s\n' "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
         auth_json="$(curl -sf --connect-timeout 5 --max-time 15 \
           --netrc-file "${_creds_file}" \

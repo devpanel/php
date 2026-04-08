@@ -52,21 +52,42 @@ runs:
 
         # Preflight: verify Docker Hub credentials can obtain an auth token.
         # Fail fast here rather than burning 5h30m on unresolvable credential errors.
+        # Distinguish credential failures (401/403) from transient network issues.
         echo "Verifying Docker Hub credentials..."
         _pre_creds="$(umask 077; mktemp)"
+        _pre_stderr="$(umask 077; mktemp)"
         printf 'machine auth.docker.io login %s password %s\n' \
           "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_pre_creds}"
-        _pre_json="$(curl -sf --connect-timeout 10 --max-time 30 \
+        _pre_curl_status=0
+        _pre_response="$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
           --netrc-file "${_pre_creds}" \
+          --write-out $'\n%{http_code}' \
           "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
-          2>/dev/null)" || _pre_json=""
+          2>"${_pre_stderr}")" || _pre_curl_status=$?
         rm -f "${_pre_creds}"
+        _pre_http_code="${_pre_response##*$'\n'}"
+        _pre_json="${_pre_response%$'\n'*}"
+        _pre_stderr_text="$(cat "${_pre_stderr}")"
+        rm -f "${_pre_stderr}"
         _pre_token="$(printf '%s' "${_pre_json}" | jq -r '.token // ""' 2>/dev/null)" \
           || _pre_token=""
-        if [[ -z "${_pre_token}" ]]; then
-          echo "::error::Could not obtain a Docker Hub auth token." \
+        if [[ ${_pre_curl_status} -ne 0 ]]; then
+          echo "::error::Could not reach the Docker Hub auth endpoint (curl exit ${_pre_curl_status})." \
+               "This may be a transient network, DNS, TLS, or timeout issue rather than invalid secrets." \
+               "Details: ${_pre_stderr_text:-none}." \
+               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+          exit 1
+        fi
+        if [[ "${_pre_http_code}" == "401" || "${_pre_http_code}" == "403" ]]; then
+          echo "::error::Docker Hub authentication rejected (HTTP ${_pre_http_code})." \
                "Verify that the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are set and valid." \
                "To retry after fixing credentials: click 'Re-run failed jobs' on this workflow run's summary page."
+          exit 1
+        fi
+        if [[ -z "${_pre_token}" ]]; then
+          echo "::error::Could not parse a Docker Hub auth token from the response (HTTP ${_pre_http_code:-unknown})." \
+               "Details: ${_pre_stderr_text:-none}." \
+               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           exit 1
         fi
         echo "Docker Hub credentials verified."
