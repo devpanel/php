@@ -24,10 +24,14 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     permissions:
-      actions: read
+      actions:  read
+      contents: read
     outputs:
       before_sha: ${{ steps.effective_sha.outputs.before_sha }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
       - name: Compute effective before_sha
         id: effective_sha
         uses: ./.github/actions/effective-before-sha
