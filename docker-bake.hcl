@@ -1,12 +1,12 @@
 # docker-bake.hcl — Docker Buildx Bake file for devpanel/php
 #
 # Build graph (→ = "depends on"):
-#   phpX_Y-downloader              (GHCR stored + cached, not pushed to Docker Hub)
-#     └─▶ phpX_Y-php-ext           (GHCR stored + cached, not pushed to Docker Hub)
-#           └─▶ phpX_Y-base        (GHCR cached, pushed to Docker Hub)
-#                 └─▶ phpX_Y-secure-int  (GHCR stored + cached, not pushed to Docker Hub)
-#                       └─▶ phpX_Y-secure    (GHCR cached, pushed to Docker Hub)
-#                             └─▶ phpX_Y-advance  (GHCR cached, pushed to Docker Hub)
+#   phpX_Y-downloader              (GHCR registry-cached via mode=max, not pushed to Docker Hub)
+#     └─▶ phpX_Y-php-ext           (GHCR registry-cached via mode=max, not pushed to Docker Hub)
+#           └─▶ phpX_Y-base        (GHCR registry-cached, pushed to Docker Hub)
+#                 └─▶ phpX_Y-secure-int  (GHCR registry-cached via mode=max, not pushed to Docker Hub)
+#                       └─▶ phpX_Y-secure    (GHCR registry-cached, pushed to Docker Hub)
+#                             └─▶ phpX_Y-advance  (GHCR registry-cached, pushed to Docker Hub)
 #
 # Key variables (all overridable via environment variables):
 #   REPO                          Docker Hub repository                        (devpanel/php)
@@ -31,8 +31,9 @@
 # is preserved for other workflow caches (e.g. dependency caches).  When
 # GHCR_WRITABLE=false, both GHCR and GHA are used as best-effort caches
 # (ignore-error=true for both).  Intermediate targets (downloader, php-ext,
-# secure-int) are stored as full images in GHCR when GHCR is writable
-# (type=registry,mode=max exports all layers); they are not pushed to Docker Hub.
+# secure-int) export all their layers to GHCR via type=registry,mode=max
+# (registry cache only); they are not pushed as standalone images to Docker Hub
+# or GHCR.
 # GHA cache eviction ("cache entry no longer exists") is non-fatal for all
 # targets.
 
@@ -90,8 +91,8 @@ variable "PLATFORMS"                     { default = "linux/amd64,linux/arm64" }
 # PUSH_BY_DIGEST: when "true" final images are pushed by content-hash with no
 # tag.  A separate manifest-merge step then creates / updates the tagged
 # multi-arch manifest.  Intermediate targets (downloader, php-ext, secure-int)
-# are not switched to digest mode by this flag; they are always pushed to
-# GHCR for layer caching and are never pushed to Docker Hub.
+# are unaffected by this flag; their layers are exported to GHCR via
+# type=registry,mode=max cache and they are never pushed to Docker Hub.
 # Default is "false" so that local builds and test runs (using --load) work
 # without needing a real registry.  The build-php-images CI action always sets
 # this to "true" to enable the progressive-manifest merge pipeline.
@@ -194,7 +195,7 @@ function "cache_to_registry" {
   ]
 }
 
-# ─── Per-version downloader targets (pushed to GHCR, NOT pushed to Docker Hub) ─
+# ─── Per-version downloader targets (registry-cached in GHCR, NOT pushed to Docker Hub) ─
 # Each PHP version has its own downloader that runs inside php:${PHP_VERSION}-apache,
 # which uses the correct Debian release for that PHP version.  In CI the code-server
 # and Copilot Chat build args (CODESERVER_VERSION, CODESERVER_DEB_SHA256_AMD64/ARM64,
@@ -231,7 +232,7 @@ target "php-downloader" {
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-downloader${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-downloader${plat_sfx()}")
 }
 
-# ─── Common php-ext intermediates (pushed to GHCR, NOT pushed to Docker Hub) ─
+# ─── Common php-ext intermediates (registry-cached in GHCR, NOT pushed to Docker Hub) ─
 # Builds the php-ext-common stage from base/Dockerfile for each PHP version.
 # Contains all extensions, packages, and tools common to every version.
 # Version-specific differences (avif, pcre, gd flags, imagick method, etc.)
@@ -298,7 +299,7 @@ target "php-base" {
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-base${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-base${plat_sfx()}")
 }
 
-# ─── Secure intermediate targets (pushed to GHCR, NOT pushed to Docker Hub) ──
+# ─── Secure intermediate targets (registry-cached in GHCR, NOT pushed to Docker Hub) ──
 # Built from the secure-intermediate stage of secure/Dockerfile on top of each
 # version's base image.
 
