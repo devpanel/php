@@ -312,7 +312,7 @@ runs:
               -H "Authorization: Bearer ${_pr_token}" \
               --head -D "${_pr_tmpheaders}" -o /dev/null \
               -w '%{http_code}' \
-              "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
+              "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
               2>/dev/null)" || { _pr_curl_status=$?; _pr_http_code=""; }
             _pr_headers="$(cat "${_pr_tmpheaders}" 2>/dev/null || true)"
             rm -f "${_pr_tmpheaders}"

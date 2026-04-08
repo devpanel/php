@@ -401,7 +401,7 @@ runs:
             -H "Authorization: Bearer ${auth_token}" \
             --head -D "${_rl_tmpheaders}" -o /dev/null \
             -w '%{http_code}' \
-            "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
+            "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
             2>/dev/null)" || { _rl_curl_status=$?; _rl_http_code=""; }
           _rl_headers="$(cat "${_rl_tmpheaders}" 2>/dev/null || true)"
           rm -f "${_rl_tmpheaders}"
