@@ -389,6 +389,7 @@ runs:
           # successful HTTP 2xx response (exit 0) from a network/auth
           # failure (exit non-zero).  With -f, curl exits non-zero for
           # HTTP >= 400; exit 0 means we got a 2xx response.
+          rl_remaining=""
           _rl_curl_exit=0
           _rl_headers="$(curl -sf --connect-timeout 5 --max-time 15 \
             -H "Authorization: Bearer ${auth_token}" \
