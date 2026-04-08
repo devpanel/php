@@ -281,14 +281,14 @@ runs:
           _pr_creds="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
             "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_pr_creds}"
-          _pr_json="$(curl -sf --netrc-file "${_pr_creds}" \
+          _pr_json="$(curl -sf --connect-timeout 5 --max-time 15 --netrc-file "${_pr_creds}" \
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
             2>/dev/null)" || _pr_json=""
           rm -f "${_pr_creds}"
           _pr_token="$(printf '%s' "${_pr_json}" | jq -r '.token // ""' 2>/dev/null)" \
             || _pr_token=""
           if [[ -n "${_pr_token}" ]]; then
-            PULL_REMAINING="$(curl -sf \
+            PULL_REMAINING="$(curl -sf --connect-timeout 5 --max-time 15 \
               -H "Authorization: Bearer ${_pr_token}" \
               -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
               2>/dev/null \
