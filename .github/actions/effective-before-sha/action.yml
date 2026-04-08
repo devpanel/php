@@ -10,6 +10,10 @@ description: >
   event_before when no successful run is found and event_before is
   provided; otherwise returns an empty string.
 
+  Required GITHUB_TOKEN permissions on the calling job:
+    actions:  read   (list workflow runs)
+    contents: read   (compare commits via the Repos API)
+
 inputs:
   workflow_files:
     description: >
