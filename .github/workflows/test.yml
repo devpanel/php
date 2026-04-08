@@ -79,7 +79,18 @@ jobs:
       has_versions: ${{ steps.versions.outputs.has_versions }}
       ghcr_repo:    ${{ steps.ghcr.outputs.repo }}
     steps:
+      - name: Compute effective before SHA
+        id: shas
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "before=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "before=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: ${{ steps.shas.outputs.before != '' && '0' || '1' }}
 
       - name: Compute GHCR repository (lowercase)
         id: ghcr
@@ -90,7 +101,12 @@ jobs:
       - name: Detect PHP versions for build test
         id: versions
         run: |
-          versions_str=$(bash tests/detect-versions.sh | sort -V | tr '\n' ' ' | sed 's/ $//')
+          BEFORE="${{ steps.shas.outputs.before }}"
+          if [[ -n "$BEFORE" ]]; then
+            versions_str=$(bash tests/detect-versions.sh --before "$BEFORE" --after "${{ github.sha }}" | sort -V | tr '\n' ' ' | sed 's/ $//')
+          else
+            versions_str=$(bash tests/detect-versions.sh | sort -V | tr '\n' ' ' | sed 's/ $//')
+          fi
           versions_json=$(printf '%s\n' $versions_str | jq -R -s -c '[split("\n")[] | select(length > 0)]')
           echo "versions=${versions_json}" >> "$GITHUB_OUTPUT"
           echo "versions_str=${versions_str}" >> "$GITHUB_OUTPUT"
