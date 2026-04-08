@@ -852,6 +852,17 @@ runs:
             # No per-cycle inspect is needed — within-run state is always
             # up-to-date and cross-run state was captured at startup.
             if [[ ${#NEW_PKEYS[@]} -gt 0 ]]; then
+              # If this image has not yet been seeded from the existing manifest
+              # and the state file has no cached baseline, creating the manifest
+              # now would publish only the newly built platforms and silently
+              # drop any platforms that already exist for this tag.  Defer until
+              # seeding has completed or a non-empty cached state is confirmed.
+              if [[ "${IMG_SEEDED[$key]}" != "true" ]] && \
+                 [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
+                echo "  [${IMAGE}] Seeding not yet complete and no cached baseline;" \
+                     "deferring imagetools create to avoid dropping existing platforms."
+                continue
+              fi
               echo "Merging ${#NEW_PKEYS[@]} new platform(s) into ${IMAGE}..."
 
               # Build temp map: start from current state, add/replace new digests

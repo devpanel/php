@@ -35,6 +35,11 @@ runs:
       run: |
         set -euo pipefail
         needed_pulls="${NEEDED_PULLS}"
+        if [[ ! "${needed_pulls}" =~ ^[0-9]+$ ]]; then
+          echo "::error::Invalid value for inputs.needed_pulls: '${needed_pulls}'." \
+               "It must be a non-negative integer."
+          exit 1
+        fi
 
         # Preflight: verify required tools are available.
         for _cmd in curl jq; do
