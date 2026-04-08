@@ -55,7 +55,7 @@ jobs:
 
       - name: Compute effective before_sha
         id: effective_sha
-        if: github.event_name == 'push' || inputs.all_versions != true
+        if: github.event_name != 'workflow_dispatch' || inputs.all_versions != true
         uses: ./.github/actions/effective-before-sha
         with:
           workflow_files: |
