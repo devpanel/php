@@ -286,7 +286,9 @@ runs:
         probe_pull_remaining() {
           PULL_REMAINING=""
           PULL_QUOTA_UNLIMITED=false
+          PULL_PROBE_FAIL_DETAIL=""
           local _pr_creds _pr_json _pr_token _pr_tmpheaders _pr_http_code _pr_headers
+          local _pr_curl_status=0
           _pr_creds="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
             "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_pr_creds}"
@@ -308,7 +310,7 @@ runs:
               -X HEAD -D "${_pr_tmpheaders}" -o /dev/null \
               -w '%{http_code}' \
               "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
-              2>/dev/null)" || _pr_http_code=""
+              2>/dev/null)" || { _pr_curl_status=$?; _pr_http_code=""; }
             _pr_headers="$(cat "${_pr_tmpheaders}" 2>/dev/null || true)"
             rm -f "${_pr_tmpheaders}"
             if [[ "${_pr_http_code:0:1}" == "2" ]]; then
@@ -324,8 +326,19 @@ runs:
               fi
             fi
             # If _pr_http_code is empty or non-2xx (network/auth/redirect
-            # error), PULL_REMAINING stays "" and the caller treats it as a
-            # transient probe failure.
+            # error), PULL_REMAINING stays "" and PULL_PROBE_FAIL_DETAIL is
+            # set below so callers can surface the reason in log messages.
+          fi
+          # Build a human-readable reason when the probe failed so callers can
+          # surface it in log messages without needing to re-run with debug output.
+          if [[ -z "${PULL_REMAINING}" ]] && [[ "${PULL_QUOTA_UNLIMITED}" != "true" ]]; then
+            if [[ -z "${_pr_token}" ]]; then
+              PULL_PROBE_FAIL_DETAIL="auth token fetch from auth.docker.io failed"
+            elif [[ -z "${_pr_http_code}" ]]; then
+              PULL_PROBE_FAIL_DETAIL="registry-1.docker.io unreachable (curl exit ${_pr_curl_status})"
+            else
+              PULL_PROBE_FAIL_DETAIL="registry-1.docker.io returned HTTP ${_pr_http_code}"
+            fi
           fi
         }
 
@@ -518,7 +531,7 @@ runs:
               if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
                 if [[ -z "${PULL_REMAINING}" ]]; then
                   echo "::error::Could not determine Docker Hub pull quota after" \
-                       "${QUOTA_WAIT_ELAPSED}s of retries." \
+                       "${QUOTA_WAIT_ELAPSED}s of retries (${PULL_PROBE_FAIL_DETAIL})." \
                        "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
                 else
                   echo "::error::Docker Hub pull quota: deferred seeding for" \
@@ -531,8 +544,9 @@ runs:
               fi
               if (( QUOTA_WAIT_ELAPSED == 0 )); then
                 if [[ -z "${PULL_REMAINING}" ]]; then
-                  echo "::warning::Could not determine Docker Hub pull quota;" \
-                       "deferring manifest seeding. Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+                  echo "::warning::Could not determine Docker Hub pull quota" \
+                       "(${PULL_PROBE_FAIL_DETAIL}); deferring manifest seeding." \
+                       "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 else
                   echo "::warning::Deferring manifest seeding: Docker Hub pull quota" \
                        "${PULL_REMAINING}/${_needed} (${#_unseeded[@]} image(s) to seed +" \
@@ -541,8 +555,9 @@ runs:
                 fi
               else
                 if [[ -z "${PULL_REMAINING}" ]]; then
-                  echo "Could not determine Docker Hub pull quota;" \
-                       "deferring manifest seeding. Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+                  echo "Could not determine Docker Hub pull quota" \
+                       "(${PULL_PROBE_FAIL_DETAIL}); deferring manifest seeding." \
+                       "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 else
                   echo "Deferring manifest seeding: Docker Hub pull quota" \
                        "${PULL_REMAINING}/${_needed} (${#_unseeded[@]} image(s) to seed +" \
