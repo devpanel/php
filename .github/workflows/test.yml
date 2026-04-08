@@ -335,7 +335,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     permissions: {}
-    if: ${{ always() && !cancelled() }}
+    if: always() && !cancelled()
     needs:
       - lint-yaml
       - lint-shell
