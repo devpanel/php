@@ -154,8 +154,7 @@ runs:
               _fail_detail="registry-1.docker.io returned HTTP ${_rl_http_code}"
             fi
             if (( elapsed >= MAX_WAIT )); then
-              echo "::error::Could not verify Docker Hub pull quota after ${elapsed}s" \
-                   "(${_fail_detail})." \
+              echo "::error::Could not verify Docker Hub pull quota after ${elapsed}s (${_fail_detail})." \
                    "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
               exit 1
             fi
