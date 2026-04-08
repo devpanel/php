@@ -44,7 +44,8 @@ runs:
           _creds_file="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
             "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
-          _auth_json="$(curl -sf --netrc-file "${_creds_file}" \
+          _auth_json="$(curl -sf --connect-timeout 10 --max-time 30 \
+            --netrc-file "${_creds_file}" \
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
             2>/dev/null)" || _auth_json=""
           rm -f "${_creds_file}"
@@ -52,7 +53,7 @@ runs:
             || _token=""
           _remaining=""
           if [[ -n "${_token}" ]]; then
-            _remaining="$(curl -sf \
+            _remaining="$(curl -sf --connect-timeout 10 --max-time 30 \
               -H "Authorization: Bearer ${_token}" \
               -I "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
               2>/dev/null \

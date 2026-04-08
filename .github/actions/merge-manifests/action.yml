@@ -94,8 +94,9 @@ inputs:
       Total number of parallel build matrix jobs (versions × platforms).
       Used in the pull-quota check within the polling loop to account for
       Docker Hub authenticated pulls that in-progress build jobs may still
-      need.  As build-done markers arrive the count decrements, allowing
-      seeding to proceed sooner.  Defaults to 0 (no build-job quota reserved).
+      need.  As each distinct build job's digest artifact is first seen, the
+      reserved count decrements, allowing seeding to proceed sooner.
+      Defaults to 0 (no build-job quota reserved).
     default: '0'
 
 runs:
