@@ -390,13 +390,16 @@ runs:
           # 3xx redirects or network/auth failures.  curl -s (no -f)
           # never exits non-zero for HTTP errors, so the exit status
           # only reflects network/TLS failures.
+          # Use --head (not -X HEAD): MITM proxies on GitHub-hosted runners
+          # downgrade HTTP/2 to HTTP/1.1; with -X HEAD over HTTP/1.1 curl
+          # waits for a body that never arrives and times out (exit 28).
           rl_remaining=""
           _rl_unlimited=false
           _rl_curl_status=0
           _rl_tmpheaders="$(mktemp)"
           _rl_http_code="$(curl -s --connect-timeout 5 --max-time 15 \
             -H "Authorization: Bearer ${auth_token}" \
-            -X HEAD -D "${_rl_tmpheaders}" -o /dev/null \
+            --head -D "${_rl_tmpheaders}" -o /dev/null \
             -w '%{http_code}' \
             "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/test" \
             2>/dev/null)" || { _rl_curl_status=$?; _rl_http_code=""; }
