@@ -195,6 +195,16 @@ runs:
         BUILD_DONE_SEEN_FILE="${WORK_DIR}/build-done-seen.txt"
         touch "${BUILD_DONE_SEEN_FILE}"
 
+        # File tracking unique "VERSION:platform_key" job keys for which at
+        # least one digest artifact has been seen.  A digest upload means that
+        # build job has already performed its Docker Hub base-image pull, so we
+        # use this count (rather than build-done markers, which only arrive at
+        # job end) to reduce the required quota headroom for running jobs as
+        # early as possible.
+        DIGEST_JOB_SEEN_FILE="${WORK_DIR}/digest-jobs-seen.txt"
+        DIGEST_JOBS_SEEN=0
+        touch "${DIGEST_JOB_SEEN_FILE}"
+
         echo "Managing manifests for ${#VERSIONS_STAGES[@]} image(s):"
         for vs in "${VERSIONS_STAGES[@]}"; do
           version="${vs%%:*}"
@@ -235,8 +245,9 @@ runs:
         QUOTA_MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
 
         # Total parallel build jobs that may each still need one authenticated
-        # Docker Hub pull for the base PHP image.  Decremented as build-done
-        # markers arrive so the quota check becomes less conservative over time.
+        # Docker Hub pull for the base PHP image.  Decremented as digest
+        # artifacts arrive (the first digest from a job means its pull already
+        # happened) so the quota check becomes less conservative over time.
         _build_matrix_length="${BUILD_MATRIX_LENGTH:-0}"
 
         # Helper: fetch a Docker Hub manifest via the Registry HTTP API using a
@@ -405,6 +416,30 @@ runs:
             done
           done <<< "${ALL_ARTIFACTS}"
 
+          # ── Count unique build jobs with at least one digest uploaded ─────────
+          # A digest artifact upload means that build job has already performed its
+          # Docker Hub base-image pull, so we can stop reserving a pull slot for
+          # it as soon as its first digest appears — earlier than build-done markers.
+          while IFS=$'\t' read -r aname _; do
+            [[ -z "${aname}" ]] && continue
+            [[ "${aname}" == "digests-"* ]] || continue
+            for _djvs in "${VERSIONS_STAGES[@]}"; do
+              _djv="${_djvs%%:*}"
+              _djs="${_djvs##*:}"
+              _djpfx="digests-${_djv}-${_djs}-"
+              if [[ "${aname}" == "${_djpfx}"* ]]; then
+                _djk="${_djv}:${aname#"${_djpfx}"}"
+                if ! grep -qxF "${_djk}" "${DIGEST_JOB_SEEN_FILE}" 2>/dev/null; then
+                  echo "${_djk}" >> "${DIGEST_JOB_SEEN_FILE}"
+                  DIGEST_JOBS_SEEN=$(( DIGEST_JOBS_SEEN + 1 ))
+                  echo "  First digest for build job: v${_djv} ${aname#"${_djpfx}"}" \
+                       "(${DIGEST_JOBS_SEEN}/${_build_matrix_length} jobs done)"
+                fi
+                break
+              fi
+            done
+          done <<< "${ALL_ARTIFACTS}"
+
           # ── Seed unseeded images when pull quota allows ────────────────────
           # Inspect each image's existing manifest once to seed the
           # platform-digest state.  This is done lazily — on the first polling
@@ -430,12 +465,10 @@ runs:
             # Anonymous path unavailable; each inspect uses an authenticated
             # pull.  Check that enough quota remains for both the unseeded
             # images and build jobs that are still running (each may pull once).
-            _completed_builds=0
-            for _bv in "${!VER_BUILD_DONE[@]}"; do
-              _completed_builds=$(( _completed_builds + VER_BUILD_DONE[$_bv] ))
-            done
-            _remaining_builds=$(( _build_matrix_length > _completed_builds \
-                                    ? _build_matrix_length - _completed_builds : 0 ))
+            # Use DIGEST_JOBS_SEEN (first digest per job) rather than build-done
+            # markers so the headroom shrinks as soon as each job's pull is done.
+            _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
+                                    ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
             _needed=$(( ${#_unseeded[@]} + _remaining_builds ))
             probe_pull_remaining
             if [[ -n "${PULL_REMAINING}" ]] && (( PULL_REMAINING < _needed )); then
