@@ -393,7 +393,7 @@ runs:
             | grep -i '^ratelimit-remaining:' \
             | grep -oE '[0-9]+' | head -1)" || rl_remaining=""
           if [[ "${rl_remaining}" == "0" ]]; then
-            echo "::error::Docker Hub rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
+            echo "::error::Docker Hub pull rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
                  "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
           else
             echo "::error::One or more image push stages failed for PHP ${VERSION} on ${PLATFORM}." \

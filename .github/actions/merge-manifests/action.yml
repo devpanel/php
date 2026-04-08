@@ -322,7 +322,7 @@ runs:
         # SEED_STATUS="not_found" for 404; logs and returns 1 for all other errors.
         # Returns 0 on HTTP 200 (caller handles the response body).
         # $1: label (e.g. "unauthenticated" or "authenticated Registry API")
-        # $2: fallback label (e.g. "trying authenticated inspect")
+        # $2: fallback label (e.g. "trying authenticated Registry API")
         handle_non_200_manifest() {
           local _label="$1" _fallback="$2"
           case "${MANIFEST_HTTP_CODE}" in
@@ -514,7 +514,7 @@ runs:
                 fetch_manifest_http "${ANON_TOKEN}" \
                   "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
                 if handle_non_200_manifest "unauthenticated" \
-                                            "trying authenticated inspect"; then
+                                            "trying authenticated Registry API"; then
                   SEED_RAW="${MANIFEST_BODY}"
                   # Only accept the unauthenticated result when it contains at
                   # least one parseable platform entry.  A single-platform
@@ -533,7 +533,7 @@ runs:
                          "${_anon_plat_count} platform(s))."
                   else
                     echo "  ${IMAGE_SEED}: unauthenticated manifest has 0 valid" \
-                         "platform(s); trying authenticated inspect."
+                         "platform(s); trying authenticated Registry API."
                   fi
                 fi
               fi
