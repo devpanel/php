@@ -24,7 +24,7 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     permissions:
-      actions:  read
+      actions: read
       contents: read
     outputs:
       before_sha: ${{ steps.effective_sha.outputs.before_sha }}
