@@ -236,11 +236,14 @@ runs:
 
         POLL_CYCLE=0
 
-        # AUTH_TOKEN is fetched lazily (via get_auth_token) only when an
-        # authenticated path is actually needed; it is refreshed automatically
-        # when it is older than TOKEN_MAX_AGE seconds.
-        AUTH_TOKEN=""
-        AUTH_TOKEN_TIME=0
+        # Token cache files (inside WORK_DIR so the EXIT trap cleans them up).
+        # Using files instead of shell variables lets the token functions be
+        # called inside command substitutions $(...) while still sharing the
+        # cached token across calls within the same run.
+        _ANON_TOKEN_FILE="${WORK_DIR}/anon-token"
+        _ANON_TOKEN_TIME_FILE="${WORK_DIR}/anon-token-time"
+        _AUTH_TOKEN_FILE="${WORK_DIR}/auth-token"
+        _AUTH_TOKEN_TIME_FILE="${WORK_DIR}/auth-token-time"
 
         # Docker Hub JWT tokens typically expire in ~300 s.  Refresh tokens
         # proactively at 240 s (4 min) to stay safely below that threshold.
@@ -285,16 +288,14 @@ runs:
         }
 
         # Helper: probe Docker Hub's authenticated pull rate-limit endpoint.
-        # Sets global PULL_REMAINING to either "<n>" (numeric remaining pulls)
-        # or "" (probe failed: curl error / no auth token).  Also sets
-        # PULL_QUOTA_UNLIMITED=true when a 2xx response contains no
-        # RateLimit-Remaining header (Pro/Team/Business plan with no pull quota).
+        # Prints to stdout:
+        #   "<n>"         numeric remaining pulls
+        #   "unlimited"   2xx response with no RateLimit-Remaining header
+        #                 (Pro/Team/Business plan with no pull quota)
+        #   "fail:<why>"  probe failed; <why> is a human-readable reason
         auth_pull_remaining() {
-          PULL_REMAINING=""
-          PULL_QUOTA_UNLIMITED=false
-          PULL_PROBE_FAIL_DETAIL=""
           local _pr_creds _pr_json _pr_token _pr_tmpheaders _pr_http_code _pr_headers
-          local _pr_curl_status=0
+          local _pr_curl_status=0 _pr_remaining
           _pr_creds="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
             "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_pr_creds}"
@@ -323,46 +324,47 @@ runs:
             _pr_headers="$(cat "${_pr_tmpheaders}" 2>/dev/null || true)"
             rm -f "${_pr_tmpheaders}"
             if [[ "${_pr_http_code:0:1}" == "2" ]]; then
-              PULL_REMAINING="$(printf '%s' "${_pr_headers}" \
+              _pr_remaining="$(printf '%s' "${_pr_headers}" \
                 | grep -i '^ratelimit-remaining:' \
-                | grep -oE '[0-9]+' | head -1)" || PULL_REMAINING=""
-              if [[ -z "${PULL_REMAINING}" ]]; then
+                | grep -oE '[0-9]+' | head -1)" || _pr_remaining=""
+              if [[ -z "${_pr_remaining}" ]]; then
                 # 2xx but no RateLimit-Remaining header → Docker Hub account
                 # has no pull-rate limit (Pro / Team / Business plan).
                 echo "No Docker Hub rate-limit header in response;" \
-                     "assuming unlimited pull quota."
-                PULL_QUOTA_UNLIMITED=true
+                     "assuming unlimited pull quota." >&2
+                echo "unlimited"
+              else
+                echo "${_pr_remaining}"
               fi
+              return 0
             fi
-            # If _pr_http_code is empty or non-2xx (network/auth/redirect
-            # error), PULL_REMAINING stays "" and PULL_PROBE_FAIL_DETAIL is
-            # set below so callers can surface the reason in log messages.
+            # Non-2xx: fall through to failure output below.
           fi
-          # Build a human-readable reason when the probe failed so callers can
-          # surface it in log messages without needing to re-run with debug output.
-          if [[ -z "${PULL_REMAINING}" ]] && [[ "${PULL_QUOTA_UNLIMITED}" != "true" ]]; then
-            if [[ -z "${_pr_token}" ]]; then
-              PULL_PROBE_FAIL_DETAIL="auth token fetch from auth.docker.io failed"
-            elif [[ -z "${_pr_http_code}" ]]; then
-              PULL_PROBE_FAIL_DETAIL="registry-1.docker.io unreachable (curl exit ${_pr_curl_status})"
-            else
-              PULL_PROBE_FAIL_DETAIL="registry-1.docker.io returned HTTP ${_pr_http_code}"
-            fi
+          # Build a human-readable reason why the probe failed.
+          if [[ -z "${_pr_token}" ]]; then
+            echo "fail:auth token fetch from auth.docker.io failed"
+          elif [[ -z "${_pr_http_code}" ]]; then
+            echo "fail:registry-1.docker.io unreachable (curl exit ${_pr_curl_status})"
+          else
+            echo "fail:registry-1.docker.io returned HTTP ${_pr_http_code}"
           fi
         }
 
-        # Helper: fetch an authenticated Docker Hub token for ${REPO}:pull.
-        # Refreshes the token when AUTH_TOKEN is empty or older than TOKEN_MAX_AGE
-        # seconds (Docker Hub JWTs expire in ~300 s; we refresh at 240 s).
-        # Sets globals AUTH_TOKEN and AUTH_TOKEN_TIME.
+        # Helper: return a valid authenticated Docker Hub token for ${REPO}:pull.
+        # Reads the cached token when it is younger than TOKEN_MAX_AGE seconds;
+        # otherwise fetches a fresh one and caches it for subsequent calls.
+        # Prints the token to stdout (or "" when unavailable); diagnostics go
+        # to stderr so stdout is safe to capture with $(...).
         get_auth_token() {
-          local _now
+          local _now _cached _cached_time
           _now="$(date +%s)"
-          if [[ -n "${AUTH_TOKEN}" ]] && \
-             (( _now - AUTH_TOKEN_TIME < TOKEN_MAX_AGE )); then
+          _cached="$(cat "${_AUTH_TOKEN_FILE}" 2>/dev/null || true)"
+          _cached_time="$(cat "${_AUTH_TOKEN_TIME_FILE}" 2>/dev/null || echo 0)"
+          if [[ -n "${_cached}" ]] && (( _now - _cached_time < TOKEN_MAX_AGE )); then
+            printf '%s' "${_cached}"
             return 0
           fi
-          local _ga_creds _ga_json
+          local _ga_creds _ga_json _new_token
           _ga_creds="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
             "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_ga_creds}"
@@ -370,14 +372,16 @@ runs:
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
             2>/dev/null)" || _ga_json=""
           rm -f "${_ga_creds}"
-          AUTH_TOKEN="$(printf '%s' "${_ga_json}" | jq -r '.token // ""' 2>/dev/null)" \
-            || AUTH_TOKEN=""
-          AUTH_TOKEN_TIME="$(date +%s)"
-          if [[ -n "${AUTH_TOKEN}" ]]; then
-            echo "  Obtained authenticated Docker Hub token (for inspect fallback)."
+          _new_token="$(printf '%s' "${_ga_json}" | jq -r '.token // ""' 2>/dev/null)" \
+            || _new_token=""
+          printf '%s' "${_new_token}" > "${_AUTH_TOKEN_FILE}"
+          printf '%s' "$(date +%s)" > "${_AUTH_TOKEN_TIME_FILE}"
+          if [[ -n "${_new_token}" ]]; then
+            echo "  Obtained authenticated Docker Hub token (for inspect fallback)." >&2
           else
-            echo "  Could not obtain authenticated token; imagetools inspect will be used as fallback."
+            echo "  Could not obtain authenticated token; imagetools inspect will be used as fallback." >&2
           fi
+          printf '%s' "${_new_token}"
         }
 
         # Helper: handle non-200 HTTP codes from fetch_manifest_http; sets
@@ -398,49 +402,49 @@ runs:
           return 1
         }
 
-        # Helper: refresh ANON_TOKEN when it is empty or older than TOKEN_MAX_AGE
-        # seconds.  Docker Hub JWTs expire in ~300 s; refreshing at 240 s avoids
-        # silent fallback to the authenticated path once the token expires.
-        # Sets globals ANON_TOKEN and ANON_TOKEN_TIME.
+        # Helper: return a valid anonymous Docker Hub token for ${REPO}:pull.
+        # Reads the cached token when it is younger than TOKEN_MAX_AGE seconds;
+        # otherwise fetches a fresh one and caches it for subsequent calls.
+        # Prints the token to stdout (or "" when unavailable); diagnostics go
+        # to stderr so stdout is safe to capture with $(...).
         get_anon_token() {
-          local _now
+          local _now _cached _cached_time
           _now="$(date +%s)"
-          if [[ -n "${ANON_TOKEN}" ]] && \
-             (( _now - ANON_TOKEN_TIME < TOKEN_MAX_AGE )); then
+          _cached="$(cat "${_ANON_TOKEN_FILE}" 2>/dev/null || true)"
+          _cached_time="$(cat "${_ANON_TOKEN_TIME_FILE}" 2>/dev/null || echo 0)"
+          if [[ -n "${_cached}" ]] && (( _now - _cached_time < TOKEN_MAX_AGE )); then
+            printf '%s' "${_cached}"
             return 0
           fi
-          local _anon_err
+          local _anon_err _new_token
           _anon_err="$(mktemp)"
-          ANON_TOKEN="$(curl -sf --connect-timeout 5 --max-time 15 \
+          _new_token="$(curl -sf --connect-timeout 5 --max-time 15 \
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
-            2>"${_anon_err}" | jq -r '.token // ""')" || ANON_TOKEN=""
+            2>"${_anon_err}" | jq -r '.token // ""')" || _new_token=""
           rm -f "${_anon_err}"
-          ANON_TOKEN_TIME="$(date +%s)"
-          if [[ -n "${ANON_TOKEN}" ]]; then
-            echo "  Refreshed anonymous Docker Hub token (unauthenticated inspect)."
+          printf '%s' "${_new_token}" > "${_ANON_TOKEN_FILE}"
+          printf '%s' "$(date +%s)" > "${_ANON_TOKEN_TIME_FILE}"
+          if [[ -n "${_new_token}" ]]; then
+            echo "  Refreshed anonymous Docker Hub token (unauthenticated inspect)." >&2
           else
-            echo "  Could not refresh anonymous token; will use authenticated inspect."
+            echo "  Could not refresh anonymous token; will use authenticated inspect." >&2
           fi
+          printf '%s' "${_new_token}"
         }
 
         # Helper: probe the anonymous (IP-based) Docker Hub pull quota.
         # Calls get_anon_token internally so the token is always fresh.
         # HEAD requests to ratelimitpreview/test are not counted against the
         # pull quota, so this probe does not consume any quota.
-        # Sets globals:
-        #   ANON_PULL_REMAINING  "<n>" (remaining pulls), or "" on failure /
-        #                        absent ANON_TOKEN.
-        #   ANON_PULL_UNLIMITED  true when a 2xx response has no
-        #                        RateLimit-Remaining header (no IP-based limit).
+        # Prints to stdout: "<n>" (remaining pulls), "unlimited" (no IP-based
+        # limit), or "" (probe failed / no anonymous token available).
         anon_pull_remaining() {
-          ANON_PULL_REMAINING=""
-          ANON_PULL_UNLIMITED=false
-          get_anon_token
-          [[ -z "${ANON_TOKEN}" ]] && return 0
-          local _apr_tmpheaders _apr_http_code _apr_headers
+          local _anon_tok _apr_tmpheaders _apr_http_code _apr_headers _apr_remaining
+          _anon_tok="$(get_anon_token)"
+          [[ -z "${_anon_tok}" ]] && return 0
           _apr_tmpheaders="$(mktemp)"
           _apr_http_code="$(curl -s --connect-timeout 5 --max-time 15 \
-            -H "Authorization: Bearer ${ANON_TOKEN}" \
+            -H "Authorization: Bearer ${_anon_tok}" \
             --head -D "${_apr_tmpheaders}" -o /dev/null \
             -w '%{http_code}' \
             "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
@@ -448,20 +452,21 @@ runs:
           _apr_headers="$(cat "${_apr_tmpheaders}" 2>/dev/null || true)"
           rm -f "${_apr_tmpheaders}"
           if [[ "${_apr_http_code:0:1}" == "2" ]]; then
-            ANON_PULL_REMAINING="$(printf '%s' "${_apr_headers}" \
+            _apr_remaining="$(printf '%s' "${_apr_headers}" \
               | grep -i '^ratelimit-remaining:' \
-              | grep -oE '[0-9]+' | head -1)" || ANON_PULL_REMAINING=""
-            if [[ -z "${ANON_PULL_REMAINING}" ]]; then
+              | grep -oE '[0-9]+' | head -1)" || _apr_remaining=""
+            if [[ -z "${_apr_remaining}" ]]; then
               # 2xx but no RateLimit-Remaining → no anonymous rate limit.
-              ANON_PULL_UNLIMITED=true
+              echo "unlimited"
+            else
+              echo "${_apr_remaining}"
             fi
           fi
+          # Non-2xx or empty _apr_http_code → print nothing (empty = probe failed).
         }
 
         # Warm up the anonymous token so the first loop cycle can use it immediately.
-        ANON_TOKEN=""
-        ANON_TOKEN_TIME=0
-        get_anon_token
+        get_anon_token > /dev/null
 
         # Consecutive artifact-list API failure counter.  After this many
         # back-to-back failures the loop aborts so the job fails instead of
@@ -562,7 +567,7 @@ runs:
           #
           # Inspect order (to conserve the Docker Hub authenticated-pull quota):
           #   1. Unauthenticated via Docker Hub Registry API (anonymous token).
-          #   2. Authenticated via Docker Hub Registry API (shared AUTH_TOKEN).
+          #   2. Authenticated via Docker Hub Registry API (get_auth_token).
           #   3. docker buildx imagetools inspect (last resort, network fallback).
           #
           # If the tag does not exist → empty state (first push).
@@ -575,9 +580,10 @@ runs:
 
           _do_seed=true
           if [[ ${#_unseeded[@]} -gt 0 ]]; then
-            # Probe quotas.  anon_pull_remaining calls get_anon_token internally
-            # so ANON_TOKEN is always fresh before the manifest fetch below.
-            anon_pull_remaining
+            # Probe anonymous and authenticated pull quotas to decide whether
+            # seeding can begin.  Both functions cache their tokens in temp files
+            # so repeated $(...) calls within the same cycle are cache hits.
+            _anon_rem="$(anon_pull_remaining)"
             # Check that enough Docker Hub pull quota remains.  The required
             # authenticated quota depends on how much of the anonymous (IP-based)
             # quota remains to cover seeding:
@@ -590,33 +596,38 @@ runs:
             _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
                                     ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
             _anon_covers=0
-            if [[ "${ANON_PULL_UNLIMITED}" == "true" ]]; then
+            if [[ "${_anon_rem}" == "unlimited" ]]; then
               _anon_covers=${#_unseeded[@]}
               _anon_display="unlimited"
-            elif [[ -n "${ANON_PULL_REMAINING}" ]]; then
-              _anon_covers=$(( ANON_PULL_REMAINING < ${#_unseeded[@]} \
-                                 ? ANON_PULL_REMAINING : ${#_unseeded[@]} ))
-              _anon_display="${ANON_PULL_REMAINING}"
+            elif [[ -n "${_anon_rem}" ]]; then
+              _anon_covers=$(( _anon_rem < ${#_unseeded[@]} \
+                                 ? _anon_rem : ${#_unseeded[@]} ))
+              _anon_display="${_anon_rem}"
             else
               _anon_display="unknown"
             fi
             _needed=$(( ${#_unseeded[@]} - _anon_covers + _remaining_builds ))
-            auth_pull_remaining
-            # Treat empty PULL_REMAINING (probe failure) the same as insufficient
+            _auth_rem="$(auth_pull_remaining)"
+            _auth_fail=""
+            if [[ "${_auth_rem}" == fail:* ]]; then
+              _auth_fail="${_auth_rem#fail:}"
+              _auth_rem=""
+            fi
+            # Treat empty _auth_rem (probe failure) the same as insufficient
             # quota: defer seeding until the quota can be verified.  Only reset
             # QUOTA_WAIT_ELAPSED when quota is confirmed sufficient.
-            # PULL_QUOTA_UNLIMITED=true means the account has no pull-rate limit → always sufficient.
-            if [[ "${PULL_QUOTA_UNLIMITED}" != "true" ]] && \
-               { [[ -z "${PULL_REMAINING}" ]] || (( PULL_REMAINING < _needed )); }; then
+            # "unlimited" means the account has no pull-rate limit → always sufficient.
+            if [[ "${_auth_rem}" != "unlimited" ]] && \
+               { [[ -z "${_auth_rem}" ]] || (( _auth_rem < _needed )); }; then
               _do_seed=false
               if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
-                if [[ -z "${PULL_REMAINING}" ]]; then
+                if [[ -z "${_auth_rem}" ]]; then
                   echo "::error::Could not determine Docker Hub pull quota after" \
-                       "${QUOTA_WAIT_ELAPSED}s of retries (${PULL_PROBE_FAIL_DETAIL})." \
+                       "${QUOTA_WAIT_ELAPSED}s of retries (${_auth_fail})." \
                        "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
                 else
                   echo "::error::Docker Hub pull quota: deferred seeding for" \
-                       "${QUOTA_WAIT_ELAPSED}s but only ${PULL_REMAINING}/${_needed}" \
+                       "${QUOTA_WAIT_ELAPSED}s but only ${_auth_rem}/${_needed}" \
                        "pull(s) available (${_remaining_builds} build job(s) still in" \
                        "progress)." \
                        "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
@@ -624,26 +635,26 @@ runs:
                 exit 1
               fi
               if (( QUOTA_WAIT_ELAPSED == 0 )); then
-                if [[ -z "${PULL_REMAINING}" ]]; then
+                if [[ -z "${_auth_rem}" ]]; then
                   echo "::warning::Could not determine Docker Hub pull quota" \
-                       "(${PULL_PROBE_FAIL_DETAIL}); deferring manifest seeding." \
+                       "(${_auth_fail}); deferring manifest seeding." \
                        "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 else
                   echo "::warning::Deferring manifest seeding: Docker Hub pull quota" \
-                       "${PULL_REMAINING}/${_needed} authenticated (${#_unseeded[@]} image(s)" \
+                       "${_auth_rem}/${_needed} authenticated (${#_unseeded[@]} image(s)" \
                        "to seed; ${_anon_covers} covered by anonymous quota" \
                        "(${_anon_display} remaining) +" \
                        "${_remaining_builds} build job(s) still in progress)." \
                        "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 fi
               else
-                if [[ -z "${PULL_REMAINING}" ]]; then
+                if [[ -z "${_auth_rem}" ]]; then
                   echo "Could not determine Docker Hub pull quota" \
-                       "(${PULL_PROBE_FAIL_DETAIL}); deferring manifest seeding." \
+                       "(${_auth_fail}); deferring manifest seeding." \
                        "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 else
                   echo "Deferring manifest seeding: Docker Hub pull quota" \
-                       "${PULL_REMAINING}/${_needed} authenticated (${#_unseeded[@]} image(s)" \
+                       "${_auth_rem}/${_needed} authenticated (${#_unseeded[@]} image(s)" \
                        "to seed; ${_anon_covers} covered by anonymous quota" \
                        "(${_anon_display} remaining) +" \
                        "${_remaining_builds} build job(s) still in progress)." \
@@ -676,8 +687,9 @@ runs:
               SEED_RAW=""
 
               # ── Step 1: unauthenticated (anonymous token) ──────────────────
-              if [[ -n "${ANON_TOKEN}" ]]; then
-                fetch_manifest_http "${ANON_TOKEN}" \
+              _anon_tok="$(get_anon_token)"
+              if [[ -n "${_anon_tok}" ]]; then
+                fetch_manifest_http "${_anon_tok}" \
                   "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
                 if handle_non_200_manifest "unauthenticated" \
                                             "trying authenticated Registry API"; then
@@ -705,12 +717,12 @@ runs:
               fi
 
               # ── Step 2: authenticated Registry API ───────────────────────
-              # get_auth_token is idempotent: fetches AUTH_TOKEN only on the
-              # first call (shared across all images in the loop).
+              # get_auth_token returns a cached token when available, fetching
+              # a fresh one only when the cached token has expired.
               if [[ -z "${SEED_STATUS}" ]]; then
-                get_auth_token
-                if [[ -n "${AUTH_TOKEN}" ]]; then
-                  fetch_manifest_http "${AUTH_TOKEN}" \
+                _auth_tok="$(get_auth_token)"
+                if [[ -n "${_auth_tok}" ]]; then
+                  fetch_manifest_http "${_auth_tok}" \
                     "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
                   if handle_non_200_manifest "authenticated Registry API" \
                                               "trying imagetools inspect"; then
@@ -1151,17 +1163,18 @@ runs:
           done
           # Probe Docker Hub rate-limit status so we can give an actionable
           # suggestion: "rate limit exhausted – retry in 6 hours" vs "retry".
-          auth_pull_remaining
-          if [[ "${PULL_QUOTA_UNLIMITED}" == "true" ]]; then
+          _auth_rem="$(auth_pull_remaining)"
+          [[ "${_auth_rem}" == fail:* ]] && _auth_rem=""
+          if [[ "${_auth_rem}" == "unlimited" ]]; then
             echo "::error::Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \
                  "this failure is not caused by quota exhaustion." \
                  "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-          elif [[ "${PULL_REMAINING}" == "0" ]]; then
+          elif [[ "${_auth_rem}" == "0" ]]; then
             echo "::error::Docker Hub pull rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
                  "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
-          elif [[ -n "${PULL_REMAINING}" ]]; then
+          elif [[ -n "${_auth_rem}" ]]; then
             echo "::error::Docker Hub pull rate limit is not exhausted" \
-                 "(${PULL_REMAINING} request(s) remaining); this is likely a transient error." \
+                 "(${_auth_rem} request(s) remaining); this is likely a transient error." \
                  "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           else
             echo "::error::Could not determine Docker Hub pull rate limit status." \
