@@ -73,6 +73,23 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ghcr_token: ${{ secrets.GHCR_TOKEN }}
 
+      # Wait here — in the single detect job that runs before the build matrix —
+      # until enough authenticated Docker Hub pulls are available for the
+      # pre-seed step and all parallel build jobs.  The pre-seed action may
+      # need one pull per PHP version to detect its Debian codename (only
+      # when the codenames cache is cold); each build job may also need 1
+      # pull for the base PHP image (the unauthenticated pre-pull is
+      # non-fatal; the GHCR layer cache can miss after a base-image update
+      # or Dockerfile change).  Waiting once here prevents N matrix jobs
+      # from racing each other to use the same pool of available pulls.
+      - name: Wait for Docker Hub pull quota
+        if: steps.detect.outputs.versions != ''
+        uses: ./.github/actions/wait-pull-quota
+        with:
+          needed_pulls: ${{ fromJSON(steps.detect.outputs.build_matrix_length) + fromJSON(steps.detect.outputs.all_versions_count) }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
       # Pre-seed is run here in the detect job (once, with ALL PHP versions in
       # the repo) rather than inside each parallel build job.  See the comment
       # in docker-build-on-push.yml for the full rationale.
@@ -111,21 +128,6 @@ jobs:
           name: preseed-pre-downloaded
           path: ${{ steps.preseed.outputs.downloads_dir }}/pre-downloaded/
           retention-days: 1
-
-      # Wait here — in the single detect job that runs before the build matrix —
-      # until enough authenticated Docker Hub pulls are available for all
-      # parallel build jobs.  Each build job may need 1 pull for the base PHP
-      # image (the unauthenticated pre-pull is non-fatal; the GHCR layer cache
-      # can miss after a base-image update or Dockerfile change).  Waiting once
-      # here prevents N matrix jobs from racing each other to use the same pool
-      # of available pulls.
-      - name: Wait for Docker Hub pull quota
-        if: steps.detect.outputs.versions != ''
-        uses: ./.github/actions/wait-pull-quota
-        with:
-          needed_pulls: ${{ steps.detect.outputs.build_matrix_length }}
-          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 
   # ── Per-version-platform builds (run in parallel, no cache) ─────────────────
   build:

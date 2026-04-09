@@ -88,6 +88,14 @@ outputs:
       treated as primary and older codenames receive proper GLIBC
       compatibility testing.
     value: ${{ steps.detect.outputs.all_versions }}
+  all_versions_count:
+    description: >
+      Total number of PHP versions present in the repository (word count of
+      all_versions).  Used together with build_matrix_length to compute the
+      worst-case Docker Hub pull count passed to wait-pull-quota: the
+      pre-seed action may need one authenticated pull per version when the
+      codenames cache is cold.
+    value: ${{ steps.detect.outputs.all_versions_count }}
 
 runs:
   using: composite
@@ -372,6 +380,8 @@ runs:
         echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
         echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
         echo "all_versions=${ALL_VERSIONS_OUT}"             >> "$GITHUB_OUTPUT"
+        read -r -a _all_vers_arr <<< "${ALL_VERSIONS_OUT}"
+        echo "all_versions_count=${#_all_vers_arr[@]}"       >> "$GITHUB_OUTPUT"
 
         # Parse configured platforms into an array, trimming whitespace,
         # normalizing default variants to canonical keys, and removing
