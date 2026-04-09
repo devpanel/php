@@ -265,26 +265,37 @@ runs:
           _build_matrix_length=0
         fi
 
-        # Helper: fetch a Docker Hub manifest via the Registry HTTP API using a
-        # Bearer token.  Sets three global variables (no subshell needed):
-        #   MANIFEST_HTTP_CODE  HTTP status code, or "000" on curl failure
-        #   MANIFEST_BODY       Raw response body
-        #   MANIFEST_CURL_ERR   curl stderr (only meaningful when code is "000")
-        fetch_manifest_http() {
-          local _fmh_token="$1" _fmh_url="$2"
-          local _fmh_body _fmh_err
-          _fmh_body="$(mktemp)"
-          _fmh_err="$(mktemp)"
-          MANIFEST_HTTP_CODE="$(curl -s --connect-timeout 10 --max-time 30 \
-            -H "Authorization: Bearer ${_fmh_token}" \
+        # Helper: fetch a Docker Hub manifest via the Registry HTTP API.
+        # $1: Bearer token
+        # $2: URL to fetch
+        # $3: label for log messages (e.g. "unauthenticated")
+        # $4: fallback label for log messages (e.g. "trying authenticated Registry API")
+        # Prints the raw manifest body to stdout and returns 0 on HTTP 200.
+        # Returns 1 on HTTP 404 (tag not found).
+        # Logs a warning to stderr and returns 2 on all other errors.
+        fetch_manifest() {
+          local _fm_token="$1" _fm_url="$2" _fm_label="$3" _fm_fallback="$4"
+          local _fm_body _fm_err _fm_http_code _fm_curl_err
+          _fm_body="$(mktemp)"
+          _fm_err="$(mktemp)"
+          _fm_http_code="$(curl -s --connect-timeout 10 --max-time 30 \
+            -H "Authorization: Bearer ${_fm_token}" \
             -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
-            -o "${_fmh_body}" \
+            -o "${_fm_body}" \
             -w "%{http_code}" \
-            "${_fmh_url}" \
-            2>"${_fmh_err}")" || MANIFEST_HTTP_CODE="000"
-          MANIFEST_BODY="$(cat "${_fmh_body}")"
-          MANIFEST_CURL_ERR="$(cat "${_fmh_err}" 2>/dev/null || true)"
-          rm -f "${_fmh_body}" "${_fmh_err}"
+            "${_fm_url}" \
+            2>"${_fm_err}")" || _fm_http_code="000"
+          _fm_curl_err="$(cat "${_fm_err}" 2>/dev/null || true)"
+          case "${_fm_http_code}" in
+            200) cat "${_fm_body}"; rm -f "${_fm_body}" "${_fm_err}"; return 0 ;;
+            404) rm -f "${_fm_body}" "${_fm_err}"; return 1 ;;
+            000) echo "  ${IMAGE_SEED}: ${_fm_label} fetch failed" \
+                      "(${_fm_curl_err:-network error}); ${_fm_fallback}." >&2 ;;
+            *)   echo "  ${IMAGE_SEED}: ${_fm_label} fetch returned HTTP ${_fm_http_code};" \
+                      "${_fm_fallback}." >&2 ;;
+          esac
+          rm -f "${_fm_body}" "${_fm_err}"
+          return 2
         }
 
         # Helper: probe Docker Hub's authenticated pull rate-limit endpoint.
@@ -382,24 +393,6 @@ runs:
             echo "  Could not obtain authenticated token; imagetools inspect will be used as fallback." >&2
           fi
           printf '%s' "${_new_token}"
-        }
-
-        # Helper: handle non-200 HTTP codes from fetch_manifest_http; sets
-        # SEED_STATUS="not_found" for 404; logs and returns 1 for all other errors.
-        # Returns 0 on HTTP 200 (caller handles the response body).
-        # $1: label (e.g. "unauthenticated" or "authenticated Registry API")
-        # $2: fallback label (e.g. "trying authenticated Registry API")
-        handle_non_200_manifest() {
-          local _label="$1" _fallback="$2"
-          case "${MANIFEST_HTTP_CODE}" in
-            200) return 0 ;;
-            404) SEED_STATUS="not_found" ;;
-            000) echo "  ${IMAGE_SEED}: ${_label} fetch failed" \
-                      "(${MANIFEST_CURL_ERR:-network error}); ${_fallback}." ;;
-            *) echo "  ${IMAGE_SEED}: ${_label} fetch returned HTTP ${MANIFEST_HTTP_CODE};" \
-                    "${_fallback}." ;;
-          esac
-          return 1
         }
 
         # Helper: return a valid anonymous Docker Hub token for ${REPO}:pull.
@@ -683,82 +676,89 @@ runs:
               cached_backup="${WORK_DIR}/cached-backup-${safe_key}.txt"
               cp "${IMG_PLATFORM_DIGESTS[$key]}" "${cached_backup}" 2>/dev/null || true
 
-              SEED_STATUS=""  # "ok" | "not_found" | "error"
-              SEED_RAW=""
+              _seed_status=""  # "ok" | "not_found" | "error"
+              _seed_raw=""
 
               # ── Step 1: unauthenticated (anonymous token) ──────────────────
               _anon_tok="$(get_anon_token)"
               if [[ -n "${_anon_tok}" ]]; then
-                fetch_manifest_http "${_anon_tok}" \
-                  "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
-                if handle_non_200_manifest "unauthenticated" \
-                                            "trying authenticated Registry API"; then
-                  SEED_RAW="${MANIFEST_BODY}"
-                  # Only accept the unauthenticated result when it contains at
-                  # least one parseable platform entry.  A single-platform
-                  # manifest (no "manifests" array) or one where every entry is
-                  # filtered as unknown/attestation returns 0 platforms; in that
-                  # case fall through to the authenticated path which may return
-                  # a manifest-list format not given to anonymous callers.
-                  _anon_plat_count=$(printf '%s' "${SEED_RAW}" | jq -r \
-                    '.manifests[]? |
-                     select((.platform.os // "") != "unknown" and
-                            (.platform.architecture // "") != "unknown") |
-                     .digest' 2>/dev/null | wc -l) || _anon_plat_count=0
-                  if [[ "${_anon_plat_count}" -gt 0 ]]; then
-                    SEED_STATUS="ok"
-                    echo "  ${IMAGE_SEED}: fetched manifest (unauthenticated," \
-                         "${_anon_plat_count} platform(s))."
-                  else
-                    echo "  ${IMAGE_SEED}: unauthenticated manifest has 0 valid" \
-                         "platform(s); trying authenticated Registry API."
-                  fi
-                fi
+                _fetch_rc=0
+                _seed_raw="$(fetch_manifest "${_anon_tok}" \
+                  "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
+                  "unauthenticated" "trying authenticated Registry API")" \
+                  || _fetch_rc=$?
+                case "${_fetch_rc}" in
+                  0)
+                    # Only accept the unauthenticated result when it contains at
+                    # least one parseable platform entry.  A single-platform
+                    # manifest (no "manifests" array) or one where every entry is
+                    # filtered as unknown/attestation returns 0 platforms; in that
+                    # case fall through to the authenticated path which may return
+                    # a manifest-list format not given to anonymous callers.
+                    _anon_plat_count=$(printf '%s' "${_seed_raw}" | jq -r \
+                      '.manifests[]? |
+                       select((.platform.os // "") != "unknown" and
+                              (.platform.architecture // "") != "unknown") |
+                       .digest' 2>/dev/null | wc -l) || _anon_plat_count=0
+                    if [[ "${_anon_plat_count}" -gt 0 ]]; then
+                      _seed_status="ok"
+                      echo "  ${IMAGE_SEED}: fetched manifest (unauthenticated," \
+                           "${_anon_plat_count} platform(s))."
+                    else
+                      echo "  ${IMAGE_SEED}: unauthenticated manifest has 0 valid" \
+                           "platform(s); trying authenticated Registry API."
+                      _seed_raw=""
+                    fi
+                    ;;
+                  1) _seed_status="not_found" ;;
+                esac
               fi
 
               # ── Step 2: authenticated Registry API ───────────────────────
               # get_auth_token returns a cached token when available, fetching
               # a fresh one only when the cached token has expired.
-              if [[ -z "${SEED_STATUS}" ]]; then
+              if [[ -z "${_seed_status}" ]]; then
                 _auth_tok="$(get_auth_token)"
                 if [[ -n "${_auth_tok}" ]]; then
-                  fetch_manifest_http "${_auth_tok}" \
-                    "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}"
-                  if handle_non_200_manifest "authenticated Registry API" \
-                                              "trying imagetools inspect"; then
-                    SEED_RAW="${MANIFEST_BODY}"
-                    SEED_STATUS="ok"
-                    echo "  ${IMAGE_SEED}: fetched manifest (authenticated)."
-                  fi
+                  _fetch_rc=0
+                  _seed_raw="$(fetch_manifest "${_auth_tok}" \
+                    "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
+                    "authenticated Registry API" "trying imagetools inspect")" \
+                    || _fetch_rc=$?
+                  case "${_fetch_rc}" in
+                    0) _seed_status="ok"
+                       echo "  ${IMAGE_SEED}: fetched manifest (authenticated)." ;;
+                    1) _seed_status="not_found" ;;
+                  esac
                 fi
               fi
 
               # ── Step 3: imagetools inspect (last resort) ─────────────────
               # Reached only when both Registry API fetches failed (e.g.
               # network error or unexpected HTTP status).
-              if [[ -z "${SEED_STATUS}" ]]; then
+              if [[ -z "${_seed_status}" ]]; then
                 seed_stderr="$(mktemp)"
-                if SEED_RAW="$(docker buildx imagetools inspect \
-                                 "${IMAGE_SEED}" --raw 2>"${seed_stderr}")"; then
-                  SEED_STATUS="ok"
+                if _seed_raw="$(docker buildx imagetools inspect \
+                                  "${IMAGE_SEED}" --raw 2>"${seed_stderr}")"; then
+                  _seed_status="ok"
                   echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
                 else
                   if grep -qi \
                        "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
                        "${seed_stderr}"; then
-                    SEED_STATUS="not_found"
+                    _seed_status="not_found"
                   else
                     seed_err="$(cat "${seed_stderr}" 2>/dev/null || true)"
                     echo "::warning::${IMAGE_SEED}: authenticated inspect failed" \
                          "(${seed_err:-unknown error})."
-                    SEED_STATUS="error"
+                    _seed_status="error"
                   fi
                 fi
                 rm -f "${seed_stderr}"
               fi
 
               # ── Handle inspect result ───────────────────────────────────
-              case "${SEED_STATUS}" in
+              case "${_seed_status}" in
                 ok)
                   # Fresh manifest obtained; rewrite state file from it.
                   > "${IMG_PLATFORM_DIGESTS[$key]}"
@@ -786,7 +786,7 @@ runs:
                     pkey="${_normalized_plat//\//-}"
                     printf '%s\t%s\n' "${pkey}" "${p_digest}" \
                       >> "${IMG_PLATFORM_DIGESTS[$key]}"
-                  done < <(printf '%s' "${SEED_RAW}" | jq -c \
+                  done < <(printf '%s' "${_seed_raw}" | jq -c \
                     '.manifests[]? |
                      {os:     (.platform.os           // ""),
                       arch:   (.platform.architecture // ""),
