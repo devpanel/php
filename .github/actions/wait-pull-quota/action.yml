@@ -188,9 +188,11 @@ runs:
 
         # ── 4. Calculate the number of anonymous pulls to reserve ─────────────
         # This action does no work of its own; it protects quota for the
-        # pre-seeding step and the parallel build jobs that follow.  All
-        # needed pulls could be served by the anonymous IP-based quota
-        # (100 pulls per 6 hours per IP address).
+        # pre-seeding step and the parallel build jobs that follow.  Both
+        # pre-seeding and build jobs try anonymous (IP-based, 100 pulls/6 h)
+        # first and fall back to authenticated only when anonymous fails.
+        # Reserving all needed pulls in the anonymous bucket ensures that quota
+        # is available for the primary path.
         _anon_reserve=${needed_pulls}
 
         # ── 5. Calculate the number of authenticated pulls to reserve ─────────
