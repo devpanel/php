@@ -127,14 +127,7 @@ runs:
         POLL_INTERVAL=60
         elapsed=0
 
-        # ── 1. Initialize credentials for authenticated token fetches ─────────
-        _auth_creds="$(umask 077; mktemp)"
-        printf 'machine auth.docker.io login %s password %s\n' \
-          "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_auth_creds}"
-        # shellcheck disable=SC2064
-        trap "rm -f ${_auth_creds}" EXIT
-
-        # ── 2. Source shared quota helpers ────────────────────────────────────
+        # ── 1. Source shared quota helpers ────────────────────────────────────
         # Defines refresh_hub_token, hub_pull_remaining, and the convenience
         # wrappers refresh_anon_quota_token, refresh_auth_quota_token,
         # anon_quota_remaining, auth_quota_remaining.  Also initialises the
@@ -142,9 +135,9 @@ runs:
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
 
-        # ── 3. (quota probe functions defined in hub-quota-helpers.sh above) ──
+        # ── 2. (quota probe functions defined in hub-quota-helpers.sh above) ──
 
-        # ── 4. Calculate the number of anonymous pulls to reserve ─────────────
+        # ── 3. Calculate the number of anonymous pulls to reserve ─────────────
         # The pre-seeding step runs in THIS job on THIS runner and uses the
         # IP-based anonymous quota (100 pulls/6 h from this runner's IP).
         # Build jobs run on OTHER runners; their anonymous buckets are
@@ -155,7 +148,7 @@ runs:
                             ? needed_pulls - build_matrix_length \
                             : 0 ))
 
-        # ── 5. Calculate the number of authenticated pulls to reserve ─────────
+        # ── 4. Calculate the number of authenticated pulls to reserve ─────────
         # Build jobs share the authenticated (account-based, 200/6 h) quota
         # regardless of which runner they land on.  Each build job may fall
         # back to an authenticated pull when its anonymous pre-pull fails.
@@ -166,7 +159,7 @@ runs:
 
         while true; do
 
-          # ── 6. Subtract available anonymous quota from the anonymous reserve;
+          # ── 5. Subtract available anonymous quota from the anonymous reserve;
           #       add the remainder to the authenticated pull requirement. ───────
           refresh_anon_quota_token || true
           _anon_rem="$(anon_quota_remaining)"
@@ -188,7 +181,7 @@ runs:
             break
           fi
 
-          refresh_auth_quota_token "${_auth_creds}" || true
+          refresh_auth_quota_token || true
           _auth_rem="$(auth_quota_remaining)"
 
           if [[ "${_auth_rem}" == "unlimited" ]]; then
@@ -204,7 +197,7 @@ runs:
             break
           fi
 
-          # ── 7. Authenticated pull quota insufficient — wait for next cycle ───
+          # ── 6. Authenticated pull quota insufficient — wait for next cycle ───
           if (( elapsed >= MAX_WAIT )); then
             if [[ -z "${_auth_rem}" ]]; then
               echo "::error::Could not verify Docker Hub pull quota after ${elapsed}s." \

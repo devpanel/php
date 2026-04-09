@@ -410,11 +410,7 @@ runs:
         TOKEN_MAX_AGE=0  # always fetch a fresh token for this one-shot probe
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
-        _creds_file="$(umask 077; mktemp)"
-        printf 'machine auth.docker.io login %s password %s\n' \
-          "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
-        refresh_auth_quota_token "${_creds_file}" || true
-        rm -f "${_creds_file}"
+        refresh_auth_quota_token || true
         rl_remaining="$(auth_quota_remaining)"
         if [[ "${rl_remaining}" == "unlimited" ]]; then
           echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
