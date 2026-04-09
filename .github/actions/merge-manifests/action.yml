@@ -236,14 +236,14 @@ runs:
 
         POLL_CYCLE=0
 
-        # Token cache files (inside WORK_DIR so the EXIT trap cleans them up).
-        # Using files instead of shell variables lets the token functions be
-        # called inside command substitutions $(...) while still sharing the
-        # cached token across calls within the same run.
-        _ANON_TOKEN_FILE="${WORK_DIR}/anon-token"
-        _ANON_TOKEN_TIME_FILE="${WORK_DIR}/anon-token-time"
-        _AUTH_TOKEN_FILE="${WORK_DIR}/auth-token"
-        _AUTH_TOKEN_TIME_FILE="${WORK_DIR}/auth-token-time"
+        # Docker Hub token globals.  Updated directly by get_anon_token /
+        # get_auth_token in the main shell (no subshell needed); subshells
+        # (e.g. quota-probe functions called via $(...)) inherit the current
+        # value as a read-only copy so they always see the latest token.
+        ANON_TOKEN=""
+        ANON_TOKEN_TIME=0
+        AUTH_TOKEN=""
+        AUTH_TOKEN_TIME=0
 
         # Docker Hub JWT tokens typically expire in ~300 s.  Refresh tokens
         # proactively at 240 s (4 min) to stay safely below that threshold.
@@ -270,9 +270,9 @@ runs:
         # $2: URL to fetch
         # $3: label for log messages (e.g. "unauthenticated")
         # $4: fallback label for log messages (e.g. "trying authenticated Registry API")
-        # Prints the raw manifest body to stdout and returns 0 on HTTP 200.
-        # Returns 1 on HTTP 404 (tag not found).
-        # Logs a warning to stderr and returns 2 on all other errors.
+        # Sets MANIFEST_BODY to the raw response body (no subshell needed).
+        # Returns 0 on HTTP 200, 1 on HTTP 404, 2 on all other errors
+        # (error details are logged to stdout).
         fetch_manifest() {
           local _fm_token="$1" _fm_url="$2" _fm_label="$3" _fm_fallback="$4"
           local _fm_body _fm_err _fm_http_code _fm_curl_err
@@ -286,15 +286,17 @@ runs:
             "${_fm_url}" \
             2>"${_fm_err}")" || _fm_http_code="000"
           _fm_curl_err="$(cat "${_fm_err}" 2>/dev/null || true)"
-          case "${_fm_http_code}" in
-            200) cat "${_fm_body}"; rm -f "${_fm_body}" "${_fm_err}"; return 0 ;;
-            404) rm -f "${_fm_body}" "${_fm_err}"; return 1 ;;
-            000) echo "  ${IMAGE_SEED}: ${_fm_label} fetch failed" \
-                      "(${_fm_curl_err:-network error}); ${_fm_fallback}." >&2 ;;
-            *)   echo "  ${IMAGE_SEED}: ${_fm_label} fetch returned HTTP ${_fm_http_code};" \
-                      "${_fm_fallback}." >&2 ;;
-          esac
+          MANIFEST_BODY="$(cat "${_fm_body}")"
           rm -f "${_fm_body}" "${_fm_err}"
+          case "${_fm_http_code}" in
+            200) return 0 ;;
+            404) MANIFEST_BODY=""; return 1 ;;
+            000) echo "  ${IMAGE_SEED}: ${_fm_label} fetch failed" \
+                      "(${_fm_curl_err:-network error}); ${_fm_fallback}." ;;
+            *)   echo "  ${IMAGE_SEED}: ${_fm_label} fetch returned HTTP ${_fm_http_code};" \
+                      "${_fm_fallback}." ;;
+          esac
+          MANIFEST_BODY=""
           return 2
         }
 
@@ -361,18 +363,13 @@ runs:
           fi
         }
 
-        # Helper: return a valid authenticated Docker Hub token for ${REPO}:pull.
-        # Reads the cached token when it is younger than TOKEN_MAX_AGE seconds;
-        # otherwise fetches a fresh one and caches it for subsequent calls.
-        # Prints the token to stdout (or "" when unavailable); diagnostics go
-        # to stderr so stdout is safe to capture with $(...).
+        # Helper: refresh the authenticated Docker Hub pull token when it has expired.
+        # Updates AUTH_TOKEN and AUTH_TOKEN_TIME globals directly (no subshell needed).
+        # Returns 0 when a valid token is available, 1 when the fetch failed.
         get_auth_token() {
-          local _now _cached _cached_time
+          local _now
           _now="$(date +%s)"
-          _cached="$(cat "${_AUTH_TOKEN_FILE}" 2>/dev/null || true)"
-          _cached_time="$(cat "${_AUTH_TOKEN_TIME_FILE}" 2>/dev/null || echo 0)"
-          if [[ -n "${_cached}" ]] && (( _now - _cached_time < TOKEN_MAX_AGE )); then
-            printf '%s' "${_cached}"
+          if [[ -n "${AUTH_TOKEN}" ]] && (( _now - AUTH_TOKEN_TIME < TOKEN_MAX_AGE )); then
             return 0
           fi
           local _ga_creds _ga_json _new_token
@@ -385,28 +382,24 @@ runs:
           rm -f "${_ga_creds}"
           _new_token="$(printf '%s' "${_ga_json}" | jq -r '.token // ""' 2>/dev/null)" \
             || _new_token=""
-          printf '%s' "${_new_token}" > "${_AUTH_TOKEN_FILE}"
-          printf '%s' "$(date +%s)" > "${_AUTH_TOKEN_TIME_FILE}"
-          if [[ -n "${_new_token}" ]]; then
-            echo "  Obtained authenticated Docker Hub token (for inspect fallback)." >&2
+          AUTH_TOKEN="${_new_token}"
+          AUTH_TOKEN_TIME="$(date +%s)"
+          if [[ -n "${AUTH_TOKEN}" ]]; then
+            echo "  Obtained authenticated Docker Hub token (for inspect fallback)."
+            return 0
           else
-            echo "  Could not obtain authenticated token; imagetools inspect will be used as fallback." >&2
+            echo "  Could not obtain authenticated token; imagetools inspect will be used as fallback."
+            return 1
           fi
-          printf '%s' "${_new_token}"
         }
 
-        # Helper: return a valid anonymous Docker Hub token for ${REPO}:pull.
-        # Reads the cached token when it is younger than TOKEN_MAX_AGE seconds;
-        # otherwise fetches a fresh one and caches it for subsequent calls.
-        # Prints the token to stdout (or "" when unavailable); diagnostics go
-        # to stderr so stdout is safe to capture with $(...).
+        # Helper: refresh the anonymous Docker Hub pull token when it has expired.
+        # Updates ANON_TOKEN and ANON_TOKEN_TIME globals directly (no subshell needed).
+        # Returns 0 when a valid token is available, 1 when the fetch failed.
         get_anon_token() {
-          local _now _cached _cached_time
+          local _now
           _now="$(date +%s)"
-          _cached="$(cat "${_ANON_TOKEN_FILE}" 2>/dev/null || true)"
-          _cached_time="$(cat "${_ANON_TOKEN_TIME_FILE}" 2>/dev/null || echo 0)"
-          if [[ -n "${_cached}" ]] && (( _now - _cached_time < TOKEN_MAX_AGE )); then
-            printf '%s' "${_cached}"
+          if [[ -n "${ANON_TOKEN}" ]] && (( _now - ANON_TOKEN_TIME < TOKEN_MAX_AGE )); then
             return 0
           fi
           local _anon_err _new_token
@@ -415,29 +408,30 @@ runs:
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
             2>"${_anon_err}" | jq -r '.token // ""')" || _new_token=""
           rm -f "${_anon_err}"
-          printf '%s' "${_new_token}" > "${_ANON_TOKEN_FILE}"
-          printf '%s' "$(date +%s)" > "${_ANON_TOKEN_TIME_FILE}"
-          if [[ -n "${_new_token}" ]]; then
-            echo "  Refreshed anonymous Docker Hub token (unauthenticated inspect)." >&2
+          ANON_TOKEN="${_new_token}"
+          ANON_TOKEN_TIME="$(date +%s)"
+          if [[ -n "${ANON_TOKEN}" ]]; then
+            echo "  Refreshed anonymous Docker Hub token (unauthenticated inspect)."
+            return 0
           else
-            echo "  Could not refresh anonymous token; will use authenticated inspect." >&2
+            echo "  Could not refresh anonymous token; will use authenticated inspect."
+            return 1
           fi
-          printf '%s' "${_new_token}"
         }
 
         # Helper: probe the anonymous (IP-based) Docker Hub pull quota.
-        # Calls get_anon_token internally so the token is always fresh.
+        # Reads ANON_TOKEN (global); call get_anon_token in the main shell first
+        # to ensure the token is fresh before invoking this function.
         # HEAD requests to ratelimitpreview/test are not counted against the
         # pull quota, so this probe does not consume any quota.
         # Prints to stdout: "<n>" (remaining pulls), "unlimited" (no IP-based
         # limit), or "" (probe failed / no anonymous token available).
         anon_pull_remaining() {
-          local _anon_tok _apr_tmpheaders _apr_http_code _apr_headers _apr_remaining
-          _anon_tok="$(get_anon_token)"
-          [[ -z "${_anon_tok}" ]] && return 0
+          local _apr_tmpheaders _apr_http_code _apr_headers _apr_remaining
+          [[ -z "${ANON_TOKEN}" ]] && return 0
           _apr_tmpheaders="$(mktemp)"
           _apr_http_code="$(curl -s --connect-timeout 5 --max-time 15 \
-            -H "Authorization: Bearer ${_anon_tok}" \
+            -H "Authorization: Bearer ${ANON_TOKEN}" \
             --head -D "${_apr_tmpheaders}" -o /dev/null \
             -w '%{http_code}' \
             "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
@@ -459,7 +453,7 @@ runs:
         }
 
         # Warm up the anonymous token so the first loop cycle can use it immediately.
-        get_anon_token > /dev/null
+        get_anon_token
 
         # Consecutive artifact-list API failure counter.  After this many
         # back-to-back failures the loop aborts so the job fails instead of
@@ -573,9 +567,11 @@ runs:
 
           _do_seed=true
           if [[ ${#_unseeded[@]} -gt 0 ]]; then
+            # Refresh the anonymous token in the main shell before probing the
+            # anonymous quota so anon_pull_remaining can read ANON_TOKEN directly.
+            get_anon_token
             # Probe anonymous and authenticated pull quotas to decide whether
-            # seeding can begin.  Both functions cache their tokens in temp files
-            # so repeated $(...) calls within the same cycle are cache hits.
+            # seeding can begin.
             _anon_rem="$(anon_pull_remaining)"
             # Check that enough Docker Hub pull quota remains.  The required
             # authenticated quota depends on how much of the anonymous (IP-based)
@@ -677,17 +673,15 @@ runs:
               cp "${IMG_PLATFORM_DIGESTS[$key]}" "${cached_backup}" 2>/dev/null || true
 
               _seed_status=""  # "ok" | "not_found" | "error"
-              _seed_raw=""
+              MANIFEST_BODY=""
 
               # ── Step 1: unauthenticated (anonymous token) ──────────────────
-              _anon_tok="$(get_anon_token)"
-              if [[ -n "${_anon_tok}" ]]; then
-                _fetch_rc=0
-                _seed_raw="$(fetch_manifest "${_anon_tok}" \
+              # ANON_TOKEN was refreshed in the main shell during the quota check.
+              if [[ -n "${ANON_TOKEN}" ]]; then
+                fetch_manifest "${ANON_TOKEN}" \
                   "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
-                  "unauthenticated" "trying authenticated Registry API")" \
-                  || _fetch_rc=$?
-                case "${_fetch_rc}" in
+                  "unauthenticated" "trying authenticated Registry API"
+                case $? in
                   0)
                     # Only accept the unauthenticated result when it contains at
                     # least one parseable platform entry.  A single-platform
@@ -695,7 +689,7 @@ runs:
                     # filtered as unknown/attestation returns 0 platforms; in that
                     # case fall through to the authenticated path which may return
                     # a manifest-list format not given to anonymous callers.
-                    _anon_plat_count=$(printf '%s' "${_seed_raw}" | jq -r \
+                    _anon_plat_count=$(printf '%s' "${MANIFEST_BODY}" | jq -r \
                       '.manifests[]? |
                        select((.platform.os // "") != "unknown" and
                               (.platform.architecture // "") != "unknown") |
@@ -707,7 +701,7 @@ runs:
                     else
                       echo "  ${IMAGE_SEED}: unauthenticated manifest has 0 valid" \
                            "platform(s); trying authenticated Registry API."
-                      _seed_raw=""
+                      MANIFEST_BODY=""
                     fi
                     ;;
                   1) _seed_status="not_found" ;;
@@ -715,17 +709,14 @@ runs:
               fi
 
               # ── Step 2: authenticated Registry API ───────────────────────
-              # get_auth_token returns a cached token when available, fetching
-              # a fresh one only when the cached token has expired.
+              # get_auth_token refreshes AUTH_TOKEN when it has expired.
               if [[ -z "${_seed_status}" ]]; then
-                _auth_tok="$(get_auth_token)"
-                if [[ -n "${_auth_tok}" ]]; then
-                  _fetch_rc=0
-                  _seed_raw="$(fetch_manifest "${_auth_tok}" \
+                get_auth_token
+                if [[ -n "${AUTH_TOKEN}" ]]; then
+                  fetch_manifest "${AUTH_TOKEN}" \
                     "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
-                    "authenticated Registry API" "trying imagetools inspect")" \
-                    || _fetch_rc=$?
-                  case "${_fetch_rc}" in
+                    "authenticated Registry API" "trying imagetools inspect"
+                  case $? in
                     0) _seed_status="ok"
                        echo "  ${IMAGE_SEED}: fetched manifest (authenticated)." ;;
                     1) _seed_status="not_found" ;;
@@ -738,11 +729,12 @@ runs:
               # network error or unexpected HTTP status).
               if [[ -z "${_seed_status}" ]]; then
                 seed_stderr="$(mktemp)"
-                if _seed_raw="$(docker buildx imagetools inspect \
-                                  "${IMAGE_SEED}" --raw 2>"${seed_stderr}")"; then
+                if MANIFEST_BODY="$(docker buildx imagetools inspect \
+                                      "${IMAGE_SEED}" --raw 2>"${seed_stderr}")"; then
                   _seed_status="ok"
                   echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
                 else
+                  MANIFEST_BODY=""
                   if grep -qi \
                        "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
                        "${seed_stderr}"; then
@@ -786,7 +778,7 @@ runs:
                     pkey="${_normalized_plat//\//-}"
                     printf '%s\t%s\n' "${pkey}" "${p_digest}" \
                       >> "${IMG_PLATFORM_DIGESTS[$key]}"
-                  done < <(printf '%s' "${_seed_raw}" | jq -c \
+                  done < <(printf '%s' "${MANIFEST_BODY}" | jq -c \
                     '.manifests[]? |
                      {os:     (.platform.os           // ""),
                       arch:   (.platform.architecture // ""),
