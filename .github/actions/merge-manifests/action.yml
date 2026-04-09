@@ -249,15 +249,6 @@ runs:
         # proactively at 240 s (4 min) to stay safely below that threshold.
         TOKEN_MAX_AGE=240
 
-        # Dedicated rate-limit-probe tokens for quota checks; scoped to
-        # ratelimitpreview/test:pull (separate from ANON_TOKEN / AUTH_TOKEN
-        # which are scoped to REPO:pull for manifest inspection).  Managed
-        # by refresh_hub_token (defined below).
-        ANON_QUOTA_TOKEN=""
-        ANON_QUOTA_TOKEN_TIME=0
-        AUTH_QUOTA_TOKEN=""
-        AUTH_QUOTA_TOKEN_TIME=0
-
         # Credentials file for authenticated token fetches.  Stored inside
         # WORK_DIR so it is cleaned up by the existing EXIT trap.
         _auth_creds="${WORK_DIR}/dockerhub-creds"
@@ -315,16 +306,10 @@ runs:
           return 2
         }
 
-        # Helper: refresh a Docker Hub bearer token when it is expired or empty.
-        # refresh_hub_token VARNAME [creds_file]
-        # (defined in hub-quota-helpers.sh, sourced below)
-
-        # Helper: probe Docker Hub pull quota for a given bearer token.
-        # hub_pull_remaining TOKEN
-        # (defined in hub-quota-helpers.sh, sourced below)
-
-        # Shared quota helpers (refresh_hub_token, hub_pull_remaining).
-        # TOKEN_MAX_AGE must be set before calling either function.
+        # Shared quota helpers (refresh_hub_token, hub_pull_remaining, and the
+        # convenience wrappers refresh_anon_quota_token, refresh_auth_quota_token,
+        # anon_quota_remaining, auth_quota_remaining).  Sourcing also initialises
+        # the internal quota-probe token state used by those wrappers.
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
 
@@ -386,7 +371,7 @@ runs:
 
         # Warm up the anonymous tokens so the first loop cycle can use them immediately.
         get_anon_token
-        refresh_hub_token ANON_QUOTA_TOKEN || true
+        refresh_anon_quota_token || true
 
         # Consecutive artifact-list API failure counter.  After this many
         # back-to-back failures the loop aborts so the job fails instead of
@@ -531,8 +516,8 @@ runs:
             # Refresh the anonymous token in the main shell so ANON_TOKEN is
             # current for fetch_manifest later in the same cycle.
             get_anon_token
-            refresh_hub_token ANON_QUOTA_TOKEN || true
-            _anon_rem="$(hub_pull_remaining "${ANON_QUOTA_TOKEN}")"
+            refresh_anon_quota_token || true
+            _anon_rem="$(anon_quota_remaining)"
             if [[ "${_anon_rem}" == "unlimited" ]]; then
               _anon_display="unlimited"
               _anon_seed=${_total_unseeded}
@@ -547,8 +532,8 @@ runs:
               _anon_seed=0
             fi
 
-            refresh_hub_token AUTH_QUOTA_TOKEN "${_auth_creds}" || true
-            _auth_rem="$(hub_pull_remaining "${AUTH_QUOTA_TOKEN}")"
+            refresh_auth_quota_token "${_auth_creds}" || true
+            _auth_rem="$(auth_quota_remaining)"
             _auth_need=$(( _total_unseeded - _anon_seed ))
             if [[ "${_auth_rem}" == "unlimited" ]]; then
               _auth_seed=${_auth_need}
@@ -1099,8 +1084,8 @@ runs:
           done
           # Probe Docker Hub rate-limit status so we can give an actionable
           # suggestion: "rate limit exhausted – retry in 6 hours" vs "retry".
-          refresh_hub_token AUTH_QUOTA_TOKEN "${_auth_creds}" || true
-          _auth_rem="$(hub_pull_remaining "${AUTH_QUOTA_TOKEN}")"
+          refresh_auth_quota_token "${_auth_creds}" || true
+          _auth_rem="$(auth_quota_remaining)"
           if [[ "${_auth_rem}" == "unlimited" ]]; then
             echo "::error::Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \
                  "this failure is not caused by quota exhaustion." \

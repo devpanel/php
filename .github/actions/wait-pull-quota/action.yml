@@ -127,30 +127,22 @@ runs:
         POLL_INTERVAL=60
         elapsed=0
 
-        # ── 1. Initialize variables ───────────────────────────────────────────
-        # Docker Hub JWTs expire in ~300 s; refresh proactively at 240 s.
-        ANON_TOKEN=""
-        ANON_TOKEN_TIME=0
-        AUTH_TOKEN=""
-        AUTH_TOKEN_TIME=0
-        TOKEN_MAX_AGE=240
-
-        # Credentials file for authenticated token fetches.
+        # ── 1. Initialize credentials for authenticated token fetches ─────────
         _auth_creds="$(umask 077; mktemp)"
         printf 'machine auth.docker.io login %s password %s\n' \
           "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_auth_creds}"
         # shellcheck disable=SC2064
         trap "rm -f ${_auth_creds}" EXIT
 
-        # ── 2. Function to check for and refresh an expiring token ────────────
-        # Shared helpers (refresh_hub_token, hub_pull_remaining) are sourced
-        # from .github/scripts/hub-quota-helpers.sh.  TOKEN_MAX_AGE must be
-        # set before calling either function.
+        # ── 2. Source shared quota helpers ────────────────────────────────────
+        # Defines refresh_hub_token, hub_pull_remaining, and the convenience
+        # wrappers refresh_anon_quota_token, refresh_auth_quota_token,
+        # anon_quota_remaining, auth_quota_remaining.  Also initialises the
+        # internal quota-probe token state and TOKEN_MAX_AGE (240 s default).
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
 
-        # ── 3. Function to check and refresh Docker Hub pull quota ────────────
-        # (defined in hub-quota-helpers.sh, sourced above)
+        # ── 3. (quota probe functions defined in hub-quota-helpers.sh above) ──
 
         # ── 4. Calculate the number of anonymous pulls to reserve ─────────────
         # The pre-seeding step runs in THIS job on THIS runner and uses the
@@ -176,8 +168,8 @@ runs:
 
           # ── 6. Subtract available anonymous quota from the anonymous reserve;
           #       add the remainder to the authenticated pull requirement. ───────
-          refresh_hub_token ANON_TOKEN || true
-          _anon_rem="$(hub_pull_remaining "${ANON_TOKEN}")"
+          refresh_anon_quota_token || true
+          _anon_rem="$(anon_quota_remaining)"
           if [[ "${_anon_rem}" == "unlimited" ]]; then
             _anon_display="unlimited"
             _anon_covers=${_anon_reserve}
@@ -196,8 +188,8 @@ runs:
             break
           fi
 
-          refresh_hub_token AUTH_TOKEN "${_auth_creds}" || true
-          _auth_rem="$(hub_pull_remaining "${AUTH_TOKEN}")"
+          refresh_auth_quota_token "${_auth_creds}" || true
+          _auth_rem="$(auth_quota_remaining)"
 
           if [[ "${_auth_rem}" == "unlimited" ]]; then
             echo "Docker Hub pull quota: authenticated quota is unlimited; proceeding."

@@ -1,11 +1,23 @@
 #!/bin/bash
 # Shared Docker Hub quota helpers.
 #
-# Source this file in any run block that needs to probe Docker Hub pull quota
-# or refresh Docker Hub bearer tokens.  The caller must define TOKEN_MAX_AGE
-# (seconds before a token is considered stale) before calling either function.
+# Source this file in any run block that needs to probe Docker Hub pull quota.
+# TOKEN_MAX_AGE defaults to 240 s but can be overridden by the caller before
+# sourcing this file.
 #
 # Requires: bash 4+, curl, jq
+
+# Default token max age (seconds before a token is considered stale).
+# Callers may override this before sourcing this file.
+TOKEN_MAX_AGE="${TOKEN_MAX_AGE:-240}"
+
+# Internal quota-probe token state.  These variables are managed entirely
+# by the refresh_anon_quota_token / refresh_auth_quota_token helpers below;
+# callers should not read or write them directly.
+_HUB_QUOTA_ANON_TOKEN=""
+_HUB_QUOTA_ANON_TOKEN_TIME=0
+_HUB_QUOTA_AUTH_TOKEN=""
+_HUB_QUOTA_AUTH_TOKEN_TIME=0
 
 # refresh_hub_token VARNAME [creds_file]
 # Fetches a ratelimitpreview/test:pull-scoped token from auth.docker.io.
@@ -65,4 +77,32 @@ hub_pull_remaining() {
     echo "${_remaining:-unlimited}"
   fi
   # Non-2xx or empty http_code: print nothing (caller treats as failed).
+}
+
+# refresh_anon_quota_token
+# Convenience wrapper: refresh the internal anonymous quota-probe token.
+# Equivalent to: refresh_hub_token _HUB_QUOTA_ANON_TOKEN
+refresh_anon_quota_token() {
+  refresh_hub_token _HUB_QUOTA_ANON_TOKEN
+}
+
+# refresh_auth_quota_token [creds_file]
+# Convenience wrapper: refresh the internal authenticated quota-probe token.
+# Equivalent to: refresh_hub_token _HUB_QUOTA_AUTH_TOKEN [creds_file]
+refresh_auth_quota_token() {
+  refresh_hub_token _HUB_QUOTA_AUTH_TOKEN "${1:-}"
+}
+
+# anon_quota_remaining
+# Convenience wrapper: print the anonymous pull quota remaining using the
+# internal anonymous quota-probe token.
+anon_quota_remaining() {
+  hub_pull_remaining "${_HUB_QUOTA_ANON_TOKEN}"
+}
+
+# auth_quota_remaining
+# Convenience wrapper: print the authenticated pull quota remaining using the
+# internal authenticated quota-probe token.
+auth_quota_remaining() {
+  hub_pull_remaining "${_HUB_QUOTA_AUTH_TOKEN}"
 }
