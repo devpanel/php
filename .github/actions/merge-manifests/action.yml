@@ -423,20 +423,10 @@ runs:
           fi
         }
 
-        # Initial ANON_TOKEN fetch.
+        # Initial ANON_TOKEN fetch (reuses refresh_anon_token to avoid duplication).
         ANON_TOKEN=""
         ANON_TOKEN_TIME=0
-        anon_token_err="$(mktemp)"
-        ANON_TOKEN="$(curl -sf \
-          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
-          2>"${anon_token_err}" | jq -r '.token // ""')" || ANON_TOKEN=""
-        rm -f "${anon_token_err}"
-        ANON_TOKEN_TIME="$(date +%s)"
-        if [[ -n "${ANON_TOKEN}" ]]; then
-          echo "  Obtained anonymous Docker Hub token (unauthenticated inspect)."
-        else
-          echo "  Could not obtain anonymous token; will use authenticated inspect."
-        fi
+        refresh_anon_token
 
         # Consecutive artifact-list API failure counter.  After this many
         # back-to-back failures the loop aborts so the job fails instead of
@@ -567,6 +557,8 @@ runs:
             _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
                                     ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
             if [[ -n "${ANON_TOKEN}" ]]; then
+              # ANON_TOKEN was just refreshed above; if it is non-empty it is
+              # guaranteed fresh, so seeding will succeed via anonymous pulls.
               # Seeding will use anonymous; only build-job fallbacks need auth.
               _needed=$(( _remaining_builds ))
             else
