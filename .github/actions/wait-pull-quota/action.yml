@@ -1,16 +1,15 @@
 name: Wait for Docker Hub pull quota
 description: >
   Waits until the Docker Hub pull quota has enough remaining capacity for
-  all parallel build jobs.  Probes both the anonymous (IP-based, 100/6 h)
-  and authenticated (account-based, 200/6 h) quotas each cycle.
+  all parallel build jobs and the pre-seed step.
 
-  Build jobs first attempt an anonymous pre-pull of the base PHP image;
-  only if that fails does the authenticated bake step consume an
-  authenticated pull.  This action computes the effective number of
-  authenticated pulls needed as max(0, needed_pulls − anonymous_remaining)
-  so that waiting is skipped when the anonymous quota can cover all builds,
-  and less conservative (and more accurate) waiting is applied when the
-  anonymous quota is partially exhausted.
+  Anonymous quota is always probed first each poll cycle.  If the anonymous
+  (IP-based, 100/6 h) quota covers all needed pulls the action proceeds
+  immediately without probing authenticated quota at all.  Only when the
+  anonymous quota is insufficient does the action probe the authenticated
+  (account-based, 200/6 h) quota.  The real number of authenticated pulls
+  needed is computed as max(0, needed_pulls − anonymous_remaining) from the
+  live probe value, never from a static guess.
 
   Polls every 60 seconds.  Gives up after 5h30m (19800 s) to avoid
   being cancelled by the default 6 h GitHub-hosted job timeout.
@@ -18,15 +17,15 @@ description: >
 inputs:
   needed_pulls:
     description: >
-      Total number of Docker Hub pulls (anonymous + authenticated combined)
-      needed before and by the parallel build jobs.  Pass the sum of
-      build_matrix_length (one pull per build job for the base PHP image in
-      the worst case where every job misses the GHCR layer cache) and
+      Worst-case total number of Docker Hub pulls (anonymous + authenticated
+      combined) needed before and by the parallel build jobs.  Pass the sum
+      of build_matrix_length (one pull per build job for the base PHP image
+      in the worst case where every job misses the GHCR layer cache) and
       all_versions_count (one pull per PHP version that the pre-seed action
       may need in the worst case where the codenames cache is cold).
-      The action probes the anonymous (IP-based) quota first; any anonymous
-      capacity reduces the effective authenticated quota requirement
-      proportionally.
+      The action always probes the anonymous (IP-based) quota first;
+      the real authenticated requirement is derived from that live probe as
+      max(0, needed_pulls − anonymous_remaining), replacing any static guess.
     required: true
   dockerhub_username:
     description: Docker Hub username for authenticating the pull-rate-limit probe.
@@ -110,7 +109,66 @@ runs:
         POLL_INTERVAL=60
         elapsed=0
         while true; do
-          # ── Probe authenticated quota ──────────────────────────────────────
+          # ── Probe anonymous (IP-based) quota first ────────────────────────
+          # Always probe anonymous before authenticated so the real number of
+          # authenticated pulls needed is computed from a live value rather
+          # than a static guess.  If anonymous quota already covers all
+          # needed pulls we proceed immediately without touching authenticated
+          # quota at all.
+          # HEAD requests to ratelimitpreview/test are not counted against quota.
+          _anon_json="$(curl -sf --connect-timeout 10 --max-time 30 \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+            2>/dev/null)" || _anon_json=""
+          _anon_token="$(printf '%s' "${_anon_json}" | jq -r '.token // ""' 2>/dev/null)" \
+            || _anon_token=""
+          _anon_remaining=""
+          _anon_unlimited=false
+          if [[ -n "${_anon_token}" ]]; then
+            _anon_tmpheaders="$(mktemp)"
+            _anon_http_code="$(curl -s --connect-timeout 10 --max-time 30 \
+              -H "Authorization: Bearer ${_anon_token}" \
+              --head -D "${_anon_tmpheaders}" -o /dev/null \
+              -w '%{http_code}' \
+              "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
+              2>/dev/null)" || _anon_http_code=""
+            _anon_headers="$(cat "${_anon_tmpheaders}" 2>/dev/null || true)"
+            rm -f "${_anon_tmpheaders}"
+            if [[ "${_anon_http_code:0:1}" == "2" ]]; then
+              _anon_remaining="$(printf '%s' "${_anon_headers}" \
+                | grep -i '^ratelimit-remaining:' \
+                | grep -oE '[0-9]+' | head -1)" || _anon_remaining=""
+              if [[ -z "${_anon_remaining}" ]]; then
+                # 2xx but no RateLimit-Remaining header = no anonymous rate limit.
+                _anon_unlimited=true
+              fi
+            fi
+          fi
+
+          # ── Compute effective authenticated pulls needed ───────────────────
+          # Use the real probed anonymous quota to derive the true authenticated
+          # requirement.  This avoids guessing: the only unknown is whether
+          # each pull will be served by anonymous or authenticated quota, and
+          # the live anonymous-remaining value answers that question precisely.
+          _effective_needed="${needed_pulls}"  # conservative if anon probe failed
+          _anon_display="unknown"
+          if [[ "${_anon_unlimited}" == "true" ]]; then
+            _effective_needed=0
+            _anon_display="unlimited"
+          elif [[ -n "${_anon_remaining}" ]]; then
+            _effective_needed=$(( needed_pulls > _anon_remaining \
+              ? needed_pulls - _anon_remaining : 0 ))
+            _anon_display="${_anon_remaining}"
+          fi
+
+          # ── Short-circuit: anonymous quota covers everything ───────────────
+          if (( _effective_needed == 0 )); then
+            echo "Docker Hub pull quota: ${_anon_display} anonymous remaining" \
+                 "covers all ${needed_pulls} needed pull(s);" \
+                 "no authenticated pulls required. Proceeding."
+            break
+          fi
+
+          # ── Probe authenticated quota (only when anon is insufficient) ─────
           _creds_file="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
             "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
@@ -184,47 +242,6 @@ runs:
             elapsed=$(( elapsed + POLL_INTERVAL ))
             continue
           fi
-
-          # ── Probe anonymous (IP-based) quota ──────────────────────────────
-          # The anonymous quota (100/6 h per egress IP, shared by all concurrent
-          # runners on the same host/proxy) drives build-job pre-pulls.  If it is
-          # exhausted, pre-pulls fail and bake falls back to authenticated pulls.
-          # HEAD requests to ratelimitpreview/test are not counted against quota.
-          _anon_json="$(curl -sf --connect-timeout 10 --max-time 30 \
-            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
-            2>/dev/null)" || _anon_json=""
-          _anon_token="$(printf '%s' "${_anon_json}" | jq -r '.token // ""' 2>/dev/null)" \
-            || _anon_token=""
-          _anon_remaining=""
-          if [[ -n "${_anon_token}" ]]; then
-            _anon_tmpheaders="$(mktemp)"
-            _anon_http_code="$(curl -s --connect-timeout 10 --max-time 30 \
-              -H "Authorization: Bearer ${_anon_token}" \
-              --head -D "${_anon_tmpheaders}" -o /dev/null \
-              -w '%{http_code}' \
-              "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
-              2>/dev/null)" || _anon_http_code=""
-            _anon_headers="$(cat "${_anon_tmpheaders}" 2>/dev/null || true)"
-            rm -f "${_anon_tmpheaders}"
-            if [[ "${_anon_http_code:0:1}" == "2" ]]; then
-              _anon_remaining="$(printf '%s' "${_anon_headers}" \
-                | grep -i '^ratelimit-remaining:' \
-                | grep -oE '[0-9]+' | head -1)" || _anon_remaining=""
-              # Empty _anon_remaining with 2xx means no anonymous rate limit.
-            fi
-          fi
-
-          # ── Compute effective authenticated pulls needed ───────────────────
-          # Build jobs first attempt an anonymous pre-pull; only if that fails
-          # (or the anonymous quota is exhausted) does authenticated quota get
-          # consumed.  If the anonymous quota covers all builds, no authenticated
-          # pulls are needed for the pre-pull step.
-          _effective_needed="${needed_pulls}"
-          if [[ -n "${_anon_remaining}" ]]; then
-            _effective_needed=$(( needed_pulls > _anon_remaining \
-              ? needed_pulls - _anon_remaining : 0 ))
-          fi
-          _anon_display="${_anon_remaining:-unknown}"
 
           if (( _remaining >= _effective_needed )); then
             echo "Docker Hub pull quota: ${_remaining} authenticated remaining," \
