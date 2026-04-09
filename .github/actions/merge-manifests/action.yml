@@ -237,8 +237,14 @@ runs:
         POLL_CYCLE=0
 
         # AUTH_TOKEN is fetched lazily (via get_auth_token) only when an
-        # authenticated path is actually needed; it is not fetched upfront.
+        # authenticated path is actually needed; it is refreshed automatically
+        # when it is older than TOKEN_MAX_AGE seconds.
         AUTH_TOKEN=""
+        AUTH_TOKEN_TIME=0
+
+        # Docker Hub JWT tokens typically expire in ~300 s.  Refresh tokens
+        # proactively at 240 s (4 min) to stay safely below that threshold.
+        TOKEN_MAX_AGE=240
 
         # Pull-quota accounting: tracks how long seeding has been deferred
         # due to insufficient Docker Hub quota.
@@ -346,10 +352,16 @@ runs:
         }
 
         # Helper: fetch an authenticated Docker Hub token for ${REPO}:pull.
-        # Idempotent — skips the network request if AUTH_TOKEN is already set.
-        # Sets global AUTH_TOKEN.
+        # Refreshes the token when AUTH_TOKEN is empty or older than TOKEN_MAX_AGE
+        # seconds (Docker Hub JWTs expire in ~300 s; we refresh at 240 s).
+        # Sets globals AUTH_TOKEN and AUTH_TOKEN_TIME.
         get_auth_token() {
-          [[ -n "${AUTH_TOKEN}" ]] && return 0
+          local _now
+          _now="$(date +%s)"
+          if [[ -n "${AUTH_TOKEN}" ]] && \
+             (( _now - AUTH_TOKEN_TIME < TOKEN_MAX_AGE )); then
+            return 0
+          fi
           local _ga_creds _ga_json
           _ga_creds="$(umask 077; mktemp)"
           printf 'machine auth.docker.io login %s password %s\n' \
@@ -360,6 +372,7 @@ runs:
           rm -f "${_ga_creds}"
           AUTH_TOKEN="$(printf '%s' "${_ga_json}" | jq -r '.token // ""' 2>/dev/null)" \
             || AUTH_TOKEN=""
+          AUTH_TOKEN_TIME="$(date +%s)"
           if [[ -n "${AUTH_TOKEN}" ]]; then
             echo "  Obtained authenticated Docker Hub token (for inspect fallback)."
           else
@@ -385,14 +398,40 @@ runs:
           return 1
         }
 
-        # Obtain a single anonymous Docker Hub token that covers all images in
-        # the merge matrix.  One token request is enough because the scope
-        # parameter is per-repository, not per-tag.
+        # Helper: refresh ANON_TOKEN when it is empty or older than TOKEN_MAX_AGE
+        # seconds.  Docker Hub JWTs expire in ~300 s; refreshing at 240 s avoids
+        # silent fallback to the authenticated path once the token expires.
+        # Sets globals ANON_TOKEN and ANON_TOKEN_TIME.
+        refresh_anon_token() {
+          local _now
+          _now="$(date +%s)"
+          if [[ -n "${ANON_TOKEN}" ]] && \
+             (( _now - ANON_TOKEN_TIME < TOKEN_MAX_AGE )); then
+            return 0
+          fi
+          local _anon_err
+          _anon_err="$(mktemp)"
+          ANON_TOKEN="$(curl -sf --connect-timeout 5 --max-time 15 \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
+            2>"${_anon_err}" | jq -r '.token // ""')" || ANON_TOKEN=""
+          rm -f "${_anon_err}"
+          ANON_TOKEN_TIME="$(date +%s)"
+          if [[ -n "${ANON_TOKEN}" ]]; then
+            echo "  Refreshed anonymous Docker Hub token (unauthenticated inspect)."
+          else
+            echo "  Could not refresh anonymous token; will use authenticated inspect."
+          fi
+        }
+
+        # Initial ANON_TOKEN fetch.
+        ANON_TOKEN=""
+        ANON_TOKEN_TIME=0
         anon_token_err="$(mktemp)"
         ANON_TOKEN="$(curl -sf \
           "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
           2>"${anon_token_err}" | jq -r '.token // ""')" || ANON_TOKEN=""
         rm -f "${anon_token_err}"
+        ANON_TOKEN_TIME="$(date +%s)"
         if [[ -n "${ANON_TOKEN}" ]]; then
           echo "  Obtained anonymous Docker Hub token (unauthenticated inspect)."
         else
@@ -511,18 +550,29 @@ runs:
 
           _do_seed=true
           if [[ ${#_unseeded[@]} -gt 0 ]]; then
-            # Check that enough Docker Hub pull quota remains for both the
-            # unseeded images and build jobs that are still running.  When
-            # ANON_TOKEN is empty every inspect uses an authenticated pull;
-            # when ANON_TOKEN exists some images may still fall through to the
-            # authenticated Registry API or imagetools inspect (e.g. anonymous
-            # manifest has 0 valid platforms), so we gate conservatively in all
-            # cases.  Use DIGEST_JOBS_SEEN (first digest per job) rather than
-            # build-done markers so the headroom shrinks as soon as each job's
-            # pull is done.
+            # Refresh the anonymous token before attempting seeding.  Docker Hub
+            # JWTs expire in ~300 s; if ANON_TOKEN is stale the manifest fetch
+            # silently returns 401 and falls through to authenticated pulls,
+            # consuming quota that was not budgeted for.
+            refresh_anon_token
+
+            # Check that enough Docker Hub pull quota remains.  The required
+            # authenticated quota depends on whether ANON_TOKEN is available:
+            #   - ANON_TOKEN fresh: seeding uses anonymous pulls (no authenticated
+            #     quota consumed); only in-progress build jobs need authenticated.
+            #   - ANON_TOKEN absent: seeding also falls back to authenticated,
+            #     so include unseeded images in the authenticated quota need.
+            # Use DIGEST_JOBS_SEEN (first digest per job) rather than build-done
+            # markers so the headroom shrinks as soon as each job's pull is done.
             _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
                                     ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
-            _needed=$(( ${#_unseeded[@]} + _remaining_builds ))
+            if [[ -n "${ANON_TOKEN}" ]]; then
+              # Seeding will use anonymous; only build-job fallbacks need auth.
+              _needed=$(( _remaining_builds ))
+            else
+              # No anonymous token; seeding falls back to authenticated.
+              _needed=$(( ${#_unseeded[@]} + _remaining_builds ))
+            fi
             probe_pull_remaining
             # Treat empty PULL_REMAINING (probe failure) the same as insufficient
             # quota: defer seeding until the quota can be verified.  Only reset
@@ -552,7 +602,8 @@ runs:
                        "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 else
                   echo "::warning::Deferring manifest seeding: Docker Hub pull quota" \
-                       "${PULL_REMAINING}/${_needed} (${#_unseeded[@]} image(s) to seed +" \
+                       "${PULL_REMAINING}/${_needed} authenticated (${#_unseeded[@]} image(s)" \
+                       "to seed via ${ANON_TOKEN:+anonymous}${ANON_TOKEN:-authenticated} +" \
                        "${_remaining_builds} build job(s) still in progress)." \
                        "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 fi
@@ -563,7 +614,8 @@ runs:
                        "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 else
                   echo "Deferring manifest seeding: Docker Hub pull quota" \
-                       "${PULL_REMAINING}/${_needed} (${#_unseeded[@]} image(s) to seed +" \
+                       "${PULL_REMAINING}/${_needed} authenticated (${#_unseeded[@]} image(s)" \
+                       "to seed via ${ANON_TOKEN:+anonymous}${ANON_TOKEN:-authenticated} +" \
                        "${_remaining_builds} build job(s) still in progress)." \
                        "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 fi
