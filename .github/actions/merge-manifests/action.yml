@@ -245,10 +245,6 @@ runs:
         AUTH_TOKEN=""
         AUTH_TOKEN_TIME=0
 
-        # Docker Hub JWT tokens typically expire in ~300 s.  Refresh tokens
-        # proactively at 240 s (4 min) to stay safely below that threshold.
-        TOKEN_MAX_AGE=240
-
         # Credentials file for authenticated token fetches.  Stored inside
         # WORK_DIR so it is cleaned up by the existing EXIT trap.
         _auth_creds="${WORK_DIR}/dockerhub-creds"

@@ -146,11 +146,10 @@ runs:
       run: |
         set -euo pipefail
         TOKEN_MAX_AGE=0  # always fetch a fresh token for this one-shot probe
-        ANON_TOKEN="" ANON_TOKEN_TIME=0
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
-        refresh_hub_token ANON_TOKEN || true
-        _anon_rem="$(hub_pull_remaining "${ANON_TOKEN}")"
+        refresh_anon_quota_token || true
+        _anon_rem="$(anon_quota_remaining)"
         if [[ "${_anon_rem}" == "0" ]]; then
           echo "anon_remaining=0" >> "$GITHUB_OUTPUT"
           echo "Anonymous Docker Hub quota exhausted (0 remaining);" \
@@ -409,15 +408,14 @@ runs:
         # may have caused the bake failure.  Otherwise report a generic
         # build failure and direct the user to the failed step's output.
         TOKEN_MAX_AGE=0  # always fetch a fresh token for this one-shot probe
-        AUTH_CHECK_TOKEN="" AUTH_CHECK_TOKEN_TIME=0
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
         _creds_file="$(umask 077; mktemp)"
         printf 'machine auth.docker.io login %s password %s\n' \
           "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
-        refresh_hub_token AUTH_CHECK_TOKEN "${_creds_file}" || true
+        refresh_auth_quota_token "${_creds_file}" || true
         rm -f "${_creds_file}"
-        rl_remaining="$(hub_pull_remaining "${AUTH_CHECK_TOKEN}")"
+        rl_remaining="$(auth_quota_remaining)"
         if [[ "${rl_remaining}" == "unlimited" ]]; then
           echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                "Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \
@@ -432,7 +430,7 @@ runs:
                "Docker Hub pull rate limit is not exhausted (${rl_remaining} request(s) remaining)." \
                "See the failed bake step above for details." \
                "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-        elif [[ -n "${AUTH_CHECK_TOKEN}" ]]; then
+        elif [[ -n "${_HUB_QUOTA_AUTH_TOKEN}" ]]; then
           echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                "Could not determine Docker Hub pull rate limit status" \
                "(rate-limit probe returned non-2xx); see the failed bake step above." \
