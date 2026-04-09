@@ -423,6 +423,40 @@ runs:
           fi
         }
 
+        # Helper: probe the anonymous (IP-based) Docker Hub pull quota.
+        # Must be called after refresh_anon_token so ANON_TOKEN is fresh.
+        # HEAD requests to ratelimitpreview/test are not counted against the
+        # pull quota, so this probe does not consume any quota.
+        # Sets globals:
+        #   ANON_PULL_REMAINING  "<n>" (remaining pulls), or "" on failure /
+        #                        absent ANON_TOKEN.
+        #   ANON_PULL_UNLIMITED  true when a 2xx response has no
+        #                        RateLimit-Remaining header (no IP-based limit).
+        probe_anon_pull_remaining() {
+          ANON_PULL_REMAINING=""
+          ANON_PULL_UNLIMITED=false
+          [[ -z "${ANON_TOKEN}" ]] && return 0
+          local _apr_tmpheaders _apr_http_code _apr_headers
+          _apr_tmpheaders="$(mktemp)"
+          _apr_http_code="$(curl -s --connect-timeout 5 --max-time 15 \
+            -H "Authorization: Bearer ${ANON_TOKEN}" \
+            --head -D "${_apr_tmpheaders}" -o /dev/null \
+            -w '%{http_code}' \
+            "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
+            2>/dev/null)" || _apr_http_code=""
+          _apr_headers="$(cat "${_apr_tmpheaders}" 2>/dev/null || true)"
+          rm -f "${_apr_tmpheaders}"
+          if [[ "${_apr_http_code:0:1}" == "2" ]]; then
+            ANON_PULL_REMAINING="$(printf '%s' "${_apr_headers}" \
+              | grep -i '^ratelimit-remaining:' \
+              | grep -oE '[0-9]+' | head -1)" || ANON_PULL_REMAINING=""
+            if [[ -z "${ANON_PULL_REMAINING}" ]]; then
+              # 2xx but no RateLimit-Remaining → no anonymous rate limit.
+              ANON_PULL_UNLIMITED=true
+            fi
+          fi
+        }
+
         # Initial ANON_TOKEN fetch (reuses refresh_anon_token to avoid duplication).
         ANON_TOKEN=""
         ANON_TOKEN_TIME=0
@@ -545,26 +579,32 @@ runs:
             # silently returns 401 and falls through to authenticated pulls,
             # consuming quota that was not budgeted for.
             refresh_anon_token
+            probe_anon_pull_remaining
 
             # Check that enough Docker Hub pull quota remains.  The required
-            # authenticated quota depends on whether ANON_TOKEN is available:
-            #   - ANON_TOKEN fresh: seeding uses anonymous pulls (no authenticated
-            #     quota consumed); only in-progress build jobs need authenticated.
-            #   - ANON_TOKEN absent: seeding also falls back to authenticated,
-            #     so include unseeded images in the authenticated quota need.
+            # authenticated quota depends on how much of the anonymous (IP-based)
+            # quota remains to cover seeding:
+            #   - Anonymous quota covers all unseeded: only in-progress build
+            #     jobs need authenticated pulls.
+            #   - Anonymous quota covers some/none: the uncovered images fall
+            #     back to authenticated pulls, so include them in the need.
             # Use DIGEST_JOBS_SEEN (first digest per job) rather than build-done
             # markers so the headroom shrinks as soon as each job's pull is done.
             _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
                                     ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
-            if [[ -n "${ANON_TOKEN}" ]]; then
-              # ANON_TOKEN was just refreshed above; if it is non-empty it is
-              # guaranteed fresh, so seeding will succeed via anonymous pulls.
-              # Seeding will use anonymous; only build-job fallbacks need auth.
-              _needed=$(( _remaining_builds ))
-            else
-              # No anonymous token; seeding falls back to authenticated.
-              _needed=$(( ${#_unseeded[@]} + _remaining_builds ))
+            _anon_covers=0
+            if [[ "${ANON_PULL_UNLIMITED}" == "true" ]]; then
+              _anon_covers=${#_unseeded[@]}
+            elif [[ -n "${ANON_PULL_REMAINING}" ]]; then
+              _anon_covers=$(( ANON_PULL_REMAINING < ${#_unseeded[@]} \
+                                 ? ANON_PULL_REMAINING : ${#_unseeded[@]} ))
             fi
+            if [[ "${ANON_PULL_UNLIMITED}" == "true" ]]; then
+              _anon_display="unlimited"
+            else
+              _anon_display="${ANON_PULL_REMAINING:-unknown}"
+            fi
+            _needed=$(( ${#_unseeded[@]} - _anon_covers + _remaining_builds ))
             probe_pull_remaining
             # Treat empty PULL_REMAINING (probe failure) the same as insufficient
             # quota: defer seeding until the quota can be verified.  Only reset
@@ -595,7 +635,8 @@ runs:
                 else
                   echo "::warning::Deferring manifest seeding: Docker Hub pull quota" \
                        "${PULL_REMAINING}/${_needed} authenticated (${#_unseeded[@]} image(s)" \
-                       "to seed via ${ANON_TOKEN:+anonymous}${ANON_TOKEN:-authenticated} +" \
+                       "to seed; ${_anon_covers} covered by anonymous quota" \
+                       "(${_anon_display} remaining) +" \
                        "${_remaining_builds} build job(s) still in progress)." \
                        "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 fi
@@ -607,7 +648,8 @@ runs:
                 else
                   echo "Deferring manifest seeding: Docker Hub pull quota" \
                        "${PULL_REMAINING}/${_needed} authenticated (${#_unseeded[@]} image(s)" \
-                       "to seed via ${ANON_TOKEN:+anonymous}${ANON_TOKEN:-authenticated} +" \
+                       "to seed; ${_anon_covers} covered by anonymous quota" \
+                       "(${_anon_display} remaining) +" \
                        "${_remaining_builds} build job(s) still in progress)." \
                        "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 fi
