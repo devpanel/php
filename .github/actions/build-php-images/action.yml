@@ -145,7 +145,6 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        TOKEN_MAX_AGE=0  # always fetch a fresh token for this one-shot probe
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
         refresh_anon_quota_token || true
@@ -407,10 +406,10 @@ runs:
         # is 0 the pull rate limit is exhausted; a base-image pull throttle
         # may have caused the bake failure.  Otherwise report a generic
         # build failure and direct the user to the failed step's output.
-        TOKEN_MAX_AGE=0  # always fetch a fresh token for this one-shot probe
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
-        refresh_auth_quota_token || true
+        _auth_token_ok=false
+        refresh_auth_quota_token && _auth_token_ok=true || true
         rl_remaining="$(auth_quota_remaining)"
         if [[ "${rl_remaining}" == "unlimited" ]]; then
           echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
@@ -426,7 +425,7 @@ runs:
                "Docker Hub pull rate limit is not exhausted (${rl_remaining} request(s) remaining)." \
                "See the failed bake step above for details." \
                "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-        elif [[ -n "${_HUB_QUOTA_AUTH_TOKEN}" ]]; then
+        elif ${_auth_token_ok}; then
           echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                "Could not determine Docker Hub pull rate limit status" \
                "(rate-limit probe returned non-2xx); see the failed bake step above." \
