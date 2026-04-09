@@ -553,9 +553,11 @@ runs:
           if [[ ${_total_unseeded} -gt 0 ]]; then
 
             # ── 4. Calculate the number of anonymous pulls to reserve ──────────
-            # Each unseeded image needs one manifest-inspection pull.  Reserve
-            # all of them for the anonymous (IP-based) quota first.
-            _anon_reserve=${_total_unseeded}
+            # merge-manifests does not reserve anonymous pulls for other jobs;
+            # pre-seeding is already done and build jobs use only authenticated
+            # pulls.  The action uses all available anonymous quota for its own
+            # manifest inspection (quota_remaining − reserve = quota_remaining).
+            _anon_reserve=0
 
             # ── 5. Calculate the number of authenticated pulls to reserve ──────
             # Reserve one authenticated pull per build job that has not yet
@@ -569,98 +571,121 @@ runs:
 
             # ── 6. Subtract available anonymous quota from the anonymous
             #       reserve; add the remainder to the authenticated requirement. ─
-            # Refresh the anonymous token in the main shell so ANON_TOKEN is
-            # current for both hub_pull_remaining (quota probe) and fetch_manifest
-            # (unauthenticated manifest inspection) in the same cycle.
+            # Since _anon_reserve=0 the anonymous deficit is always 0 and
+            # _auth_needed equals _auth_reserve exactly.  Refresh the anonymous
+            # token so ANON_TOKEN stays current for fetch_manifest
+            # (unauthenticated manifest inspection) later in the same cycle.
             get_anon_token
             refresh_hub_token ANON_QUOTA_TOKEN || true
             _anon_rem="$(hub_pull_remaining "${ANON_QUOTA_TOKEN}")"
             if [[ "${_anon_rem}" == "unlimited" ]]; then
               _anon_display="unlimited"
-              _anon_covers=${_anon_reserve}
             elif [[ -n "${_anon_rem}" ]]; then
               _anon_display="${_anon_rem}"
-              _anon_covers=$(( _anon_rem < _anon_reserve ? _anon_rem : _anon_reserve ))
             else
               _anon_display="unknown"
-              _anon_covers=0
             fi
-            _auth_for_seed=$(( _anon_reserve - _anon_covers ))
-            _auth_needed=$(( _auth_reserve + _auth_for_seed ))
+            _auth_needed=${_auth_reserve}  # no anonymous deficit since _anon_reserve=0
 
-            if (( _auth_needed == 0 )); then
-              # Anonymous quota covers all seeding and no build jobs are
-              # reserving authenticated pulls.
-              QUOTA_WAIT_ELAPSED=0
-            else
-              refresh_hub_token AUTH_QUOTA_TOKEN "${_auth_creds}" || true
-              _auth_rem="$(hub_pull_remaining "${AUTH_QUOTA_TOKEN}")"
-              if [[ "${_auth_rem}" == "unlimited" ]]; then
-                QUOTA_WAIT_ELAPSED=0
-              elif [[ -n "${_auth_rem}" ]]; then
-                # Authenticated pulls available for seeding after holding back
-                # _auth_reserve slots for in-progress build jobs.
-                _auth_for_seed_avail=$(( _auth_rem > _auth_reserve \
-                                           ? _auth_rem - _auth_reserve : 0 ))
-                _max_auth_seeds=$(( _auth_for_seed_avail < _auth_for_seed \
-                                       ? _auth_for_seed_avail : _auth_for_seed ))
-                _seed_count=$(( _anon_covers + _max_auth_seeds ))
-                if (( _seed_count == 0 )); then
-                  # ── 7. Quota insufficient — defer seeding, wait next cycle ─
-                  _do_seed=false
-                  if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
-                    echo "::error::Docker Hub pull quota: deferred seeding for" \
-                         "${QUOTA_WAIT_ELAPSED}s but only ${_auth_rem}/${_auth_needed}" \
-                         "authenticated pull(s) available (${_remaining_builds} build" \
-                         "job(s) still in progress)." \
-                         "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-                    exit 1
-                  fi
-                  if (( QUOTA_WAIT_ELAPSED == 0 )); then
-                    echo "::warning::Deferring manifest seeding: Docker Hub pull quota" \
-                         "${_auth_rem}/${_auth_needed} authenticated (${_total_unseeded}" \
-                         "image(s) to seed; ${_anon_covers} covered by anonymous quota" \
-                         "(${_anon_display} remaining) +" \
-                         "${_remaining_builds} build job(s) still in progress)." \
-                         "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
-                  else
-                    echo "Deferring manifest seeding: Docker Hub pull quota" \
-                         "${_auth_rem}/${_auth_needed} authenticated (${_total_unseeded}" \
-                         "image(s) to seed; ${_anon_covers} covered by anonymous quota" \
-                         "(${_anon_display} remaining) +" \
-                         "${_remaining_builds} build job(s) still in progress)." \
-                         "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
-                  fi
-                  QUOTA_WAIT_ELAPSED=$(( QUOTA_WAIT_ELAPSED + POLL_INTERVAL_SECONDS ))
-                else
-                  QUOTA_WAIT_ELAPSED=0
-                  if (( _seed_count < _total_unseeded )); then
-                    echo "Docker Hub pull quota: seeding ${_seed_count}/${_total_unseeded}" \
-                         "image(s) this cycle (${_anon_display} anonymous remaining," \
-                         "${_auth_rem} authenticated remaining," \
-                         "${_remaining_builds} build job(s) still in progress)."
-                    _unseeded=("${_unseeded[@]:0:${_seed_count}}")
-                  fi
-                fi
+            refresh_hub_token AUTH_QUOTA_TOKEN "${_auth_creds}" || true
+            _auth_rem="$(hub_pull_remaining "${AUTH_QUOTA_TOKEN}")"
+
+            # ── 7. If authenticated quota is below the reserve, defer seeding ──
+            # Available for own seeding: all anonymous quota plus authenticated
+            # quota above the reserve (quota_remaining − reserve).
+            if [[ -z "${_auth_rem}" ]]; then
+              # Auth probe failed — cannot verify the reserve; defer.
+              _do_seed=false
+              if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
+                echo "::error::Could not determine Docker Hub pull quota after" \
+                     "${QUOTA_WAIT_ELAPSED}s of retries." \
+                     "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+                exit 1
+              fi
+              if (( QUOTA_WAIT_ELAPSED == 0 )); then
+                echo "::warning::Could not determine Docker Hub pull quota" \
+                     "(probe failed); deferring manifest seeding." \
+                     "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
               else
-                # ── 7. Auth probe failed — defer seeding, wait next cycle ────
+                echo "Could not determine Docker Hub pull quota" \
+                     "(probe failed); deferring manifest seeding." \
+                     "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+              fi
+              QUOTA_WAIT_ELAPSED=$(( QUOTA_WAIT_ELAPSED + POLL_INTERVAL_SECONDS ))
+            elif [[ "${_auth_rem}" != "unlimited" ]] && (( _auth_rem < _auth_needed )); then
+              # ── 7. Auth quota below reserve — defer seeding, wait next cycle ─
+              _do_seed=false
+              if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
+                echo "::error::Docker Hub pull quota: deferred seeding for" \
+                     "${QUOTA_WAIT_ELAPSED}s but only ${_auth_rem}/${_auth_needed}" \
+                     "authenticated pull(s) available" \
+                     "(${_remaining_builds} build job(s) still in progress)." \
+                     "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+                exit 1
+              fi
+              if (( QUOTA_WAIT_ELAPSED == 0 )); then
+                echo "::warning::Deferring manifest seeding: Docker Hub pull" \
+                     "quota ${_auth_rem}/${_auth_needed} authenticated" \
+                     "(${_remaining_builds} build job(s) still in progress)." \
+                     "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+              else
+                echo "Deferring manifest seeding: Docker Hub pull" \
+                     "quota ${_auth_rem}/${_auth_needed} authenticated" \
+                     "(${_remaining_builds} build job(s) still in progress)." \
+                     "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+              fi
+              QUOTA_WAIT_ELAPSED=$(( QUOTA_WAIT_ELAPSED + POLL_INTERVAL_SECONDS ))
+            else
+              # Gate passes: auth >= reserve (or unlimited).
+              # Compute seeding capacity: all anon + auth above the reserve.
+              if [[ "${_anon_rem}" == "unlimited" ]]; then
+                _anon_seed=${_total_unseeded}
+              elif [[ -n "${_anon_rem}" ]]; then
+                _anon_seed=$(( _anon_rem < _total_unseeded ? _anon_rem : _total_unseeded ))
+              else
+                _anon_seed=0
+              fi
+              if [[ "${_auth_rem}" == "unlimited" ]]; then
+                _auth_seed=$(( _total_unseeded - _anon_seed ))
+              else
+                _auth_avail=$(( _auth_rem - _remaining_builds ))
+                _auth_seed_need=$(( _total_unseeded - _anon_seed ))
+                _auth_seed=$(( _auth_seed_need < _auth_avail \
+                                 ? _auth_seed_need : _auth_avail ))
+              fi
+              _seed_count=$(( _anon_seed + _auth_seed ))
+              if (( _seed_count == 0 )); then
+                # ── 7. No unreserved pulls for own seeding — defer ───────────
                 _do_seed=false
                 if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
-                  echo "::error::Could not determine Docker Hub pull quota after" \
-                       "${QUOTA_WAIT_ELAPSED}s of retries." \
+                  echo "::error::Docker Hub pull quota: deferred seeding for" \
+                       "${QUOTA_WAIT_ELAPSED}s but no unreserved pulls available" \
+                       "(${_anon_display} anonymous; ${_auth_rem} authenticated," \
+                       "${_remaining_builds} reserved for builds)." \
                        "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
                   exit 1
                 fi
                 if (( QUOTA_WAIT_ELAPSED == 0 )); then
-                  echo "::warning::Could not determine Docker Hub pull quota" \
-                       "(probe failed); deferring manifest seeding." \
-                       "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+                  echo "::warning::Deferring manifest seeding: no unreserved" \
+                       "Docker Hub pulls (${_anon_display} anonymous;" \
+                       "${_auth_rem} authenticated, ${_remaining_builds} reserved" \
+                       "for builds). Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 else
-                  echo "Could not determine Docker Hub pull quota" \
-                       "(probe failed); deferring manifest seeding." \
+                  echo "Deferring manifest seeding: no unreserved Docker Hub" \
+                       "pulls (${_anon_display} anonymous; ${_auth_rem} authenticated," \
+                       "${_remaining_builds} reserved for builds)." \
                        "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
                 fi
                 QUOTA_WAIT_ELAPSED=$(( QUOTA_WAIT_ELAPSED + POLL_INTERVAL_SECONDS ))
+              else
+                QUOTA_WAIT_ELAPSED=0
+                if (( _seed_count < _total_unseeded )); then
+                  echo "Docker Hub pull quota: seeding ${_seed_count}/${_total_unseeded}" \
+                       "image(s) this cycle (${_anon_display} anonymous remaining," \
+                       "${_auth_rem} authenticated remaining," \
+                       "${_remaining_builds} build job(s) still in progress)."
+                  _unseeded=("${_unseeded[@]:0:${_seed_count}}")
+                fi
               fi
             fi
           fi

@@ -187,14 +187,16 @@ runs:
         }
 
         # ── 4. Calculate the number of anonymous pulls to reserve ─────────────
-        # All needed pulls could potentially be served by the anonymous IP-based
-        # quota (100 pulls per 6 hours per source IP address).
+        # This action does no work of its own; it protects quota for the
+        # pre-seeding step and the parallel build jobs that follow.  All
+        # needed pulls could be served by the anonymous IP-based quota
+        # (100 pulls per 6 hours per IP address).
         _anon_reserve=${needed_pulls}
 
         # ── 5. Calculate the number of authenticated pulls to reserve ─────────
-        # This action performs no work during its wait cycle; the authenticated
-        # reservation is entirely determined by what the anonymous quota cannot
-        # supply (step 6 below).
+        # This action does no work of its own; the authenticated reservation
+        # is entirely determined by what the anonymous quota cannot cover for
+        # the pre-seeding and build jobs (step 6 below).
         _auth_reserve=0
 
         while true; do
