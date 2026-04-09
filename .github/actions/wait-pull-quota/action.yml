@@ -123,7 +123,10 @@ runs:
             || _anon_token=""
           _anon_remaining=""
           _anon_unlimited=false
-          if [[ -n "${_anon_token}" ]]; then
+          if [[ -z "${_anon_token}" ]]; then
+            echo "  Anonymous quota probe: could not obtain token from auth.docker.io;" \
+                 "will use conservative authenticated quota estimate." >&2
+          else
             _anon_tmpheaders="$(mktemp)"
             _anon_http_code="$(curl -s --connect-timeout 10 --max-time 30 \
               -H "Authorization: Bearer ${_anon_token}" \
@@ -141,6 +144,9 @@ runs:
                 # 2xx but no RateLimit-Remaining header = no anonymous rate limit.
                 _anon_unlimited=true
               fi
+            else
+              echo "  Anonymous quota probe: registry returned HTTP ${_anon_http_code:-unknown};" \
+                   "will use conservative authenticated quota estimate." >&2
             fi
           fi
 
