@@ -595,14 +595,13 @@ runs:
             _anon_covers=0
             if [[ "${ANON_PULL_UNLIMITED}" == "true" ]]; then
               _anon_covers=${#_unseeded[@]}
+              _anon_display="unlimited"
             elif [[ -n "${ANON_PULL_REMAINING}" ]]; then
               _anon_covers=$(( ANON_PULL_REMAINING < ${#_unseeded[@]} \
                                  ? ANON_PULL_REMAINING : ${#_unseeded[@]} ))
-            fi
-            if [[ "${ANON_PULL_UNLIMITED}" == "true" ]]; then
-              _anon_display="unlimited"
+              _anon_display="${ANON_PULL_REMAINING}"
             else
-              _anon_display="${ANON_PULL_REMAINING:-unknown}"
+              _anon_display="unknown"
             fi
             _needed=$(( ${#_unseeded[@]} - _anon_covers + _remaining_builds ))
             probe_pull_remaining
