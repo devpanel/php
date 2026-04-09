@@ -108,167 +108,159 @@ runs:
         MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
         POLL_INTERVAL=60
         elapsed=0
+
+        # ── 1. Initialize variables ───────────────────────────────────────────
+        # Docker Hub JWTs expire in ~300 s; refresh proactively at 240 s.
+        ANON_TOKEN=""
+        ANON_TOKEN_TIME=0
+        AUTH_TOKEN=""
+        AUTH_TOKEN_TIME=0
+        TOKEN_MAX_AGE=240
+
+        # Credentials file for authenticated token fetches.
+        _auth_creds="$(umask 077; mktemp)"
+        printf 'machine auth.docker.io login %s password %s\n' \
+          "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_auth_creds}"
+        # shellcheck disable=SC2064
+        trap "rm -f ${_auth_creds}" EXIT
+
+        # ── 2. Function to check for and refresh an expiring token ────────────
+        # refresh_hub_token VARNAME [creds_file]
+        # Fetches a ratelimitpreview/test:pull-scoped token from auth.docker.io.
+        # Without creds_file the token is anonymous (IP-based quota); with
+        # creds_file it is authenticated (account-based quota).  Skips the
+        # fetch if the token is still fresh (< TOKEN_MAX_AGE seconds old).
+        # Updates VARNAME and ${VARNAME}_TIME globals in the calling scope.
+        # Returns 0 when a valid token is available, 1 when the fetch failed.
+        refresh_hub_token() {
+          local _varname="$1" _creds="${2:-}"
+          local _now _time_var
+          _now="$(date +%s)"
+          _time_var="${_varname}_TIME"
+          if [[ -n "${!_varname}" ]] && (( _now - ${!_time_var:-0} < TOKEN_MAX_AGE )); then
+            return 0
+          fi
+          local _curl_args=(-sf --connect-timeout 5 --max-time 15)
+          [[ -n "${_creds}" ]] && _curl_args+=(--netrc-file "${_creds}")
+          local _json _new_token
+          _json="$(curl "${_curl_args[@]}" \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+            2>/dev/null)" || _json=""
+          _new_token="$(printf '%s' "${_json}" | jq -r '.token // ""' 2>/dev/null)" \
+            || _new_token=""
+          printf -v "${_varname}" '%s' "${_new_token}"
+          printf -v "${_varname}_TIME" '%s' "$(date +%s)"
+          [[ -n "${_new_token}" ]]
+        }
+
+        # ── 3. Function to check and refresh Docker Hub pull quota ────────────
+        # hub_pull_remaining TOKEN
+        # Sends a HEAD request (not counted against quota) to the Docker Hub
+        # rate-limit probe endpoint and prints the remaining pull count:
+        #   "<n>"       numeric remaining pulls
+        #   "unlimited" 2xx response without a RateLimit-Remaining header
+        #               (Pro / Team / Business plan with no rate limit)
+        #   ""          probe failed (no token, network error, or non-2xx)
+        # Use --head (not -X HEAD): MITM proxies on GitHub-hosted runners
+        # downgrade HTTP/2 to HTTP/1.1; -X HEAD over HTTP/1.1 makes curl
+        # wait for a body that never arrives and times out (exit 28).
+        hub_pull_remaining() {
+          local _token="$1"
+          [[ -z "${_token}" ]] && { echo ""; return; }
+          local _tmpheaders _http_code _headers _remaining
+          _tmpheaders="$(mktemp)"
+          _http_code="$(curl -s --connect-timeout 5 --max-time 15 \
+            -H "Authorization: Bearer ${_token}" \
+            --head -D "${_tmpheaders}" -o /dev/null \
+            -w '%{http_code}' \
+            "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
+            2>/dev/null)" || _http_code=""
+          _headers="$(cat "${_tmpheaders}" 2>/dev/null || true)"
+          rm -f "${_tmpheaders}"
+          if [[ "${_http_code:0:1}" == "2" ]]; then
+            _remaining="$(printf '%s' "${_headers}" \
+              | grep -i '^ratelimit-remaining:' \
+              | grep -oE '[0-9]+' | head -1)" || _remaining=""
+            echo "${_remaining:-unlimited}"
+          fi
+          # Non-2xx or empty http_code: print nothing (caller treats as failed).
+        }
+
+        # ── 4. Calculate the number of anonymous pulls to reserve ─────────────
+        # All needed pulls could potentially be served by the anonymous IP-based
+        # quota (100 pulls per 6 hours per source IP address).
+        _anon_reserve=${needed_pulls}
+
+        # ── 5. Calculate the number of authenticated pulls to reserve ─────────
+        # This action performs no work during its wait cycle; the authenticated
+        # reservation is entirely determined by what the anonymous quota cannot
+        # supply (step 6 below).
+        _auth_reserve=0
+
         while true; do
-          # ── Probe anonymous (IP-based) quota first ────────────────────────
-          # Always probe anonymous before authenticated so the real number of
-          # authenticated pulls needed is computed from a live value rather
-          # than a static guess.  If anonymous quota already covers all
-          # needed pulls we proceed immediately without touching authenticated
-          # quota at all.
-          # HEAD requests to ratelimitpreview/test are not counted against quota.
-          _anon_json="$(curl -sf --connect-timeout 10 --max-time 30 \
-            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
-            2>/dev/null)" || _anon_json=""
-          _anon_token="$(printf '%s' "${_anon_json}" | jq -r '.token // ""' 2>/dev/null)" \
-            || _anon_token=""
-          _anon_remaining=""
-          _anon_unlimited=false
-          if [[ -z "${_anon_token}" ]]; then
-            echo "  Anonymous quota probe: could not obtain token from auth.docker.io;" \
-                 "will use conservative authenticated quota estimate." >&2
-          else
-            _anon_tmpheaders="$(mktemp)"
-            _anon_http_code="$(curl -s --connect-timeout 10 --max-time 30 \
-              -H "Authorization: Bearer ${_anon_token}" \
-              --head -D "${_anon_tmpheaders}" -o /dev/null \
-              -w '%{http_code}' \
-              "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
-              2>/dev/null)" || _anon_http_code=""
-            _anon_headers="$(cat "${_anon_tmpheaders}" 2>/dev/null || true)"
-            rm -f "${_anon_tmpheaders}"
-            if [[ "${_anon_http_code:0:1}" == "2" ]]; then
-              _anon_remaining="$(printf '%s' "${_anon_headers}" \
-                | grep -i '^ratelimit-remaining:' \
-                | grep -oE '[0-9]+' | head -1)" || _anon_remaining=""
-              if [[ -z "${_anon_remaining}" ]]; then
-                # 2xx but no RateLimit-Remaining header = no anonymous rate limit.
-                _anon_unlimited=true
-              fi
-            else
-              echo "  Anonymous quota probe: registry returned HTTP ${_anon_http_code:-unknown};" \
-                   "will use conservative authenticated quota estimate." >&2
-            fi
-          fi
 
-          # ── Compute effective authenticated pulls needed ───────────────────
-          # Use the real probed anonymous quota to derive the true authenticated
-          # requirement.  This avoids guessing: the only unknown is whether
-          # each pull will be served by anonymous or authenticated quota, and
-          # the live anonymous-remaining value answers that question precisely.
-          _effective_needed="${needed_pulls}"  # conservative if anon probe failed
-          _anon_display="unknown"
-          if [[ "${_anon_unlimited}" == "true" ]]; then
-            _effective_needed=0
+          # ── 6. Subtract available anonymous quota from the anonymous reserve;
+          #       add the remainder to the authenticated pull requirement. ───────
+          refresh_hub_token ANON_TOKEN || true
+          _anon_rem="$(hub_pull_remaining "${ANON_TOKEN}")"
+          if [[ "${_anon_rem}" == "unlimited" ]]; then
             _anon_display="unlimited"
-          elif [[ -n "${_anon_remaining}" ]]; then
-            _effective_needed=$(( needed_pulls > _anon_remaining \
-              ? needed_pulls - _anon_remaining : 0 ))
-            _anon_display="${_anon_remaining}"
+            _anon_covers=${_anon_reserve}
+          elif [[ -n "${_anon_rem}" ]]; then
+            _anon_display="${_anon_rem}"
+            _anon_covers=$(( _anon_rem < _anon_reserve ? _anon_rem : _anon_reserve ))
+          else
+            _anon_display="unknown"
+            _anon_covers=0
           fi
+          _auth_needed=$(( _auth_reserve + (_anon_reserve - _anon_covers) ))
 
-          # ── Short-circuit: anonymous quota covers everything ───────────────
-          if (( _effective_needed == 0 )); then
+          if (( _auth_needed == 0 )); then
             echo "Docker Hub pull quota: ${_anon_display} anonymous remaining" \
-                 "covers all ${needed_pulls} needed pull(s);" \
-                 "no authenticated pulls required. Proceeding."
+                 "covers all ${needed_pulls} needed pull(s); proceeding."
             break
           fi
 
-          # ── Probe authenticated quota (only when anon is insufficient) ─────
-          _creds_file="$(umask 077; mktemp)"
-          printf 'machine auth.docker.io login %s password %s\n' \
-            "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_creds_file}"
-          _auth_json="$(curl -sf --connect-timeout 10 --max-time 30 \
-            --netrc-file "${_creds_file}" \
-            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
-            2>/dev/null)" || _auth_json=""
-          rm -f "${_creds_file}"
-          _token="$(printf '%s' "${_auth_json}" | jq -r '.token // ""' 2>/dev/null)" \
-            || _token=""
-          _remaining=""
-          _rl_http_code=""
-          _rl_curl_status=0
-          if [[ -n "${_token}" ]]; then
-            # Fetch the rate-limit headers; capture the HTTP status code
-            # separately so we can distinguish a true 2xx success from
-            # 3xx redirects or network/auth failures.  curl -s (no -f)
-            # never exits non-zero for HTTP errors, so the exit status
-            # only reflects network/TLS failures.
-            # Use --head (not -X HEAD) so curl uses proper HEAD semantics
-            # and does not wait for a response body.  MITM proxies on
-            # GitHub-hosted runners downgrade HTTP/2 to HTTP/1.1; with
-            # -X HEAD over HTTP/1.1, curl waits for a body that never
-            # arrives and always times out (exit 28), making _rl_http_code
-            # unreliable.  With --head -o /dev/null, -D captures the
-            # response headers, and -w writes only the HTTP code to stdout.
-            _rl_tmpheaders="$(mktemp)"
-            _rl_http_code="$(curl -s --connect-timeout 10 --max-time 30 \
-              -H "Authorization: Bearer ${_token}" \
-              --head -D "${_rl_tmpheaders}" -o /dev/null \
-              -w '%{http_code}' \
-              "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
-              2>/dev/null)" || { _rl_curl_status=$?; _rl_http_code=""; }
-            _headers="$(cat "${_rl_tmpheaders}" 2>/dev/null || true)"
-            rm -f "${_rl_tmpheaders}"
-            if [[ "${_rl_http_code:0:1}" == "2" ]]; then
-              # Got a 2xx response — try to parse the rate-limit header.
-              _remaining="$(printf '%s' "${_headers}" \
-                | grep -i '^ratelimit-remaining:' \
-                | grep -oE '[0-9]+' | head -1)" || _remaining=""
-              if [[ -z "${_remaining}" ]]; then
-                # 2xx but no RateLimit-Remaining header → Docker Hub account
-                # has no pull-rate limit (Pro / Team / Business plan).
-                echo "No Docker Hub rate-limit header in response;" \
-                     "assuming unlimited pull quota. Proceeding."
-                break
-              fi
-            fi
-            # If _rl_http_code is empty or non-2xx (network/auth/redirect
-            # error), _remaining stays empty and we fall through to the
-            # transient-failure retry below.
-          fi
-          if [[ -z "${_remaining}" ]]; then
-            # Build a human-readable reason for the failure so the log is
-            # actionable without needing to re-run with extra debug output.
-            if [[ -z "${_token}" ]]; then
-              _fail_detail="auth token fetch from auth.docker.io failed"
-            elif [[ -z "${_rl_http_code}" ]]; then
-              _fail_detail="registry-1.docker.io unreachable (curl exit ${_rl_curl_status})"
-            else
-              _fail_detail="registry-1.docker.io returned HTTP ${_rl_http_code}"
-            fi
-            if (( elapsed >= MAX_WAIT )); then
-              echo "::error::Could not verify Docker Hub pull quota after ${elapsed}s (${_fail_detail})." \
-                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-              exit 1
-            fi
-            echo "Could not check Docker Hub pull quota (${_fail_detail})." \
-                 "Retrying in ${POLL_INTERVAL}s (${elapsed}/${MAX_WAIT}s elapsed)..."
-            sleep "${POLL_INTERVAL}"
-            elapsed=$(( elapsed + POLL_INTERVAL ))
-            continue
+          refresh_hub_token AUTH_TOKEN "${_auth_creds}" || true
+          _auth_rem="$(hub_pull_remaining "${AUTH_TOKEN}")"
+
+          if [[ "${_auth_rem}" == "unlimited" ]]; then
+            echo "Docker Hub pull quota: authenticated quota is unlimited; proceeding."
+            break
           fi
 
-          if (( _remaining >= _effective_needed )); then
-            echo "Docker Hub pull quota: ${_remaining} authenticated remaining," \
+          if [[ -n "${_auth_rem}" ]] && (( _auth_rem >= _auth_needed )); then
+            echo "Docker Hub pull quota: ${_auth_rem} authenticated remaining," \
                  "${_anon_display} anonymous remaining;" \
-                 "need ${_effective_needed} authenticated (${needed_pulls} total," \
-                 "${_anon_display} covered by anonymous quota); proceeding."
+                 "need ${_auth_needed} authenticated (${needed_pulls} total," \
+                 "${_anon_covers} covered by anonymous quota); proceeding."
             break
           fi
+
+          # ── 7. Authenticated pull quota insufficient — wait for next cycle ───
           if (( elapsed >= MAX_WAIT )); then
-            echo "::error::Docker Hub pull quota: waited ${elapsed}s but only" \
-                 "${_remaining}/${_effective_needed} authenticated pull(s) available" \
-                 "(${_anon_display} anonymous remaining," \
-                 "${needed_pulls} total needed)." \
-                 "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+            if [[ -z "${_auth_rem}" ]]; then
+              echo "::error::Could not verify Docker Hub pull quota after ${elapsed}s." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+            else
+              echo "::error::Docker Hub pull quota: waited ${elapsed}s but only" \
+                   "${_auth_rem}/${_auth_needed} authenticated pull(s) available" \
+                   "(${_anon_display} anonymous remaining," \
+                   "${needed_pulls} total needed)." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+            fi
             exit 1
           fi
-          echo "Docker Hub pull quota insufficient" \
-               "(${_remaining}/${_effective_needed} authenticated available," \
-               "${_anon_display} anonymous available;" \
-               "need ${_effective_needed} authenticated, ${needed_pulls} total)." \
-               "Waiting ${POLL_INTERVAL}s (${elapsed}/${MAX_WAIT}s elapsed)..."
+          if [[ -z "${_auth_rem}" ]]; then
+            echo "Could not check Docker Hub pull quota (authenticated probe failed)." \
+                 "Retrying in ${POLL_INTERVAL}s (${elapsed}/${MAX_WAIT}s elapsed)..."
+          else
+            echo "Docker Hub pull quota insufficient" \
+                 "(${_auth_rem}/${_auth_needed} authenticated available," \
+                 "${_anon_display} anonymous available;" \
+                 "need ${_auth_needed} authenticated, ${needed_pulls} total)." \
+                 "Waiting ${POLL_INTERVAL}s (${elapsed}/${MAX_WAIT}s elapsed)..."
+          fi
           sleep "${POLL_INTERVAL}"
           elapsed=$(( elapsed + POLL_INTERVAL ))
         done
