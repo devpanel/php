@@ -289,7 +289,7 @@ runs:
         # or "" (probe failed: curl error / no auth token).  Also sets
         # PULL_QUOTA_UNLIMITED=true when a 2xx response contains no
         # RateLimit-Remaining header (Pro/Team/Business plan with no pull quota).
-        probe_pull_remaining() {
+        auth_pull_remaining() {
           PULL_REMAINING=""
           PULL_QUOTA_UNLIMITED=false
           PULL_PROBE_FAIL_DETAIL=""
@@ -402,7 +402,7 @@ runs:
         # seconds.  Docker Hub JWTs expire in ~300 s; refreshing at 240 s avoids
         # silent fallback to the authenticated path once the token expires.
         # Sets globals ANON_TOKEN and ANON_TOKEN_TIME.
-        refresh_anon_token() {
+        get_anon_token() {
           local _now
           _now="$(date +%s)"
           if [[ -n "${ANON_TOKEN}" ]] && \
@@ -424,7 +424,7 @@ runs:
         }
 
         # Helper: probe the anonymous (IP-based) Docker Hub pull quota.
-        # Must be called after refresh_anon_token so ANON_TOKEN is fresh.
+        # Calls get_anon_token internally so the token is always fresh.
         # HEAD requests to ratelimitpreview/test are not counted against the
         # pull quota, so this probe does not consume any quota.
         # Sets globals:
@@ -432,9 +432,10 @@ runs:
         #                        absent ANON_TOKEN.
         #   ANON_PULL_UNLIMITED  true when a 2xx response has no
         #                        RateLimit-Remaining header (no IP-based limit).
-        probe_anon_pull_remaining() {
+        anon_pull_remaining() {
           ANON_PULL_REMAINING=""
           ANON_PULL_UNLIMITED=false
+          get_anon_token
           [[ -z "${ANON_TOKEN}" ]] && return 0
           local _apr_tmpheaders _apr_http_code _apr_headers
           _apr_tmpheaders="$(mktemp)"
@@ -457,10 +458,10 @@ runs:
           fi
         }
 
-        # Initial ANON_TOKEN fetch (reuses refresh_anon_token to avoid duplication).
+        # Warm up the anonymous token so the first loop cycle can use it immediately.
         ANON_TOKEN=""
         ANON_TOKEN_TIME=0
-        refresh_anon_token
+        get_anon_token
 
         # Consecutive artifact-list API failure counter.  After this many
         # back-to-back failures the loop aborts so the job fails instead of
@@ -574,13 +575,9 @@ runs:
 
           _do_seed=true
           if [[ ${#_unseeded[@]} -gt 0 ]]; then
-            # Refresh the anonymous token before attempting seeding.  Docker Hub
-            # JWTs expire in ~300 s; if ANON_TOKEN is stale the manifest fetch
-            # silently returns 401 and falls through to authenticated pulls,
-            # consuming quota that was not budgeted for.
-            refresh_anon_token
-            probe_anon_pull_remaining
-
+            # Probe quotas.  anon_pull_remaining calls get_anon_token internally
+            # so ANON_TOKEN is always fresh before the manifest fetch below.
+            anon_pull_remaining
             # Check that enough Docker Hub pull quota remains.  The required
             # authenticated quota depends on how much of the anonymous (IP-based)
             # quota remains to cover seeding:
@@ -604,7 +601,7 @@ runs:
               _anon_display="unknown"
             fi
             _needed=$(( ${#_unseeded[@]} - _anon_covers + _remaining_builds ))
-            probe_pull_remaining
+            auth_pull_remaining
             # Treat empty PULL_REMAINING (probe failure) the same as insufficient
             # quota: defer seeding until the quota can be verified.  Only reset
             # QUOTA_WAIT_ELAPSED when quota is confirmed sufficient.
@@ -1154,7 +1151,7 @@ runs:
           done
           # Probe Docker Hub rate-limit status so we can give an actionable
           # suggestion: "rate limit exhausted – retry in 6 hours" vs "retry".
-          probe_pull_remaining
+          auth_pull_remaining
           if [[ "${PULL_QUOTA_UNLIMITED}" == "true" ]]; then
             echo "::error::Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \
                  "this failure is not caused by quota exhaustion." \
