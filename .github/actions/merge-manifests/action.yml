@@ -261,9 +261,8 @@ runs:
         # Credentials file for authenticated token fetches.  Stored inside
         # WORK_DIR so it is cleaned up by the existing EXIT trap.
         _auth_creds="${WORK_DIR}/dockerhub-creds"
-        printf 'machine auth.docker.io login %s password %s\n' \
-          "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_auth_creds}"
-        chmod 600 "${_auth_creds}"
+        ( umask 077; printf 'machine auth.docker.io login %s password %s\n' \
+            "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_auth_creds}" )
 
         # Pull-quota accounting: tracks how long seeding has been deferred
         # due to insufficient Docker Hub quota.
