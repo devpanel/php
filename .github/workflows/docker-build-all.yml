@@ -146,6 +146,7 @@ jobs:
   # authenticated fallback is already covered by the auth reservation made in
   # wait-pull-quota (one slot per build job via build_matrix_length).
   build:
+    needs: detect
     if: needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != ''
     name: build (${{ matrix.version }}, ${{ matrix.platform }})
     strategy:
