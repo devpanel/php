@@ -318,65 +318,16 @@ runs:
 
         # Helper: refresh a Docker Hub bearer token when it is expired or empty.
         # refresh_hub_token VARNAME [creds_file]
-        # Fetches a ratelimitpreview/test:pull-scoped token from auth.docker.io.
-        # Without creds_file the token is anonymous (IP-based quota); with
-        # creds_file it is authenticated (account-based quota).  Skips the
-        # fetch if the token is still fresh (< TOKEN_MAX_AGE seconds old).
-        # Updates VARNAME and ${VARNAME}_TIME globals in the calling scope.
-        # Returns 0 when a valid token is available, 1 when the fetch failed.
-        refresh_hub_token() {
-          local _varname="$1" _creds="${2:-}"
-          local _now _time_var
-          _now="$(date +%s)"
-          _time_var="${_varname}_TIME"
-          if [[ -n "${!_varname}" ]] && (( _now - ${!_time_var:-0} < TOKEN_MAX_AGE )); then
-            return 0
-          fi
-          local _curl_args=(-sf --connect-timeout 5 --max-time 15)
-          [[ -n "${_creds}" ]] && _curl_args+=(--netrc-file "${_creds}")
-          local _json _new_token
-          _json="$(curl "${_curl_args[@]}" \
-            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
-            2>/dev/null)" || _json=""
-          _new_token="$(printf '%s' "${_json}" | jq -r '.token // ""' 2>/dev/null)" \
-            || _new_token=""
-          printf -v "${_varname}" '%s' "${_new_token}"
-          printf -v "${_varname}_TIME" '%s' "$(date +%s)"
-          [[ -n "${_new_token}" ]]
-        }
+        # (defined in hub-quota-helpers.sh, sourced below)
 
         # Helper: probe Docker Hub pull quota for a given bearer token.
         # hub_pull_remaining TOKEN
-        # Sends a HEAD request (not counted against quota) to the Docker Hub
-        # rate-limit probe endpoint and prints the remaining pull count:
-        #   "<n>"       numeric remaining pulls
-        #   "unlimited" 2xx response without a RateLimit-Remaining header
-        #               (Pro / Team / Business plan with no rate limit)
-        #   ""          probe failed (no token, network error, or non-2xx)
-        # Use --head (not -X HEAD): MITM proxies on GitHub-hosted runners
-        # downgrade HTTP/2 to HTTP/1.1; -X HEAD over HTTP/1.1 makes curl
-        # wait for a body that never arrives and times out (exit 28).
-        hub_pull_remaining() {
-          local _token="$1"
-          [[ -z "${_token}" ]] && { echo ""; return; }
-          local _tmpheaders _http_code _headers _remaining
-          _tmpheaders="$(mktemp)"
-          _http_code="$(curl -s --connect-timeout 5 --max-time 15 \
-            -H "Authorization: Bearer ${_token}" \
-            --head -D "${_tmpheaders}" -o /dev/null \
-            -w '%{http_code}' \
-            "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
-            2>/dev/null)" || _http_code=""
-          _headers="$(cat "${_tmpheaders}" 2>/dev/null || true)"
-          rm -f "${_tmpheaders}"
-          if [[ "${_http_code:0:1}" == "2" ]]; then
-            _remaining="$(printf '%s' "${_headers}" \
-              | grep -i '^ratelimit-remaining:' \
-              | grep -oE '[0-9]+' | head -1)" || _remaining=""
-            echo "${_remaining:-unlimited}"
-          fi
-          # Non-2xx or empty http_code: print nothing (caller treats as failed).
-        }
+        # (defined in hub-quota-helpers.sh, sourced below)
+
+        # Shared quota helpers (refresh_hub_token, hub_pull_remaining).
+        # TOKEN_MAX_AGE must be set before calling either function.
+        # shellcheck source=.github/scripts/hub-quota-helpers.sh
+        source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
 
         # Helper: refresh the authenticated Docker Hub pull token when it has expired.
         # Updates AUTH_TOKEN and AUTH_TOKEN_TIME globals directly (no subshell needed).
@@ -553,20 +504,23 @@ runs:
           if [[ ${_total_unseeded} -gt 0 ]]; then
 
             # ── 4. Calculate the number of anonymous pulls to reserve ──────────
-            # Each remaining build job pre-pulls the base PHP image anonymously
-            # (before Docker Hub login), using the IP-based anonymous quota as
-            # the primary path.  Reserve one slot per build job that has not yet
-            # uploaded a digest artifact (i.e. has not yet done its base-image
-            # pull).  Use DIGEST_JOBS_SEEN (first digest per job) so the
-            # reservation shrinks as each job's pull is confirmed done.
+            # The merge job runs on its OWN runner whose anonymous (IP-based)
+            # quota is completely independent from each build job's runner.
+            # Build jobs' anonymous pre-pulls do not consume this runner's
+            # anonymous bucket, so there is nothing to reserve here.
             _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
                                     ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
-            _anon_reserve=${_remaining_builds}
+            _anon_reserve=0
 
             # ── 5. Calculate the number of authenticated pulls to reserve ──────
-            # Reserve one authenticated pull per remaining build job as the
-            # fallback: if a build job's anonymous pre-pull fails, bake
-            # re-pulls the base image authenticated.
+            # All jobs (this merge job and all build jobs) share the same
+            # authenticated (account-based, 200/6 h) Docker Hub quota.
+            # Each build job may fall back to an authenticated pull when its
+            # anonymous pre-pull fails (e.g. its runner shares an IP with
+            # another runner that already exhausted that IP's anonymous bucket).
+            # Reserve one authenticated slot per build job still in progress so
+            # the auth bucket is not considered available until each job's
+            # potential fallback has been accounted for.
             _auth_reserve=${_remaining_builds}
 
             # ── 6. Probe both quotas; compute seeding capacity ─────────────────
@@ -616,22 +570,22 @@ runs:
               if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
                 echo "::error::Docker Hub pull quota: deferred seeding for" \
                      "${QUOTA_WAIT_ELAPSED}s but no unreserved pulls available" \
-                     "(${_anon_display} anonymous, ${_remaining_builds} reserved;" \
-                     "${_auth_rem:-unknown} authenticated, ${_remaining_builds}" \
-                     "reserved for build jobs)." \
+                     "(${_anon_display} anonymous remaining;" \
+                     "${_auth_rem:-unknown} authenticated remaining," \
+                     "${_remaining_builds} reserved for build jobs)." \
                      "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
                 exit 1
               fi
               if (( QUOTA_WAIT_ELAPSED == 0 )); then
                 echo "::warning::Deferring manifest seeding: no unreserved" \
-                     "Docker Hub pulls (${_anon_display} anonymous," \
-                     "${_remaining_builds} reserved; ${_auth_rem:-unknown}" \
-                     "authenticated, ${_remaining_builds} reserved for build" \
-                     "jobs). Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+                     "Docker Hub pulls (${_anon_display} anonymous remaining;" \
+                     "${_auth_rem:-unknown} authenticated remaining," \
+                     "${_remaining_builds} reserved for build jobs)." \
+                     "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
               else
                 echo "Deferring manifest seeding: no unreserved Docker Hub" \
-                     "pulls (${_anon_display} anonymous, ${_remaining_builds}" \
-                     "reserved; ${_auth_rem:-unknown} authenticated," \
+                     "pulls (${_anon_display} anonymous remaining;" \
+                     "${_auth_rem:-unknown} authenticated remaining," \
                      "${_remaining_builds} reserved for build jobs)." \
                      "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
               fi

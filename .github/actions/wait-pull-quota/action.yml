@@ -23,9 +23,11 @@ inputs:
       in the worst case where every job misses the GHCR layer cache) and
       all_versions_count (one pull per PHP version that the pre-seed action
       may need in the worst case where the codenames cache is cold).
-      The action always probes the anonymous (IP-based) quota first;
-      the real authenticated requirement is derived from that live probe as
-      max(0, needed_pulls − anonymous_remaining), replacing any static guess.
+      Internally the action splits this total into an anonymous reserve
+      (needed_pulls - build_matrix_length, for preseed on this runner) and
+      an authenticated reserve (build_matrix_length, for build-job fallbacks
+      on separate runners).  Pass inputs.build_matrix_length separately so
+      the split is computed correctly.
     required: true
   dockerhub_username:
     description: Docker Hub username for authenticating the pull-rate-limit probe.
@@ -33,6 +35,15 @@ inputs:
   dockerhub_token:
     description: Docker Hub token for authenticating the pull-rate-limit probe.
     required: true
+  build_matrix_length:
+    description: >
+      Number of parallel build matrix jobs (versions × platforms).  These jobs
+      run on separate runners whose anonymous (IP-based) quota is independent of
+      this job's quota, but they share the same authenticated (account-based,
+      200/6 h) quota as a fallback when anonymous fails.  Pass
+      steps.detect.outputs.build_matrix_length from the calling workflow.
+      Defaults to 0 (no auth reservation for build jobs).
+    default: '0'
 
 runs:
   using: composite
@@ -43,12 +54,19 @@ runs:
         DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
         NEEDED_PULLS: ${{ inputs.needed_pulls }}
+        BUILD_MATRIX_LENGTH: ${{ inputs.build_matrix_length }}
       run: |
         set -euo pipefail
         needed_pulls="${NEEDED_PULLS}"
         if [[ ! "${needed_pulls}" =~ ^[0-9]+$ ]]; then
           echo "::error::Invalid value for inputs.needed_pulls: '${needed_pulls}'." \
                "It must be a non-negative integer."
+          exit 1
+        fi
+        build_matrix_length="${BUILD_MATRIX_LENGTH:-0}"
+        if [[ ! "${build_matrix_length}" =~ ^[0-9]+$ ]]; then
+          echo "::error::Invalid value for inputs.build_matrix_length:" \
+               "'${build_matrix_length}'. It must be a non-negative integer."
           exit 1
         fi
 
@@ -125,81 +143,34 @@ runs:
         trap "rm -f ${_auth_creds}" EXIT
 
         # ── 2. Function to check for and refresh an expiring token ────────────
-        # refresh_hub_token VARNAME [creds_file]
-        # Fetches a ratelimitpreview/test:pull-scoped token from auth.docker.io.
-        # Without creds_file the token is anonymous (IP-based quota); with
-        # creds_file it is authenticated (account-based quota).  Skips the
-        # fetch if the token is still fresh (< TOKEN_MAX_AGE seconds old).
-        # Updates VARNAME and ${VARNAME}_TIME globals in the calling scope.
-        # Returns 0 when a valid token is available, 1 when the fetch failed.
-        refresh_hub_token() {
-          local _varname="$1" _creds="${2:-}"
-          local _now _time_var
-          _now="$(date +%s)"
-          _time_var="${_varname}_TIME"
-          if [[ -n "${!_varname}" ]] && (( _now - ${!_time_var:-0} < TOKEN_MAX_AGE )); then
-            return 0
-          fi
-          local _curl_args=(-sf --connect-timeout 5 --max-time 15)
-          [[ -n "${_creds}" ]] && _curl_args+=(--netrc-file "${_creds}")
-          local _json _new_token
-          _json="$(curl "${_curl_args[@]}" \
-            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
-            2>/dev/null)" || _json=""
-          _new_token="$(printf '%s' "${_json}" | jq -r '.token // ""' 2>/dev/null)" \
-            || _new_token=""
-          printf -v "${_varname}" '%s' "${_new_token}"
-          printf -v "${_varname}_TIME" '%s' "$(date +%s)"
-          [[ -n "${_new_token}" ]]
-        }
+        # Shared helpers (refresh_hub_token, hub_pull_remaining) are sourced
+        # from .github/scripts/hub-quota-helpers.sh.  TOKEN_MAX_AGE must be
+        # set before calling either function.
+        # shellcheck source=.github/scripts/hub-quota-helpers.sh
+        source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
 
         # ── 3. Function to check and refresh Docker Hub pull quota ────────────
-        # hub_pull_remaining TOKEN
-        # Sends a HEAD request (not counted against quota) to the Docker Hub
-        # rate-limit probe endpoint and prints the remaining pull count:
-        #   "<n>"       numeric remaining pulls
-        #   "unlimited" 2xx response without a RateLimit-Remaining header
-        #               (Pro / Team / Business plan with no rate limit)
-        #   ""          probe failed (no token, network error, or non-2xx)
-        # Use --head (not -X HEAD): MITM proxies on GitHub-hosted runners
-        # downgrade HTTP/2 to HTTP/1.1; -X HEAD over HTTP/1.1 makes curl
-        # wait for a body that never arrives and times out (exit 28).
-        hub_pull_remaining() {
-          local _token="$1"
-          [[ -z "${_token}" ]] && { echo ""; return; }
-          local _tmpheaders _http_code _headers _remaining
-          _tmpheaders="$(mktemp)"
-          _http_code="$(curl -s --connect-timeout 5 --max-time 15 \
-            -H "Authorization: Bearer ${_token}" \
-            --head -D "${_tmpheaders}" -o /dev/null \
-            -w '%{http_code}' \
-            "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
-            2>/dev/null)" || _http_code=""
-          _headers="$(cat "${_tmpheaders}" 2>/dev/null || true)"
-          rm -f "${_tmpheaders}"
-          if [[ "${_http_code:0:1}" == "2" ]]; then
-            _remaining="$(printf '%s' "${_headers}" \
-              | grep -i '^ratelimit-remaining:' \
-              | grep -oE '[0-9]+' | head -1)" || _remaining=""
-            echo "${_remaining:-unlimited}"
-          fi
-          # Non-2xx or empty http_code: print nothing (caller treats as failed).
-        }
+        # (defined in hub-quota-helpers.sh, sourced above)
 
         # ── 4. Calculate the number of anonymous pulls to reserve ─────────────
-        # This action does no work of its own; it protects quota for the
-        # pre-seeding step and the parallel build jobs that follow.  Both
-        # pre-seeding and build jobs try anonymous (IP-based, 100 pulls/6 h)
-        # first and fall back to authenticated only when anonymous fails.
-        # Reserving all needed pulls in the anonymous bucket ensures that quota
-        # is available for the primary path.
-        _anon_reserve=${needed_pulls}
+        # The pre-seeding step runs in THIS job on THIS runner and uses the
+        # IP-based anonymous quota (100 pulls/6 h from this runner's IP).
+        # Build jobs run on OTHER runners; their anonymous buckets are
+        # independent of this runner's IP, so we do NOT reserve anonymous
+        # quota for them here.  Reserve only the preseed pulls (= total needed
+        # minus the build-job share handled by the auth reserve below).
+        _anon_reserve=$(( needed_pulls > build_matrix_length \
+                            ? needed_pulls - build_matrix_length \
+                            : 0 ))
 
         # ── 5. Calculate the number of authenticated pulls to reserve ─────────
-        # This action does no work of its own; the authenticated reservation
-        # is entirely determined by what the anonymous quota cannot cover for
-        # the pre-seeding and build jobs (step 6 below).
-        _auth_reserve=0
+        # Build jobs share the authenticated (account-based, 200/6 h) quota
+        # regardless of which runner they land on.  Each build job may fall
+        # back to an authenticated pull when its anonymous pre-pull fails.
+        # Reserve one authenticated slot per build job so the auth bucket is
+        # not considered "available" until after every build job's potential
+        # fallback has been accounted for.
+        _auth_reserve=${build_matrix_length}
 
         while true; do
 

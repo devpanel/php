@@ -52,6 +52,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
+      - name: Log runner public IP
+        shell: bash
+        run: |
+          _ip="$(curl -sf --max-time 5 https://api.ipify.org \
+            || curl -sf --max-time 5 https://checkip.amazonaws.com \
+            || echo '(unknown)')"
+          echo "::notice::detect job runner public IP: ${_ip}"
+
       - name: Compute tag suffix
         id: tag-suffix
         run: |
@@ -89,6 +97,7 @@ jobs:
           needed_pulls: ${{ fromJSON(steps.detect.outputs.build_matrix_length) + fromJSON(steps.detect.outputs.all_versions_count) }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          build_matrix_length: ${{ steps.detect.outputs.build_matrix_length }}
 
       # Pre-seed is run here in the detect job (once, with ALL PHP versions in
       # the repo) rather than inside each parallel build job.  See the comment
@@ -130,8 +139,13 @@ jobs:
           retention-days: 1
 
   # ── Per-version-platform builds (run in parallel, no cache) ─────────────────
+  # There is deliberately no per-job Docker Hub quota wait here.  The
+  # centralized gate in wait-pull-quota (detect job above) coordinates before
+  # any build job starts.  Per-job waits cannot share state between runners so
+  # they cannot coordinate; the anonymous pre-pull is non-fatal and the
+  # authenticated fallback is already covered by the auth reservation made in
+  # wait-pull-quota (one slot per build job via build_matrix_length).
   build:
-    needs: detect
     if: needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != ''
     name: build (${{ matrix.version }}, ${{ matrix.platform }})
     strategy:
@@ -146,6 +160,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Log runner public IP
+        shell: bash
+        run: |
+          _ip="$(curl -sf --max-time 5 https://api.ipify.org \
+            || curl -sf --max-time 5 https://checkip.amazonaws.com \
+            || echo '(unknown)')"
+          echo "::notice::build job (${{ matrix.version }}, ${{ matrix.platform }}) runner public IP: ${_ip}"
 
       # Download the pre-seeded code-server .deb and Copilot Chat VSIX files
       # that the detect job assembled and uploaded.  Using a workflow artifact
@@ -207,6 +229,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Log runner public IP
+        shell: bash
+        run: |
+          _ip="$(curl -sf --max-time 5 https://api.ipify.org \
+            || curl -sf --max-time 5 https://checkip.amazonaws.com \
+            || echo '(unknown)')"
+          echo "::notice::merge job runner public IP: ${_ip}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
