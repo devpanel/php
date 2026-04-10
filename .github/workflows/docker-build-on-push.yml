@@ -42,7 +42,6 @@ jobs:
           repository: ${{ github.repository }}
           github_token: ${{ github.token }}
           event_name: ${{ github.event_name }}
-          event_before: ${{ github.event.before }}
 
   # ── Detect which versions changed and which platforms to target ─────────────
   # Runs after prepare so that before_sha is available, and its outputs drive
