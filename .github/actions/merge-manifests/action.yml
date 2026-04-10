@@ -236,16 +236,16 @@ runs:
 
         POLL_CYCLE=0
 
-        # Docker Hub token globals.  Updated directly by get_anon_token /
-        # get_auth_token in the main shell (no subshell needed); subshells
-        # (e.g. quota-probe functions called via $(...)) inherit the current
-        # value as a read-only copy so they always see the latest token.
+        # Docker Hub token globals.  Updated directly by get_inspect_token
+        # in the main shell (no subshell needed); subshells (e.g. quota-probe
+        # functions called via $(...)) inherit the current value as a read-only
+        # copy so they always see the latest token.
         ANON_TOKEN=""
         ANON_TOKEN_TIME=0
         AUTH_TOKEN=""
         AUTH_TOKEN_TIME=0
 
-        # Credentials file for manifest inspection (get_auth_token; REPO:pull
+        # Credentials file for manifest inspection (get_inspect_token; REPO:pull
         # scope).  Stored inside WORK_DIR so it is cleaned up by the existing
         # EXIT trap.  Quota probe calls (refresh_auth_quota_token) derive their
         # own credentials from DOCKERHUB_USERNAME / DOCKERHUB_TOKEN env vars.
@@ -311,65 +311,48 @@ runs:
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
 
-        # Helper: refresh the authenticated Docker Hub pull token when it has expired.
-        # Updates AUTH_TOKEN and AUTH_TOKEN_TIME globals directly (no subshell needed).
+        # Helper: refresh a REPO:pull-scoped Docker Hub token when it has expired.
+        # get_inspect_token VARNAME [creds_file]
+        # Without creds_file the token is anonymous; with it, authenticated.
+        # Updates VARNAME and ${VARNAME}_TIME globals directly (no subshell needed).
         # Returns 0 when a valid token is available, 1 when the fetch failed.
-        get_auth_token() {
-          local _now
+        get_inspect_token() {
+          local _varname="$1" _creds="${2:-}"
+          local _now _time_var
           _now="$(date +%s)"
-          if [[ -n "${AUTH_TOKEN}" ]] && (( _now - AUTH_TOKEN_TIME < TOKEN_MAX_AGE )); then
+          _time_var="${_varname}_TIME"
+          if [[ -n "${!_varname}" ]] && (( _now - ${!_time_var:-0} < TOKEN_MAX_AGE )); then
             return 0
           fi
-          local _ga_creds _ga_json _new_token
-          _ga_creds="$(umask 077; mktemp)"
-          printf 'machine auth.docker.io login %s password %s\n' \
-            "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_ga_creds}"
-          _ga_json="$(curl -sf --connect-timeout 5 --max-time 15 --netrc-file "${_ga_creds}" \
+          local _curl_args=(-sf --connect-timeout 5 --max-time 15)
+          [[ -n "${_creds}" ]] && _curl_args+=(--netrc-file "${_creds}")
+          local _json _new_token
+          _json="$(curl "${_curl_args[@]}" \
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
-            2>/dev/null)" || _ga_json=""
-          rm -f "${_ga_creds}"
-          _new_token="$(printf '%s' "${_ga_json}" | jq -r '.token // ""' 2>/dev/null)" \
+            2>/dev/null)" || _json=""
+          _new_token="$(printf '%s' "${_json}" | jq -r '.token // ""' 2>/dev/null)" \
             || _new_token=""
-          AUTH_TOKEN="${_new_token}"
-          AUTH_TOKEN_TIME="$(date +%s)"
-          if [[ -n "${AUTH_TOKEN}" ]]; then
-            echo "  Obtained authenticated Docker Hub token (for inspect fallback)."
+          printf -v "${_varname}" '%s' "${_new_token}"
+          printf -v "${_varname}_TIME" '%s' "$(date +%s)"
+          if [[ -n "${_new_token}" ]]; then
+            if [[ -n "${_creds}" ]]; then
+              echo "  Obtained authenticated Docker Hub token (for inspect fallback)."
+            else
+              echo "  Refreshed anonymous Docker Hub token (unauthenticated inspect)."
+            fi
             return 0
           else
-            echo "  Could not obtain authenticated token; imagetools inspect will be used as fallback."
+            if [[ -n "${_creds}" ]]; then
+              echo "  Could not obtain authenticated token; imagetools inspect will be used as fallback."
+            else
+              echo "  Could not refresh anonymous token; will use authenticated inspect."
+            fi
             return 1
           fi
         }
 
-        # Helper: refresh the anonymous Docker Hub pull token when it has expired.
-        # Updates ANON_TOKEN and ANON_TOKEN_TIME globals directly (no subshell needed).
-        # Returns 0 when a valid token is available, 1 when the fetch failed.
-        get_anon_token() {
-          local _now
-          _now="$(date +%s)"
-          if [[ -n "${ANON_TOKEN}" ]] && (( _now - ANON_TOKEN_TIME < TOKEN_MAX_AGE )); then
-            return 0
-          fi
-          local _anon_err _new_token
-          _anon_err="$(mktemp)"
-          _new_token="$(curl -sf --connect-timeout 5 --max-time 15 \
-            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
-            2>"${_anon_err}" | jq -r '.token // ""')" || _new_token=""
-          rm -f "${_anon_err}"
-          ANON_TOKEN="${_new_token}"
-          ANON_TOKEN_TIME="$(date +%s)"
-          if [[ -n "${ANON_TOKEN}" ]]; then
-            echo "  Refreshed anonymous Docker Hub token (unauthenticated inspect)."
-            return 0
-          else
-            echo "  Could not refresh anonymous token; will use authenticated inspect."
-            return 1
-          fi
-        }
-
-        # Warm up the anonymous tokens so the first loop cycle can use them immediately.
-        get_anon_token
-        refresh_anon_quota_token || true
+        # Warm up the anonymous inspect token so the first loop cycle can use it immediately.
+        get_inspect_token ANON_TOKEN
 
         # Consecutive artifact-list API failure counter.  After this many
         # back-to-back failures the loop aborts so the job fails instead of
@@ -470,7 +453,7 @@ runs:
           #
           # Inspect order (to conserve the Docker Hub authenticated-pull quota):
           #   1. Unauthenticated via Docker Hub Registry API (anonymous token).
-          #   2. Authenticated via Docker Hub Registry API (get_auth_token).
+          #   2. Authenticated via Docker Hub Registry API (get_inspect_token AUTH_TOKEN).
           #   3. docker buildx imagetools inspect (last resort, network fallback).
           #
           # If the tag does not exist → empty state (first push).
@@ -511,10 +494,9 @@ runs:
             # first (unauthenticated registry API) then authenticated, so
             # both unreserved anonymous and unreserved authenticated slots
             # contribute to the seeding budget.
-            # Refresh the anonymous token in the main shell so ANON_TOKEN is
-            # current for fetch_manifest later in the same cycle.
-            get_anon_token
-            refresh_anon_quota_token || true
+            # Refresh the anonymous inspect token so ANON_TOKEN is current for
+            # fetch_manifest later in the same cycle.
+            get_inspect_token ANON_TOKEN
             _anon_rem="$(anon_quota_remaining)"
             if [[ "${_anon_rem}" == "unlimited" ]]; then
               _anon_display="unlimited"
@@ -530,7 +512,6 @@ runs:
               _anon_seed=0
             fi
 
-            refresh_auth_quota_token || true
             _auth_rem="$(auth_quota_remaining)"
             _auth_need=$(( _total_unseeded - _anon_seed ))
             if [[ "${_auth_rem}" == "unlimited" ]]; then
@@ -636,9 +617,9 @@ runs:
               fi
 
               # ── Step 2: authenticated Registry API ───────────────────────
-              # get_auth_token refreshes AUTH_TOKEN when it has expired.
+              # get_inspect_token refreshes AUTH_TOKEN when it has expired.
               if [[ -z "${_seed_status}" ]]; then
-                get_auth_token
+                get_inspect_token AUTH_TOKEN "${_auth_creds}"
                 if [[ -n "${AUTH_TOKEN}" ]]; then
                   fetch_manifest "${AUTH_TOKEN}" \
                     "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
@@ -1082,7 +1063,6 @@ runs:
           done
           # Probe Docker Hub rate-limit status so we can give an actionable
           # suggestion: "rate limit exhausted – retry in 6 hours" vs "retry".
-          refresh_auth_quota_token || true
           _auth_rem="$(auth_quota_remaining)"
           if [[ "${_auth_rem}" == "unlimited" ]]; then
             echo "::error::Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \

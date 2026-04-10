@@ -147,7 +147,6 @@ runs:
         set -euo pipefail
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
-        refresh_anon_quota_token || true
         _anon_rem="$(anon_quota_remaining)"
         if [[ "${_anon_rem}" == "0" ]]; then
           echo "anon_remaining=0" >> "$GITHUB_OUTPUT"

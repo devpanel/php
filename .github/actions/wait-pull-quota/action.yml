@@ -161,7 +161,6 @@ runs:
 
           # ── 5. Subtract available anonymous quota from the anonymous reserve;
           #       add the remainder to the authenticated pull requirement. ───────
-          refresh_anon_quota_token || true
           _anon_rem="$(anon_quota_remaining)"
           if [[ "${_anon_rem}" == "unlimited" ]]; then
             _anon_display="unlimited"
@@ -181,7 +180,6 @@ runs:
             break
           fi
 
-          refresh_auth_quota_token || true
           _auth_rem="$(auth_quota_remaining)"
 
           if [[ "${_auth_rem}" == "unlimited" ]]; then

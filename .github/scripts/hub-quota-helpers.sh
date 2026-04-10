@@ -86,38 +86,37 @@ refresh_anon_quota_token() {
   refresh_hub_token _HUB_QUOTA_ANON_TOKEN
 }
 
-# refresh_auth_quota_token [creds_file]
-# Convenience wrapper: refresh the internal authenticated quota-probe token.
-# If creds_file is omitted, a temporary netrc-format file is created from the
-# DOCKERHUB_USERNAME and DOCKERHUB_TOKEN environment variables and cleaned up
-# after the token fetch.  If neither is provided the fetch will fail (return 1).
+# refresh_auth_quota_token
+# Convenience wrapper: refresh the internal authenticated quota-probe token
+# using credentials from the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN
+# environment variables.  Returns 0 when a valid token is available,
+# 1 when the fetch failed.
 refresh_auth_quota_token() {
-  local _creds_file="${1:-}"
   local _tmp_creds=""
-  if [[ -z "${_creds_file}" ]] \
-       && [[ -n "${DOCKERHUB_USERNAME:-}" ]] \
+  if [[ -n "${DOCKERHUB_USERNAME:-}" ]] \
        && [[ -n "${DOCKERHUB_TOKEN:-}" ]]; then
     _tmp_creds="$(umask 077; mktemp)"
     printf 'machine auth.docker.io login %s password %s\n' \
       "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_tmp_creds}"
-    _creds_file="${_tmp_creds}"
   fi
-  refresh_hub_token _HUB_QUOTA_AUTH_TOKEN "${_creds_file}"
+  refresh_hub_token _HUB_QUOTA_AUTH_TOKEN "${_tmp_creds}"
   local _ret=$?
   [[ -n "${_tmp_creds}" ]] && rm -f "${_tmp_creds}"
   return ${_ret}
 }
 
 # anon_quota_remaining
-# Convenience wrapper: print the anonymous pull quota remaining using the
-# internal anonymous quota-probe token.
+# Convenience wrapper: refresh the internal anonymous quota-probe token if
+# needed, then print the anonymous pull quota remaining.
 anon_quota_remaining() {
+  refresh_anon_quota_token || true
   hub_pull_remaining "${_HUB_QUOTA_ANON_TOKEN}"
 }
 
 # auth_quota_remaining
-# Convenience wrapper: print the authenticated pull quota remaining using the
-# internal authenticated quota-probe token.
+# Convenience wrapper: refresh the internal authenticated quota-probe token if
+# needed, then print the authenticated pull quota remaining.
 auth_quota_remaining() {
+  refresh_auth_quota_token || true
   hub_pull_remaining "${_HUB_QUOTA_AUTH_TOKEN}"
 }
