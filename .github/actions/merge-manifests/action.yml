@@ -489,24 +489,29 @@ runs:
             _auth_reserve=${_remaining_builds}
 
             # ── 6. Probe both quotas; compute seeding capacity ─────────────────
-            # Available for own seeding: quota remaining above the reserve
-            # (quota_remaining − reserve).  fetch_manifest tries anonymous
-            # first (unauthenticated registry API) then authenticated, so
-            # both unreserved anonymous and unreserved authenticated slots
-            # contribute to the seeding budget.
+            # Available for own seeding: authenticated quota remaining above the
+            # reserve (quota_remaining − reserve).  Although fetch_manifest tries
+            # the anonymous Registry API first, a single image can still consume
+            # an authenticated pull in the same cycle if the anonymous manifest
+            # fetch succeeds but yields 0 valid platforms and we fall back to an
+            # authenticated Registry API fetch.  Because of that worst case,
+            # anonymous quota is treated only as a runtime optimisation and must
+            # not add independent preflight seeding capacity; authenticated
+            # capacity remains the conservative cap for how many images can be
+            # seeded safely.
+            #
             # Refresh the anonymous inspect token so ANON_TOKEN is current for
             # fetch_manifest later in the same cycle.
             get_inspect_token ANON_TOKEN
             _anon_rem="$(anon_quota_remaining)"
             if [[ "${_anon_rem}" == "unlimited" ]]; then
               _anon_display="unlimited"
-              _anon_seed=${_total_unseeded}
+              _anon_seed=0
             elif [[ -n "${_anon_rem}" ]]; then
               _anon_display="${_anon_rem}"
               _anon_avail=$(( _anon_rem > _anon_reserve \
                                 ? _anon_rem - _anon_reserve : 0 ))
-              _anon_seed=$(( _anon_avail < _total_unseeded \
-                               ? _anon_avail : _total_unseeded ))
+              _anon_seed=0
             else
               _anon_display="unknown"
               _anon_seed=0

@@ -3,13 +3,15 @@ description: >
   Waits until the Docker Hub pull quota has enough remaining capacity for
   all parallel build jobs and the pre-seed step.
 
-  Anonymous quota is always probed first each poll cycle.  If the anonymous
-  (IP-based, 100/6 h) quota covers all needed pulls the action proceeds
-  immediately without probing authenticated quota at all.  Only when the
-  anonymous quota is insufficient does the action probe the authenticated
-  (account-based, 200/6 h) quota.  The real number of authenticated pulls
-  needed is computed as max(0, needed_pulls − anonymous_remaining) from the
-  live probe value, never from a static guess.
+  The action performs an authenticated credential/token check during
+  preflight verification.  During each poll cycle, anonymous quota is still
+  probed first.  If the anonymous (IP-based, 100/6 h) quota covers all
+  needed pulls, no authenticated quota probe is performed for that poll
+  cycle.  Only when the anonymous quota is insufficient does the action
+  probe the authenticated (account-based, 200/6 h) quota.  The real number
+  of authenticated pulls needed is computed as max(0, needed_pulls −
+  anonymous_remaining) from the live probe value, never from a static
+  guess.
 
   Polls every 60 seconds.  Gives up after 5h30m (19800 s) to avoid
   being cancelled by the default 6 h GitHub-hosted job timeout.
@@ -67,6 +69,13 @@ runs:
         if [[ ! "${build_matrix_length}" =~ ^[0-9]+$ ]]; then
           echo "::error::Invalid value for inputs.build_matrix_length:" \
                "'${build_matrix_length}'. It must be a non-negative integer."
+          exit 1
+        fi
+        if (( build_matrix_length > needed_pulls )); then
+          echo "::error::Invalid input combination: inputs.build_matrix_length" \
+               "(${build_matrix_length}) cannot be greater than" \
+               "inputs.needed_pulls (${needed_pulls})." \
+               "inputs.needed_pulls must include the build matrix share."
           exit 1
         fi
 

@@ -94,9 +94,18 @@ refresh_anon_quota_token() {
 # using credentials from the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN
 # environment variables.  Returns 0 when a valid token is available,
 # 1 when the fetch failed.
+# The temporary netrc file is created only when the cached token is stale,
+# avoiding unnecessary filesystem operations in tight polling loops.
 refresh_auth_quota_token() {
   if [[ -z "${DOCKERHUB_USERNAME:-}" ]] || [[ -z "${DOCKERHUB_TOKEN:-}" ]]; then
     return 1
+  fi
+  # Skip filesystem operations when the cached token is still fresh.
+  local _now
+  _now="$(date +%s)"
+  if [[ -n "${_HUB_QUOTA_AUTH_TOKEN}" ]] && \
+     (( _now - ${_HUB_QUOTA_AUTH_TOKEN_TIME:-0} < TOKEN_MAX_AGE )); then
+    return 0
   fi
   local _tmp_creds=""
   _tmp_creds="$(umask 077; mktemp)"
