@@ -81,7 +81,10 @@ hub_pull_remaining() {
       | grep -oE '[0-9]+' | head -1)" || _remaining=""
     echo "${_remaining:-unlimited}"
   fi
-  # Non-2xx or empty http_code: print nothing (caller treats as failed).
+  # Non-2xx or empty http_code: print nothing (caller treats as failed probe).
+  # Always return 0: callers detect failure via empty stdout, not exit status,
+  # so a transient probe failure must not abort callers running under set -e.
+  return 0
 }
 
 # refresh_anon_quota_token

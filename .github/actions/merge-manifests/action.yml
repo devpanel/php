@@ -352,7 +352,8 @@ runs:
         }
 
         # Warm up the anonymous inspect token so the first loop cycle can use it immediately.
-        get_inspect_token ANON_TOKEN
+        # Failure is non-fatal: the loop will retry via get_inspect_token when needed.
+        get_inspect_token ANON_TOKEN || true
 
         # Consecutive artifact-list API failure counter.  After this many
         # back-to-back failures the loop aborts so the job fails instead of
@@ -495,7 +496,7 @@ runs:
             #
             # Refresh the anonymous inspect token so ANON_TOKEN is current for
             # fetch_manifest later in the same cycle.
-            get_inspect_token ANON_TOKEN
+            get_inspect_token ANON_TOKEN || true
             _anon_rem="$(anon_quota_remaining)"
             if [[ "${_anon_rem}" == "unlimited" ]]; then
               _anon_display="unlimited"
@@ -584,10 +585,13 @@ runs:
               # ── Step 1: unauthenticated (anonymous token) ──────────────────
               # ANON_TOKEN was refreshed by get_inspect_token earlier in this cycle.
               if [[ -n "${ANON_TOKEN}" ]]; then
-                fetch_manifest "${ANON_TOKEN}" \
+                _anon_fetch_status=0
+                if ! fetch_manifest "${ANON_TOKEN}" \
                   "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
-                  "unauthenticated" "trying authenticated Registry API"
-                case $? in
+                  "unauthenticated" "trying authenticated Registry API"; then
+                  _anon_fetch_status=$?
+                fi
+                case "${_anon_fetch_status}" in
                   0)
                     # Only accept the unauthenticated result when it contains at
                     # least one parseable platform entry.  A single-platform
@@ -617,12 +621,15 @@ runs:
               # ── Step 2: authenticated Registry API ───────────────────────
               # get_inspect_token refreshes AUTH_TOKEN when it has expired.
               if [[ -z "${_seed_status}" ]]; then
-                get_inspect_token AUTH_TOKEN "${_auth_creds}"
+                get_inspect_token AUTH_TOKEN "${_auth_creds}" || true
                 if [[ -n "${AUTH_TOKEN}" ]]; then
-                  fetch_manifest "${AUTH_TOKEN}" \
+                  _auth_fetch_status=0
+                  if ! fetch_manifest "${AUTH_TOKEN}" \
                     "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
-                    "authenticated Registry API" "trying imagetools inspect"
-                  case $? in
+                    "authenticated Registry API" "trying imagetools inspect"; then
+                    _auth_fetch_status=$?
+                  fi
+                  case "${_auth_fetch_status}" in
                     0) _seed_status="ok"
                        echo "  ${IMAGE_SEED}: fetched manifest (authenticated)." ;;
                     1) _seed_status="not_found" ;;
