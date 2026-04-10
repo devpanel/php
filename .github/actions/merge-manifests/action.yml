@@ -614,6 +614,7 @@ runs:
               fi
 
               # ── Defer auth-requiring images when no unreserved auth quota ──
+              # _auth_avail is computed in step 7 above (auth_rem − auth_reserve).
               # If the anonymous path could not resolve this image and no
               # unreserved authenticated quota is available, skip it for this
               # cycle so reserved slots are not consumed.  Other images in the
