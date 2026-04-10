@@ -113,7 +113,7 @@ runs:
         # Obtain an anonymous Docker Hub token for library/php to look up
         # image manifests without using the authenticated pull quota.
         ANON_PHP_TOKEN=""
-        ANON_PHP_TOKEN="$(curl -sf \
+        ANON_PHP_TOKEN="$(curl -sf --connect-timeout 5 --max-time 15 \
           "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/php:pull" \
           2>/dev/null | jq -r '.token // ""')" || ANON_PHP_TOKEN=""
         if [[ -n "${ANON_PHP_TOKEN}" ]]; then
@@ -148,11 +148,11 @@ runs:
             if [[ -n "${ANON_PHP_TOKEN}" ]]; then
               _head_tmp="$(mktemp)"
               _curl_ok=false
-              curl -sf \
+              curl -sf --connect-timeout 5 --max-time 15 \
+                --head \
                 -H "Authorization: Bearer ${ANON_PHP_TOKEN}" \
                 -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
                 -D "${_head_tmp}" \
-                -o /dev/null \
                 "https://registry-1.docker.io/v2/library/php/manifests/${ver}-apache" \
                 2>/dev/null && _curl_ok=true || true
               if [[ "${_curl_ok}" == "true" ]]; then

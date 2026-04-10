@@ -83,6 +83,10 @@ runs:
         ZERO_SHA=0000000000000000000000000000000000000000
 
         if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+          if [[ -z "${PR_BASE_SHA}" ]]; then
+            echo "::error::Input 'pr_base_sha' is required when event_name is 'pull_request'."
+            exit 1
+          fi
           echo "before_sha=${PR_BASE_SHA}" >> "$GITHUB_OUTPUT"
           echo "needs_history=true" >> "$GITHUB_OUTPUT"
           exit 0
