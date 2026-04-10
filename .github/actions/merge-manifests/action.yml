@@ -489,11 +489,10 @@ runs:
 
             # ── 6. Probe both quotas ───────────────────────────────────────────
             # Refresh the anonymous inspect token so ANON_TOKEN is current for
-            # fetch_manifest later in the same cycle.  Anonymous quota is probed
-            # for display only; the quota gate uses unreserved *authenticated*
-            # quota because anonymous pulls can silently fall back to
-            # authenticated pulls when the unauthenticated path fails or returns
-            # an incomplete manifest.
+            # fetch_manifest later in the same cycle.  Both quotas are probed:
+            # authenticated quota drives the primary gate; anonymous quota
+            # allows seeding to continue via the anonymous inspect path even
+            # when authenticated quota is fully reserved for build jobs.
             get_inspect_token ANON_TOKEN || true
             _anon_rem="$(anon_quota_remaining)"
             if [[ "${_anon_rem}" == "unlimited" ]]; then
@@ -514,33 +513,47 @@ runs:
               _auth_avail=0
             fi
 
-            # ── 7. If no unreserved authenticated pulls remain, defer ───────────
+            # ── 7. Gate seeding on available quota ────────────────────────────
+            # When authenticated quota is available, seed normally.
+            # When only anonymous quota is available, seeding proceeds via the
+            # anonymous inspect path; images that cannot be seeded anonymously
+            # are deferred to the next polling cycle (the inner loop skips them
+            # with a continue) so reserved auth slots are not consumed.
+            # Defer the entire seeding cycle only when both are unavailable.
             if (( _auth_avail == 0 )); then
-              _do_seed=false
-              if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
-                echo "::error::Docker Hub pull quota: deferred seeding for" \
-                     "${QUOTA_WAIT_ELAPSED}s but no unreserved pulls available" \
-                     "(${_anon_display} anonymous remaining;" \
-                     "${_auth_rem:-unknown} authenticated remaining," \
-                     "${_remaining_builds} reserved for build jobs)." \
-                     "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-                exit 1
+              _anon_can_seed=false
+              if [[ "${_anon_rem}" == "unlimited" ]] \
+                  || { [[ -n "${_anon_rem}" ]] && (( _anon_rem > 0 )); }; then
+                _anon_can_seed=true
               fi
-              if (( QUOTA_WAIT_ELAPSED == 0 )); then
-                echo "::warning::Deferring manifest seeding: no unreserved" \
-                     "Docker Hub pulls (${_anon_display} anonymous remaining;" \
-                     "${_auth_rem:-unknown} authenticated remaining," \
-                     "${_remaining_builds} reserved for build jobs)." \
-                     "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
-              else
-                echo "Deferring manifest seeding: no unreserved Docker Hub" \
-                     "pulls (${_anon_display} anonymous remaining;" \
-                     "${_auth_rem:-unknown} authenticated remaining," \
-                     "${_remaining_builds} reserved for build jobs)." \
-                     "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+              if [[ "${_anon_can_seed}" == "false" ]]; then
+                _do_seed=false
+                if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
+                  echo "::error::Docker Hub pull quota: deferred seeding for" \
+                       "${QUOTA_WAIT_ELAPSED}s but no unreserved pulls available" \
+                       "(${_anon_display} anonymous remaining;" \
+                       "${_auth_rem:-unknown} authenticated remaining," \
+                       "${_remaining_builds} reserved for build jobs)." \
+                       "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+                  exit 1
+                fi
+                if (( QUOTA_WAIT_ELAPSED == 0 )); then
+                  echo "::warning::Deferring manifest seeding: no unreserved" \
+                       "Docker Hub pulls (${_anon_display} anonymous remaining;" \
+                       "${_auth_rem:-unknown} authenticated remaining," \
+                       "${_remaining_builds} reserved for build jobs)." \
+                       "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+                else
+                  echo "Deferring manifest seeding: no unreserved Docker Hub" \
+                       "pulls (${_anon_display} anonymous remaining;" \
+                       "${_auth_rem:-unknown} authenticated remaining," \
+                       "${_remaining_builds} reserved for build jobs)." \
+                       "Elapsed: ${QUOTA_WAIT_ELAPSED}s."
+                fi
+                QUOTA_WAIT_ELAPSED=$(( QUOTA_WAIT_ELAPSED + POLL_INTERVAL_SECONDS ))
               fi
-              QUOTA_WAIT_ELAPSED=$(( QUOTA_WAIT_ELAPSED + POLL_INTERVAL_SECONDS ))
-            else
+            fi
+            if [[ "${_do_seed}" == "true" ]]; then
               QUOTA_WAIT_ELAPSED=0
             fi
           fi
@@ -598,6 +611,17 @@ runs:
                     ;;
                   1) _seed_status="not_found" ;;
                 esac
+              fi
+
+              # ── Defer auth-requiring images when no unreserved auth quota ──
+              # If the anonymous path could not resolve this image and no
+              # unreserved authenticated quota is available, skip it for this
+              # cycle so reserved slots are not consumed.  Other images in the
+              # list that the anonymous path can resolve will still be seeded.
+              if [[ -z "${_seed_status}" ]] && (( _auth_avail == 0 )); then
+                echo "  ${IMAGE_SEED}: deferring to next cycle (anonymous" \
+                     "inspect insufficient; no unreserved auth quota)."
+                continue
               fi
 
               # ── Step 2: authenticated Registry API ───────────────────────
