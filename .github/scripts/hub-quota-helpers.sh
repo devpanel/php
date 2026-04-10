@@ -95,12 +95,60 @@ refresh_anon_quota_token() {
 # Convenience wrapper: refresh the internal authenticated quota-probe token
 # using credentials from the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN
 # environment variables.  Returns 0 when a valid token is available,
-# 1 when the fetch failed.
+# 1 when the fetch failed.  On failure, emits a categorised ::error:: message
+# to stderr (network/TLS/DNS failure vs. credential rejection) plus a
+# ::debug:: line with the raw response body to aid diagnostics.
 refresh_auth_quota_token() {
   if [[ -z "${DOCKERHUB_USERNAME:-}" ]] || [[ -z "${DOCKERHUB_TOKEN:-}" ]]; then
+    echo "::error::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN must be set." \
+         "Verify that the secrets are configured for this repository." >&2
     return 1
   fi
-  refresh_hub_token _HUB_QUOTA_AUTH_TOKEN "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}"
+  # Fast-path: cached token is still fresh.
+  local _now
+  _now="$(date +%s)"
+  if [[ -n "${_HUB_QUOTA_AUTH_TOKEN}" ]] \
+      && (( _now - _HUB_QUOTA_AUTH_TOKEN_TIME < TOKEN_MAX_AGE )); then
+    return 0
+  fi
+  # Fetch a new token, capturing stdout + stderr and the curl exit code.
+  local _rc=0 _body _token
+  _body="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+    --user "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}" \
+    "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+    2>&1)" || _rc=$?
+  _token="$(printf '%s' "${_body}" | jq -r '.token // ""' 2>/dev/null)" \
+    || _token=""
+  if [[ -n "${_token}" ]]; then
+    _HUB_QUOTA_AUTH_TOKEN="${_token}"
+    _HUB_QUOTA_AUTH_TOKEN_TIME="${_now}"
+    return 0
+  fi
+  # Emit a categorised error so callers don't need to re-implement this logic.
+  if (( _rc != 0 )); then
+    echo "::error::Network/TLS/DNS failure contacting the Docker Hub auth endpoint" \
+         "(curl exit ${_rc})." \
+         "Check runner connectivity and Docker Hub status before retrying." \
+         "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
+  else
+    case "${_body}" in
+      *401*|*403*|*unauthorized*|*forbidden*)
+        echo "::error::Docker Hub rejected the credentials (HTTP 401/403)." \
+             "Verify that the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are set and valid." \
+             "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
+        ;;
+      *)
+        echo "::error::Could not obtain a Docker Hub auth token." \
+             "Verify that DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are set and valid," \
+             "and that the Docker Hub auth endpoint is reachable." \
+             "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
+        ;;
+    esac
+  fi
+  if [[ -n "${_body}" ]]; then
+    echo "::debug::Docker Hub auth response: ${_body}" >&2
+  fi
+  return 1
 }
 
 # anon_quota_remaining

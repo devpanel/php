@@ -100,46 +100,11 @@ runs:
 
         # Preflight: verify Docker Hub credentials can obtain an auth token.
         # Fail fast here rather than burning 5h30m on unresolvable credential errors.
+        # refresh_auth_quota_token emits a categorised ::error:: on failure.
         echo "Verifying Docker Hub credentials..."
-        _auth_preflight_body=""
-        _auth_preflight_rc=0
-        _auth_preflight_body="$(
-          curl --silent --show-error --connect-timeout 5 --max-time 15 \
-            --user "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}" \
-            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
-            2>&1
-        )" || _auth_preflight_rc=$?
-        _auth_preflight_token=""
-        _auth_preflight_token="$(printf '%s' "${_auth_preflight_body}" \
-          | jq -r '.token // ""' 2>/dev/null)" || true
-        if [[ -z "${_auth_preflight_token}" ]]; then
-          if (( _auth_preflight_rc != 0 )); then
-            echo "::error::Network/TLS/DNS failure contacting the Docker Hub auth endpoint" \
-                 "(curl exit ${_auth_preflight_rc})." \
-                 "Check runner connectivity and Docker Hub status before retrying." \
-                 "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-          else
-            case "${_auth_preflight_body}" in
-              *401*|*403*|*unauthorized*|*forbidden*)
-                echo "::error::Docker Hub rejected the credentials (HTTP 401/403)." \
-                     "Verify that the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are set and valid." \
-                     "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-                ;;
-              *)
-                echo "::error::Could not obtain a Docker Hub auth token." \
-                     "Verify that the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are" \
-                     "set and valid, and that the Docker Hub auth endpoint is reachable." \
-                     "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-                ;;
-            esac
-          fi
-          if [[ -n "${_auth_preflight_body}" ]]; then
-            echo "::debug::Preflight auth response: ${_auth_preflight_body}"
-          fi
+        if ! refresh_auth_quota_token; then
           exit 1
         fi
-        # Warm the internal token cache used by auth_quota_remaining in the poll loop.
-        refresh_auth_quota_token || true
         echo "Docker Hub credentials verified."
 
         echo "Checking Docker Hub pull quota" \

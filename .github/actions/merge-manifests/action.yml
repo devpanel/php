@@ -502,8 +502,7 @@ runs:
               _anon_seed=${_total_unseeded}
             elif [[ -n "${_anon_rem}" ]]; then
               _anon_display="${_anon_rem}"
-              _anon_avail=${_anon_rem}
-              _anon_seed=${_anon_avail}
+              _anon_seed=${_anon_rem}
             else
               _anon_display="unknown"
               _anon_seed=0
