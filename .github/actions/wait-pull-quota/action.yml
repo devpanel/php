@@ -5,13 +5,15 @@ description: >
 
   The action performs an authenticated credential/token check during
   preflight verification.  During each poll cycle, anonymous quota is still
-  probed first.  If the anonymous (IP-based, 100/6 h) quota covers all
-  needed pulls, no authenticated quota probe is performed for that poll
-  cycle.  Only when the anonymous quota is insufficient does the action
-  probe the authenticated (account-based, 200/6 h) quota.  The real number
-  of authenticated pulls needed is computed as max(0, needed_pulls −
-  anonymous_remaining) from the live probe value, never from a static
-  guess.
+  probed first.  The total authenticated pulls required is computed as
+  max(build_matrix_length, needed_pulls − anonymous_remaining): at minimum,
+  build_matrix_length authenticated slots are always reserved because those
+  build jobs run on OTHER runners whose IP-based anonymous quota is
+  independent of this runner.  When anonymous quota on this runner also
+  falls short of covering the pre-seed share, the deficit is added on top
+  of the build-job reservation, giving the conservative formula above.  The
+  authenticated probe is skipped only when the computed requirement is 0,
+  which cannot happen while build_matrix_length > 0.
 
   Polls every 60 seconds.  Gives up after 5h30m (19800 s) to avoid
   being cancelled by the default 6 h GitHub-hosted job timeout.
