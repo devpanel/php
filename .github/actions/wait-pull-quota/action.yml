@@ -1,7 +1,7 @@
 name: Wait for Docker Hub pull quota
 description: >
   Waits until the Docker Hub pull quota has enough remaining capacity for
-  all parallel build jobs and the pre-seed step.
+  all parallel build jobs.
 
   The action performs an authenticated credential/token check during
   preflight verification.  During each poll cycle, anonymous quota is still

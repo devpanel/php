@@ -96,6 +96,15 @@ outputs:
       pre-seed action may need one authenticated pull per version when the
       codenames cache is cold.
     value: ${{ steps.detect.outputs.all_versions_count }}
+  tag_suffix:
+    description: >
+      Docker image tag suffix derived from the branch/ref name.  Empty string
+      for the main branch (production images), "-rc" for the develop branch
+      (release candidates), or "-<sanitized-ref>" for any other ref.  The
+      sanitized form is lower-cased and restricted to ASCII alphanumerics plus
+      ".", "_", and "-" so it is always a valid Docker tag component and a
+      valid GHA cache key segment.
+    value: ${{ steps.tag-suffix.outputs.tag_suffix }}
 
 runs:
   using: composite
@@ -467,4 +476,17 @@ runs:
           echo "build_matrix=${BUILD_MATRIX}" >> "$GITHUB_OUTPUT"
           BUILD_MATRIX_LENGTH="$(printf '%s' "${BUILD_MATRIX}" | jq 'length')"
           echo "build_matrix_length=${BUILD_MATRIX_LENGTH}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Compute tag suffix
+      id: tag-suffix
+      shell: bash
+      run: |
+        if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+          echo "tag_suffix=" >> "$GITHUB_OUTPUT"
+        elif [[ "${GITHUB_REF}" == "refs/heads/develop" ]]; then
+          echo "tag_suffix=-rc" >> "$GITHUB_OUTPUT"
+        else
+          sanitized_ref_name="$(printf '%s' "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
+          echo "tag_suffix=-${sanitized_ref_name}" >> "$GITHUB_OUTPUT"
         fi

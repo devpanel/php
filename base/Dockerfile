@@ -252,6 +252,9 @@ ENV CODES_ENABLE=yes
 # Within each attempt: apt-get install -f (fix-broken) runs after apt-get upgrade to
 # resolve any unmet dependencies left by the upgrade (e.g. mariadb-client-10.5 requiring
 # a higher mariadb-client-core version on Debian 11) before the main package install.
+# libedit2 is a runtime dependency of code-server (BSD editline/history library);
+# pre-installing it here ensures the later `dpkg -i code-server.deb` succeeds on
+# the first attempt without needing the `apt-get install -f` fallback path.
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && for i in $(seq 1 3); do \
       apt-get update && apt-get upgrade -y --fix-missing \
