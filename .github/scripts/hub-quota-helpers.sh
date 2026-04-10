@@ -114,12 +114,21 @@ refresh_auth_quota_token() {
       && (( _now - _HUB_QUOTA_AUTH_TOKEN_TIME < TOKEN_MAX_AGE )); then
     return 0
   fi
-  # Fetch a new token, capturing stdout + stderr and the curl exit code.
-  local _rc=0 _body _token
-  _body="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+  # Fetch a new token: body → temp file, HTTP status code → stdout, curl
+  # errors → temp file.  This lets us branch on the exact HTTP status code
+  # rather than heuristically matching strings inside the response body.
+  local _rc=0 _body _http_code _curl_err _token _tmpbody _tmpstderr
+  _tmpbody="$(mktemp)"
+  _tmpstderr="$(mktemp)"
+  _http_code="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
     --user "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}" \
+    --output "${_tmpbody}" \
+    --write-out '%{http_code}' \
     "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
-    2>&1)" || _rc=$?
+    2>"${_tmpstderr}")" || _rc=$?
+  _body="$(cat "${_tmpbody}" 2>/dev/null || true)"
+  _curl_err="$(cat "${_tmpstderr}" 2>/dev/null || true)"
+  rm -f "${_tmpbody}" "${_tmpstderr}"
   _token="$(printf '%s' "${_body}" | jq -r '.token // ""' 2>/dev/null)" \
     || _token=""
   if [[ -n "${_token}" ]]; then
@@ -133,28 +142,27 @@ refresh_auth_quota_token() {
          "(curl exit ${_rc})." \
          "Check runner connectivity and Docker Hub status before retrying." \
          "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
+  elif [[ "${_http_code}" == "401" ]] || [[ "${_http_code}" == "403" ]]; then
+    echo "::error::Docker Hub rejected the credentials (HTTP ${_http_code})." \
+         "Verify that the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are set and valid." \
+         "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
   else
-    case "${_body}" in
-      *401*|*403*|*unauthorized*|*forbidden*)
-        echo "::error::Docker Hub rejected the credentials (HTTP 401/403)." \
-             "Verify that the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are set and valid." \
-             "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
-        ;;
-      *)
-        echo "::error::Could not obtain a Docker Hub auth token." \
-             "Verify that DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are set and valid," \
-             "and that the Docker Hub auth endpoint is reachable." \
-             "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
-        ;;
-    esac
+    echo "::error::Could not obtain a Docker Hub auth token (HTTP ${_http_code:-unknown})." \
+         "Verify that DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are set and valid," \
+         "and that the Docker Hub auth endpoint is reachable." \
+         "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
   fi
-  if [[ -n "${_body}" ]]; then
+  # Build debug info from curl stderr (network errors) + response body.
+  local _debug_info="${_curl_err}"
+  [[ -n "${_debug_info}" ]] && [[ -n "${_body}" ]] && _debug_info+=$'\n'
+  _debug_info+="${_body}"
+  if [[ -n "${_debug_info}" ]]; then
     # Sanitize before embedding in a GitHub Actions workflow command:
     # escape % → %25, CR → %0D, LF → %0A to prevent log/command injection.
-    local _safe_body="${_body//'%'/'%25'}"
-    _safe_body="${_safe_body//$'\r'/'%0D'}"
-    _safe_body="${_safe_body//$'\n'/'%0A'}"
-    echo "::debug::Docker Hub auth response: ${_safe_body}" >&2
+    local _safe_debug="${_debug_info//'%'/'%25'}"
+    _safe_debug="${_safe_debug//$'\r'/'%0D'}"
+    _safe_debug="${_safe_debug//$'\n'/'%0A'}"
+    echo "::debug::Docker Hub auth response: ${_safe_debug}" >&2
   fi
   return 1
 }
