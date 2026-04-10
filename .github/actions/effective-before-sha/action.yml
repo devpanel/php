@@ -4,23 +4,50 @@ description: >
 
   For pull_request events, returns the PR base SHA immediately.
 
-  For push events, queries the given workflow files for the most recent
-  successful run on this branch whose head commit is an ancestor of the
-  current commit (smallest ahead_by distance).  Falls back to
-  event_before when no successful run is found and event_before is
-  provided; otherwise returns an empty string.
+  For push events, queries workflow runs for the most recent successful
+  run on this branch whose head commit is an ancestor of the current
+  commit (smallest ahead_by distance).  When no prior successful run is
+  found, returns an empty string (callers should treat that as "build
+  everything").
+
+  Workflow discovery (push events only): when current_workflow_file is
+  provided, the action reads that file from the local checkout to
+  extract its concurrency group template, then scans all files in
+  .github/workflows/ for the same template string.  Every matching
+  workflow is queried for successful runs.  This automatically includes
+  any workflow that competes for the same concurrency slot — without
+  requiring a hardcoded list.
+
+  Alternatively, workflow_files can list filenames explicitly (kept for
+  callers such as test.yml whose concurrency group is workflow-unique).
+  At least one of current_workflow_file or workflow_files is required.
 
   Required GITHUB_TOKEN permissions on the calling job:
     actions:  read   (list workflow runs)
     contents: read   (compare commits via the Repos API)
 
 inputs:
+  current_workflow_file:
+    description: >
+      Filename of the calling workflow (e.g. "docker-build-on-push.yml").
+      When provided, the action reads the file from the local checkout
+      (.github/workflows/<name>), extracts its concurrency group
+      template, and queries successful runs from every workflow in
+      .github/workflows/ that contains the same group template.  This
+      makes run discovery automatic: add or rename a workflow that
+      shares the concurrency group and it will be picked up without
+      any change to this input.
+      Mutually exclusive with workflow_files; takes precedence when both
+      are set.
+    required: false
+    default: ''
   workflow_files:
     description: >
       Space-separated list of workflow filenames to query for successful
-      runs (e.g. "docker-build-on-push.yml docker-build-all.yml").
-      Used only for push events.
-    required: true
+      runs (e.g. "test.yml").  Used only for push events and only when
+      current_workflow_file is not provided.
+    required: false
+    default: ''
   current_sha:
     description: The current commit SHA (github.sha).
     required: true
@@ -54,8 +81,9 @@ outputs:
   before_sha:
     description: >
       The effective before SHA to use as the diff anchor.  Empty string
-      when the before commit cannot be determined (new branch with no
-      prior successful run and no event_before fallback provided).
+      when the before commit cannot be determined (no prior successful
+      run and no event_before fallback provided).  Callers should treat
+      an empty before_sha as "build everything".
     value: ${{ steps.compute.outputs.before_sha }}
   needs_history:
     description: >
@@ -71,6 +99,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
+        CURRENT_WORKFLOW_FILE: ${{ inputs.current_workflow_file }}
         WORKFLOW_FILES: ${{ inputs.workflow_files }}
         CURRENT_SHA: ${{ inputs.current_sha }}
         REF_NAME: ${{ inputs.ref_name }}
@@ -92,10 +121,56 @@ runs:
           exit 0
         fi
 
-        # For push events, collect head SHAs of successful runs from every
-        # listed workflow file so we have enough candidates to find the
-        # closest reachable ancestor even when recent runs share SHAs.
-        read -ra WF_ARRAY <<< "${WORKFLOW_FILES}"
+        # For push events, determine which workflows to query.
+        # When current_workflow_file is provided, discover all workflows that
+        # share the same concurrency group.  yq extracts the group template
+        # from the local checkout; every workflow with a matching template is
+        # queried for successful runs.  Falls back to the explicit
+        # workflow_files list when current_workflow_file is not provided.
+        WF_GROUP=""
+        if [[ -n "${CURRENT_WORKFLOW_FILE:-}" ]]; then
+          WF_YAML=".github/workflows/${CURRENT_WORKFLOW_FILE}"
+          if [[ ! -f "$WF_YAML" ]]; then
+            echo "::error::Workflow file '${WF_YAML}' not found in local checkout."
+            exit 1
+          fi
+          # Use yq to extract the concurrency group template from the YAML.
+          # Returns "null" (yq convention) when the key is absent.
+          WF_GROUP=$(yq eval '.concurrency.group' "$WF_YAML" 2>/dev/null || true)
+          if [[ "$WF_GROUP" == "null" ]]; then
+            WF_GROUP=""
+          fi
+        fi
+
+        WF_ARRAY=()
+        if [[ -n "$WF_GROUP" ]]; then
+          # Find every workflow file whose concurrency.group matches the same
+          # template string.  yq handles any YAML whitespace variation.
+          while IFS= read -r wf_file; do
+            file_group=$(yq eval '.concurrency.group' "$wf_file" 2>/dev/null || true)
+            if [[ "$file_group" == "$WF_GROUP" ]]; then
+              WF_ARRAY+=("$(basename "$wf_file")")
+            fi
+          done < <(find .github/workflows -maxdepth 1 \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null | sort)
+        elif [[ -n "${WORKFLOW_FILES:-}" ]]; then
+          read -ra WF_ARRAY <<< "${WORKFLOW_FILES}"
+        else
+          echo "::error::Either 'current_workflow_file' or 'workflow_files' input is required."
+          exit 1
+        fi
+
+        if [[ ${#WF_ARRAY[@]} -eq 0 ]]; then
+          echo "::warning::No workflows found matching concurrency group '${WF_GROUP}'" \
+               "(expected at least '${CURRENT_WORKFLOW_FILE}')." \
+               "This may indicate a YAML parsing issue. Returning empty before_sha."
+          echo "before_sha=" >> "$GITHUB_OUTPUT"
+          echo "needs_history=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Collect head SHAs of successful runs from every matching workflow so
+        # we have enough candidates to find the closest reachable ancestor even
+        # when recent runs share SHAs.
         CANDIDATES=$(
           for wf in "${WF_ARRAY[@]}"; do
             gh api \
