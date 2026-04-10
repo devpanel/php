@@ -586,11 +586,10 @@ runs:
               # ANON_TOKEN was refreshed by get_inspect_token earlier in this cycle.
               if [[ -n "${ANON_TOKEN}" ]]; then
                 _anon_fetch_status=0
-                if ! fetch_manifest "${ANON_TOKEN}" \
+                fetch_manifest "${ANON_TOKEN}" \
                   "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
-                  "unauthenticated" "trying authenticated Registry API"; then
-                  _anon_fetch_status=$?
-                fi
+                  "unauthenticated" "trying authenticated Registry API" \
+                  || _anon_fetch_status=$?
                 case "${_anon_fetch_status}" in
                   0)
                     # Only accept the unauthenticated result when it contains at
@@ -624,11 +623,10 @@ runs:
                 get_inspect_token AUTH_TOKEN "${_auth_creds}" || true
                 if [[ -n "${AUTH_TOKEN}" ]]; then
                   _auth_fetch_status=0
-                  if ! fetch_manifest "${AUTH_TOKEN}" \
+                  fetch_manifest "${AUTH_TOKEN}" \
                     "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
-                    "authenticated Registry API" "trying imagetools inspect"; then
-                    _auth_fetch_status=$?
-                  fi
+                    "authenticated Registry API" "trying imagetools inspect" \
+                    || _auth_fetch_status=$?
                   case "${_auth_fetch_status}" in
                     0) _seed_status="ok"
                        echo "  ${IMAGE_SEED}: fetched manifest (authenticated)." ;;
