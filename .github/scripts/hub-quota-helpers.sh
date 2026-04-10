@@ -19,15 +19,15 @@ _HUB_QUOTA_ANON_TOKEN_TIME=0
 _HUB_QUOTA_AUTH_TOKEN=""
 _HUB_QUOTA_AUTH_TOKEN_TIME=0
 
-# refresh_hub_token VARNAME [creds_file]
+# refresh_hub_token VARNAME [username [password]]
 # Fetches a ratelimitpreview/test:pull-scoped token from auth.docker.io.
-# Without creds_file the token is anonymous (IP-based quota); with
-# creds_file it is authenticated (account-based quota).  Skips the
-# fetch if the token is still fresh (< TOKEN_MAX_AGE seconds old).
+# Without username/password the token is anonymous (IP-based quota); with
+# username and password it is authenticated (account-based quota).  Skips
+# the fetch if the token is still fresh (< TOKEN_MAX_AGE seconds old).
 # Updates VARNAME and ${VARNAME}_TIME globals in the calling scope.
 # Returns 0 when a valid token is available, 1 when the fetch failed.
 refresh_hub_token() {
-  local _varname="$1" _creds="${2:-}"
+  local _varname="$1" _username="${2:-}" _password="${3:-}"
   local _now _time_var
   _now="$(date +%s)"
   _time_var="${_varname}_TIME"
@@ -35,7 +35,9 @@ refresh_hub_token() {
     return 0
   fi
   local _curl_args=(-sf --connect-timeout 5 --max-time 15)
-  [[ -n "${_creds}" ]] && _curl_args+=(--netrc-file "${_creds}")
+  if [[ -n "${_username}" ]] && [[ -n "${_password}" ]]; then
+    _curl_args+=(--user "${_username}:${_password}")
+  fi
   local _json _new_token
   _json="$(curl "${_curl_args[@]}" \
     "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
@@ -94,27 +96,11 @@ refresh_anon_quota_token() {
 # using credentials from the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN
 # environment variables.  Returns 0 when a valid token is available,
 # 1 when the fetch failed.
-# The temporary netrc file is created only when the cached token is stale,
-# avoiding unnecessary filesystem operations in tight polling loops.
 refresh_auth_quota_token() {
   if [[ -z "${DOCKERHUB_USERNAME:-}" ]] || [[ -z "${DOCKERHUB_TOKEN:-}" ]]; then
     return 1
   fi
-  # Skip filesystem operations when the cached token is still fresh.
-  local _now
-  _now="$(date +%s)"
-  if [[ -n "${_HUB_QUOTA_AUTH_TOKEN}" ]] && \
-     (( _now - ${_HUB_QUOTA_AUTH_TOKEN_TIME:-0} < TOKEN_MAX_AGE )); then
-    return 0
-  fi
-  local _tmp_creds=""
-  _tmp_creds="$(umask 077; mktemp)"
-  printf 'machine auth.docker.io login %s password %s\n' \
-    "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_tmp_creds}"
-  refresh_hub_token _HUB_QUOTA_AUTH_TOKEN "${_tmp_creds}"
-  local _ret=$?
-  rm -f "${_tmp_creds}"
-  return ${_ret}
+  refresh_hub_token _HUB_QUOTA_AUTH_TOKEN "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}"
 }
 
 # anon_quota_remaining
