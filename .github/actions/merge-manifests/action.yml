@@ -468,14 +468,12 @@ runs:
           _total_unseeded=${#_unseeded[@]}
           if [[ ${_total_unseeded} -gt 0 ]]; then
 
-            # ── 4. Calculate the number of anonymous pulls to reserve ──────────
+            # ── 4. Compute remaining build jobs ───────────────────────────────
             # The merge job runs on its OWN runner whose anonymous (IP-based)
-            # quota is completely independent from each build job's runner.
-            # Build jobs' anonymous pre-pulls do not consume this runner's
-            # anonymous bucket, so there is nothing to reserve here.
+            # quota is completely independent from each build job's runner, so
+            # there is no anonymous reserve to track here.
             _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
                                     ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
-            _anon_reserve=0
 
             # ── 5. Calculate the number of authenticated pulls to reserve ──────
             # All jobs (this merge job and all build jobs) share the same
@@ -489,12 +487,11 @@ runs:
             _auth_reserve=${_remaining_builds}
 
             # ── 6. Probe both quotas; compute seeding capacity ─────────────────
-            # Available for seeding: anonymous capacity above the reserve plus
-            # authenticated capacity above the reserve.  Since _anon_reserve=0
-            # (this runner's anonymous IP-based quota is independent of all
-            # build runners), all remaining anonymous quota is available for
-            # seeding here.  Authenticated capacity is reduced by the reserve
-            # so that in-progress build jobs still have room for fallback pulls.
+            # This runner's anonymous (IP-based) quota is fully independent of
+            # all build runners, so all remaining anonymous quota is available
+            # for seeding here.  Authenticated capacity is reduced by the
+            # reserve so that in-progress build jobs still have room for
+            # fallback pulls.
             #
             # Refresh the anonymous inspect token so ANON_TOKEN is current for
             # fetch_manifest later in the same cycle.
@@ -505,8 +502,7 @@ runs:
               _anon_seed=${_total_unseeded}
             elif [[ -n "${_anon_rem}" ]]; then
               _anon_display="${_anon_rem}"
-              _anon_avail=$(( _anon_rem > _anon_reserve \
-                                ? _anon_rem - _anon_reserve : 0 ))
+              _anon_avail=${_anon_rem}
               _anon_seed=${_anon_avail}
             else
               _anon_display="unknown"
