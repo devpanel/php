@@ -584,7 +584,7 @@ runs:
               MANIFEST_BODY=""
 
               # ── Step 1: unauthenticated (anonymous token) ──────────────────
-              # ANON_TOKEN was refreshed in the main shell during the quota check.
+              # ANON_TOKEN was refreshed by get_inspect_token earlier in this cycle.
               if [[ -n "${ANON_TOKEN}" ]]; then
                 fetch_manifest "${ANON_TOKEN}" \
                   "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
