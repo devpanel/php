@@ -332,9 +332,9 @@ runs:
             2>/dev/null)" || _json=""
           _new_token="$(printf '%s' "${_json}" | jq -r '.token // ""' 2>/dev/null)" \
             || _new_token=""
-          printf -v "${_varname}" '%s' "${_new_token}"
-          printf -v "${_varname}_TIME" '%s' "$(date +%s)"
           if [[ -n "${_new_token}" ]]; then
+            printf -v "${_varname}" '%s' "${_new_token}"
+            printf -v "${_varname}_TIME" '%s' "$(date +%s)"
             if [[ -n "${_creds}" ]]; then
               echo "  Obtained authenticated Docker Hub token (for inspect fallback)."
             else

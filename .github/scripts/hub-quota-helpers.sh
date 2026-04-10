@@ -42,9 +42,12 @@ refresh_hub_token() {
     2>/dev/null)" || _json=""
   _new_token="$(printf '%s' "${_json}" | jq -r '.token // ""' 2>/dev/null)" \
     || _new_token=""
-  printf -v "${_varname}" '%s' "${_new_token}"
-  printf -v "${_varname}_TIME" '%s' "$(date +%s)"
-  [[ -n "${_new_token}" ]]
+  if [[ -n "${_new_token}" ]]; then
+    printf -v "${_varname}" '%s' "${_new_token}"
+    printf -v "${_varname}_TIME" '%s' "${_now}"
+    return 0
+  fi
+  return 1
 }
 
 # hub_pull_remaining TOKEN
@@ -92,16 +95,16 @@ refresh_anon_quota_token() {
 # environment variables.  Returns 0 when a valid token is available,
 # 1 when the fetch failed.
 refresh_auth_quota_token() {
-  local _tmp_creds=""
-  if [[ -n "${DOCKERHUB_USERNAME:-}" ]] \
-       && [[ -n "${DOCKERHUB_TOKEN:-}" ]]; then
-    _tmp_creds="$(umask 077; mktemp)"
-    printf 'machine auth.docker.io login %s password %s\n' \
-      "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_tmp_creds}"
+  if [[ -z "${DOCKERHUB_USERNAME:-}" ]] || [[ -z "${DOCKERHUB_TOKEN:-}" ]]; then
+    return 1
   fi
+  local _tmp_creds=""
+  _tmp_creds="$(umask 077; mktemp)"
+  printf 'machine auth.docker.io login %s password %s\n' \
+    "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_tmp_creds}"
   refresh_hub_token _HUB_QUOTA_AUTH_TOKEN "${_tmp_creds}"
   local _ret=$?
-  [[ -n "${_tmp_creds}" ]] && rm -f "${_tmp_creds}"
+  rm -f "${_tmp_creds}"
   return ${_ret}
 }
 

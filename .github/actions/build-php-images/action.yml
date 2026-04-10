@@ -427,7 +427,7 @@ runs:
         elif ${_auth_token_ok}; then
           echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                "Could not determine Docker Hub pull rate limit status" \
-               "(rate-limit probe returned non-2xx); see the failed bake step above." \
+               "(rate-limit probe failed with a non-2xx response or network error); see the failed bake step above." \
                "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
         else
           echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
