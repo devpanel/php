@@ -487,47 +487,35 @@ runs:
             # potential fallback has been accounted for.
             _auth_reserve=${_remaining_builds}
 
-            # ── 6. Probe both quotas; compute seeding capacity ─────────────────
-            # This runner's anonymous (IP-based) quota is fully independent of
-            # all build runners, so all remaining anonymous quota is available
-            # for seeding here.  Authenticated capacity is reduced by the
-            # reserve so that in-progress build jobs still have room for
-            # fallback pulls.
-            #
+            # ── 6. Probe both quotas ───────────────────────────────────────────
             # Refresh the anonymous inspect token so ANON_TOKEN is current for
-            # fetch_manifest later in the same cycle.
+            # fetch_manifest later in the same cycle.  Anonymous quota is probed
+            # for display only; the quota gate uses unreserved *authenticated*
+            # quota because anonymous pulls can silently fall back to
+            # authenticated pulls when the unauthenticated path fails or returns
+            # an incomplete manifest.
             get_inspect_token ANON_TOKEN || true
             _anon_rem="$(anon_quota_remaining)"
             if [[ "${_anon_rem}" == "unlimited" ]]; then
               _anon_display="unlimited"
-              _anon_seed=${_total_unseeded}
             elif [[ -n "${_anon_rem}" ]]; then
               _anon_display="${_anon_rem}"
-              _anon_seed=$(( _anon_rem < _total_unseeded \
-                               ? _anon_rem : _total_unseeded ))
             else
               _anon_display="unknown"
-              _anon_seed=0
             fi
 
             _auth_rem="$(auth_quota_remaining)"
-            _auth_need=$(( _total_unseeded > _anon_seed \
-                             ? _total_unseeded - _anon_seed : 0 ))
             if [[ "${_auth_rem}" == "unlimited" ]]; then
-              _auth_seed=${_auth_need}
+              _auth_avail=${_total_unseeded}
             elif [[ -n "${_auth_rem}" ]]; then
               _auth_avail=$(( _auth_rem > _auth_reserve \
                                 ? _auth_rem - _auth_reserve : 0 ))
-              _auth_seed=$(( _auth_avail < _auth_need \
-                               ? _auth_avail : _auth_need ))
             else
-              _auth_seed=0
+              _auth_avail=0
             fi
 
-            _seed_count=$(( _anon_seed + _auth_seed ))
-
-            # ── 7. If no unreserved pulls remain for own seeding, defer ────────
-            if (( _seed_count == 0 )); then
+            # ── 7. If no unreserved authenticated pulls remain, defer ───────────
+            if (( _auth_avail == 0 )); then
               _do_seed=false
               if (( QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
                 echo "::error::Docker Hub pull quota: deferred seeding for" \
@@ -554,13 +542,6 @@ runs:
               QUOTA_WAIT_ELAPSED=$(( QUOTA_WAIT_ELAPSED + POLL_INTERVAL_SECONDS ))
             else
               QUOTA_WAIT_ELAPSED=0
-              if (( _seed_count < _total_unseeded )); then
-                echo "Docker Hub pull quota: seeding ${_seed_count}/${_total_unseeded}" \
-                     "image(s) this cycle (${_anon_display} anonymous remaining," \
-                     "${_auth_rem:-unknown} authenticated remaining," \
-                     "${_remaining_builds} build job(s) still in progress)."
-                _unseeded=("${_unseeded[@]:0:${_seed_count}}")
-              fi
             fi
           fi
 
@@ -800,9 +781,9 @@ runs:
               if [[ "${_used_auth_path}" == "true" ]] \
                   && [[ "${_auth_rem}" != "unlimited" ]]; then
                 _auth_used=$(( _auth_used + 1 ))
-                if (( _auth_used >= _auth_seed )); then
+                if (( _auth_used >= _auth_avail )); then
                   echo "Unreserved authenticated Docker Hub quota used" \
-                       "(${_auth_used}/${_auth_seed} slot(s));" \
+                       "(${_auth_used}/${_auth_avail} slot(s));" \
                        "ending seeding cycle."
                   break
                 fi
