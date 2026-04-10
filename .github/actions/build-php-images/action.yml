@@ -409,7 +409,10 @@ runs:
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
         _auth_token_ok=false
         refresh_auth_quota_token && _auth_token_ok=true || true
-        rl_remaining="$(auth_quota_remaining)"
+        rl_remaining=""
+        if ${_auth_token_ok}; then
+          rl_remaining="$(hub_pull_remaining "${_HUB_QUOTA_AUTH_TOKEN}")"
+        fi
         if [[ "${rl_remaining}" == "unlimited" ]]; then
           echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
                "Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \

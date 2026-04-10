@@ -380,7 +380,11 @@ runs:
         echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
         echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
         echo "all_versions=${ALL_VERSIONS_OUT}"             >> "$GITHUB_OUTPUT"
-        read -r -a _all_vers_arr <<< "${ALL_VERSIONS_OUT}"
+        if [[ -n "${ALL_VERSIONS_OUT}" ]]; then
+          read -r -a _all_vers_arr <<< "${ALL_VERSIONS_OUT}"
+        else
+          _all_vers_arr=()
+        fi
         echo "all_versions_count=${#_all_vers_arr[@]}"       >> "$GITHUB_OUTPUT"
 
         # Parse configured platforms into an array, trimming whitespace,
