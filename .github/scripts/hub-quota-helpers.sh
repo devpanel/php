@@ -146,7 +146,12 @@ refresh_auth_quota_token() {
     esac
   fi
   if [[ -n "${_body}" ]]; then
-    echo "::debug::Docker Hub auth response: ${_body}" >&2
+    # Sanitize before embedding in a GitHub Actions workflow command:
+    # escape % → %25, CR → %0D, LF → %0A to prevent log/command injection.
+    local _safe_body="${_body//'%'/'%25'}"
+    _safe_body="${_safe_body//$'\r'/'%0D'}"
+    _safe_body="${_safe_body//$'\n'/'%0A'}"
+    echo "::debug::Docker Hub auth response: ${_safe_body}" >&2
   fi
   return 1
 }
