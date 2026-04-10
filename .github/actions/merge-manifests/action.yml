@@ -566,6 +566,7 @@ runs:
 
           if [[ "${_do_seed}" == "true" && ${#_unseeded[@]} -gt 0 ]]; then
             echo "Seeding platform-digest state from existing manifests..."
+            _auth_used=0
             for vs in "${_unseeded[@]}"; do
               version="${vs%%:*}"
               stage="${vs##*:}"
@@ -580,6 +581,7 @@ runs:
               cp "${IMG_PLATFORM_DIGESTS[$key]}" "${cached_backup}" 2>/dev/null || true
 
               _seed_status=""  # "ok" | "not_found" | "error"
+              _used_auth_path=false
               MANIFEST_BODY=""
 
               # ── Step 1: unauthenticated (anonymous token) ──────────────────
@@ -622,6 +624,7 @@ runs:
               if [[ -z "${_seed_status}" ]]; then
                 get_inspect_token AUTH_TOKEN "${_auth_creds}" || true
                 if [[ -n "${AUTH_TOKEN}" ]]; then
+                  _used_auth_path=true
                   _auth_fetch_status=0
                   fetch_manifest "${AUTH_TOKEN}" \
                     "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
@@ -639,6 +642,7 @@ runs:
               # Reached only when both Registry API fetches failed (e.g.
               # network error or unexpected HTTP status).
               if [[ -z "${_seed_status}" ]]; then
+                _used_auth_path=true
                 seed_stderr="$(mktemp)"
                 if MANIFEST_BODY="$(docker buildx imagetools inspect \
                                       "${IMAGE_SEED}" --raw 2>"${seed_stderr}")"; then
@@ -788,6 +792,21 @@ runs:
               esac
 
               IMG_SEEDED[$key]="true"
+              # When authenticated quota is limited, track actual auth-path
+              # usage and break the seeding loop as soon as the unreserved
+              # quota is exhausted.  Remaining unseeded images are left for
+              # the next polling cycle so in-progress build jobs keep their
+              # reserved fallback pull slots.
+              if [[ "${_used_auth_path}" == "true" ]] \
+                  && [[ "${_auth_rem}" != "unlimited" ]]; then
+                _auth_used=$(( _auth_used + 1 ))
+                if (( _auth_used >= _auth_seed )); then
+                  echo "Unreserved authenticated Docker Hub quota used" \
+                       "(${_auth_used}/${_auth_seed} slot(s));" \
+                       "ending seeding cycle."
+                  break
+                fi
+              fi
             done
           fi
 
