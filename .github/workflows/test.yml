@@ -70,7 +70,7 @@ jobs:
         id: effective_sha
         uses: ./.github/actions/effective-before-sha
         with:
-          workflow_files: ${{ github.workflow_ref }}
+          workflow_files: test.yml
           concurrency_group: ${{ github.workflow }}-${{ github.ref }}
           current_sha:    ${{ github.sha }}
           ref_name:       ${{ github.ref_name }}

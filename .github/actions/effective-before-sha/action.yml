@@ -91,30 +91,6 @@ runs:
       run: |
         set -euo pipefail
 
-        # Normalize a workflow_ref value (e.g. "owner/repo/.github/workflows/foo.yml@refs/heads/main")
-        # to a bare filename (e.g. "foo.yml").  If the value is already a bare
-        # filename it is returned unchanged.
-        _normalize_wf() {
-          local v="$1"
-          # Strip everything up to and including "/.github/workflows/" if present.
-          if [[ "$v" == *"/.github/workflows/"* ]]; then
-            v="${v##*/.github/workflows/}"
-            # Strip the "@ref" suffix.
-            v="${v%%@*}"
-          fi
-          printf '%s' "$v"
-        }
-
-        # Normalize each space-separated entry in WORKFLOW_FILES.
-        if [[ -n "${WORKFLOW_FILES:-}" ]]; then
-          read -ra _wf_arr <<< "${WORKFLOW_FILES}"
-          _normalized_wf_files=()
-          for _wf in "${_wf_arr[@]}"; do
-            _normalized_wf_files+=("$(_normalize_wf "$_wf")")
-          done
-          WORKFLOW_FILES="${_normalized_wf_files[*]}"
-        fi
-
         if [[ "${EVENT_NAME}" == "pull_request" ]]; then
           if [[ -z "${PR_BASE_SHA}" ]]; then
             echo "::error::Input 'pr_base_sha' is required when event_name is 'pull_request'."
