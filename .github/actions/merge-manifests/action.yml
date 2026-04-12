@@ -1063,10 +1063,12 @@ runs:
                   fi
                   # Decrement the cycle-level quota snapshot by the number of
                   # refs consumed so that subsequent images in this cycle see
-                  # the updated remaining pulls and avoid 429s.
+                  # the updated remaining pulls and avoid 429s.  Clamp to 0
+                  # so the value never goes negative.
                   if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                      && [[ -n "${_cycle_create_auth_rem}" ]]; then
-                    _cycle_create_auth_rem=$(( _cycle_create_auth_rem - ${#REFS[@]} ))
+                    _new_rem=$(( _cycle_create_auth_rem - ${#REFS[@]} ))
+                    _cycle_create_auth_rem=$(( _new_rem < 0 ? 0 : _new_rem ))
                   fi
                 fi
               fi
