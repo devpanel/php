@@ -188,7 +188,6 @@ runs:
         declare -A IMG_MERGED_PKEYS     # image_key → path to merged-platform-keys set file
         declare -A IMG_DONE             # image_key → "true"/"false"
         declare -A IMG_SEEDED           # image_key → "true" (seeded) / "false" (pending)
-        declare -A IMG_SEED_SOURCE      # image_key → "live" (Docker Hub) / "cached" (fallback)
         declare -A IMG_PLATFORM_DIGESTS # image_key → path to platform-digest state file
         declare -A IMG_LAST_ERROR       # image_key → last imagetools create error text
         #   State file format: one "platform_key<TAB>sha256:digest" per line.
@@ -235,7 +234,6 @@ runs:
           IMG_DIGEST_MERGED[$key]=0
           IMG_DONE[$key]="false"
           IMG_SEEDED[$key]="false"
-          IMG_SEED_SOURCE[$key]=""
           IMG_LAST_ERROR[$key]=""
           touch "${IMG_PROCESSED[$key]}"
           touch "${IMG_MERGED_PKEYS[$key]}"
@@ -705,7 +703,6 @@ runs:
               case "${_seed_status}" in
                 ok)
                   # Fresh manifest obtained; rewrite state file from it.
-                  IMG_SEED_SOURCE[$key]="live"
                   > "${IMG_PLATFORM_DIGESTS[$key]}"
                   # Parse each manifest entry as a JSON object (one per line)
                   # to avoid the bash IFS=$'\t' whitespace-collapsing issue
@@ -811,17 +808,11 @@ runs:
                   ;;
                 not_found)
                   # Tag doesn't exist yet — start fresh.
-                  IMG_SEED_SOURCE[$key]="live"
                   > "${IMG_PLATFORM_DIGESTS[$key]}"
                   echo "  ${IMAGE_SEED}: no existing manifest (first push)."
                   ;;
                 error)
                   # Both inspect attempts failed; fall back to cached state.
-                  # Mark source as "cached" so the already-live fast-path is
-                  # not used — the cached data may not reflect the current
-                  # Docker Hub manifest (e.g., a previous run may have built
-                  # the image but failed before running imagetools create).
-                  IMG_SEED_SOURCE[$key]="cached"
                   if [[ -s "${cached_backup}" ]]; then
                     cp "${cached_backup}" "${IMG_PLATFORM_DIGESTS[$key]}"
                     n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
@@ -915,20 +906,17 @@ runs:
                   DIGEST="$(jq -r \
                     --arg k "${DIGEST_KEY}" '.[$k] // ""' "${digest_file}")"
                   if [[ -n "${DIGEST}" ]]; then
-                    # If seeding is complete from a live Docker Hub inspect and
-                    # this exact platform+digest is already present in the
-                    # manifest, count the platform as merged without pushing
-                    # again.  This avoids redundant imagetools create calls (and
-                    # the associated pull-quota cost) when a manifest that was
-                    # fully merged in a previous run or a previous attempt is
-                    # re-encountered on re-run.
-                    # Do not use cached fallback seed data for this fast-path
-                    # because the cache reflects a previous run's state, not
-                    # Docker Hub's current manifest.  If the previous run built
-                    # the image but failed before imagetools create, the cache
-                    # would incorrectly indicate the platform is already live.
+                    # If seeding is complete and this exact platform+digest is
+                    # already live on Docker Hub, count the platform as merged
+                    # without pushing again.  This avoids redundant imagetools
+                    # create calls (and the associated pull-quota cost) when a
+                    # manifest that was fully merged in a previous run or a
+                    # previous attempt is re-encountered on re-run.  The cached
+                    # state only ever contains digests that were either already
+                    # in Docker Hub at seed time or were written by a successful
+                    # imagetools create, so a cache-fallback seed is equally
+                    # reliable for this check.
                     if [[ "${IMG_SEEDED[$key]}" == "true" ]] && \
-                       [[ "${IMG_SEED_SOURCE[$key]}" == "live" ]] && \
                        grep -qxF "${platform_key}"$'\t'"${DIGEST}" \
                          "${IMG_PLATFORM_DIGESTS[$key]}" 2>/dev/null; then
                       echo "  [${IMAGE}] ${platform_key//-/\/}: already live" \
