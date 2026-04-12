@@ -32,6 +32,7 @@ jobs:
     steps:
       - name: Append commit subject to run name
         env:
+          GH_TOKEN: ${{ github.token }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
           RUN_PREFIX: "docker-build-${{ github.ref }}"
         run: |

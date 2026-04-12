@@ -52,6 +52,7 @@ jobs:
     steps:
       - name: Append subject to run name
         env:
+          GH_TOKEN: ${{ github.token }}
           RUN_PREFIX: "docker-build-${{ github.ref }}"
         run: |
           gh api --method PATCH \
