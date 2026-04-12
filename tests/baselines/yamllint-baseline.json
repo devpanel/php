@@ -1,5 +1,5 @@
 {
   "./.github/actions/detect-versions/action.yml:colons": 3,
   "./.github/actions/merge-manifests/action.yml:colons": 8,
-  "./.github/workflows/test.yml:colons": 16
+  "./.github/workflows/test.yml:colons": 15
 }

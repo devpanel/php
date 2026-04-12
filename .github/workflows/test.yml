@@ -76,7 +76,6 @@ jobs:
           github_token:   ${{ github.token }}
           event_name:     ${{ github.event_name }}
           pr_base_sha:    ${{ github.event.pull_request.base.sha }}
-          event_before:   ${{ github.event.before }}
 
   # Detect PHP versions to test, compute the lowercase GHCR repo name, and
   # pre-seed build downloads for ALL detected versions at once.  Running
