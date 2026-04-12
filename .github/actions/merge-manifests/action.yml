@@ -258,6 +258,10 @@ runs:
         QUOTA_WAIT_ELAPSED=0
         QUOTA_MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
 
+        # Pull-quota accounting for imagetools create: tracks how long
+        # imagetools create has been deferred due to insufficient quota.
+        CREATE_QUOTA_WAIT_ELAPSED=0
+
         # Total parallel build jobs that may each still need one authenticated
         # Docker Hub pull for the base PHP image.  Decremented as digest
         # artifacts arrive (the first digest from a job means its pull already
@@ -813,6 +817,17 @@ runs:
           rm -rf "${CYCLE_DIR}"
           mkdir -p "${CYCLE_DIR}"
 
+          # ── Probe auth quota once per cycle for imagetools create ─────
+          # imagetools create fetches the manifest for every referenced
+          # digest, consuming authenticated Docker Hub pull quota (200/6 h
+          # per account).  Probing once here lets every image in the loop
+          # share the same snapshot and avoids individual 429 errors.
+          _cycle_create_auth_rem="$(auth_quota_remaining)"
+
+          # Tracks whether any imagetools create was deferred or failed in
+          # this cycle so the quota-wait counter can be updated afterwards.
+          _any_create_deferred=false
+
           for vs in "${VERSIONS_STAGES[@]}"; do
             version="${vs%%:*}"
             stage="${vs##*:}"
@@ -823,6 +838,12 @@ runs:
             DIGEST_KEY="${version}-${stage}"
 
             [[ "${IMG_DONE[$key]}" == "true" ]] && continue
+
+            # Per-image flag: set when imagetools create is skipped
+            # (quota exhausted) or fails in this cycle.  Prevents the
+            # completion check from marking the image done so that the
+            # next cycle can retry the create.
+            _img_create_deferred=false
 
             build_done="${VER_BUILD_DONE[$version]}"
             img_dir="${CYCLE_DIR}/${safe_key}"
@@ -968,48 +989,62 @@ runs:
               done < "${REFS_MAP}"
 
               if [[ ${#REFS[@]} -gt 0 ]]; then
-                _create_err_file="$(mktemp)"
-                if docker buildx imagetools create \
-                     --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}"; then
-                  rm -f "${_create_err_file}"
-                  echo "  Updated ${IMAGE} with ${#REFS[@]} platform ref(s)."
-                  # Promote temp map to the persistent state file
-                  cp "${REFS_MAP}" "${IMG_PLATFORM_DIGESTS[$key]}"
-                  # ── Mark these artifacts as processed ────────────────
-                  # Only done here, after a successful create, so that a
-                  # failed create in a prior cycle is retried.
-                  # Record "name:id" so that if a build is retried and the
-                  # artifact is re-uploaded (same name, new id via
-                  # overwrite:true), the updated artifact is recognised as
-                  # new and its digest is re-merged.
-                  for i in "${!NEW_PKEYS[@]}"; do
-                    echo "${ARTIFACT_PREFIX}${NEW_PKEYS[$i]}:${NEW_ARTIFACT_IDS[$i]}" \
-                      >> "${IMG_PROCESSED[$key]}"
-                    # Only increment the merged-platform count if this
-                    # platform_key has not been counted before.  A retried
-                    # build re-uploads the artifact with the same platform_key
-                    # but a new artifact id; without this guard the counter
-                    # would exceed TOTAL_PLATFORMS and mark the image done
-                    # prematurely.
-                    pkey="${NEW_PKEYS[$i]}"
-                    if ! grep -qxF "${pkey}" "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
-                      echo "${pkey}" >> "${IMG_MERGED_PKEYS[$key]}"
-                      IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
-                    fi
-                  done
+                # ── Gate imagetools create on pull quota ──────────────────
+                # imagetools create fetches each referenced digest manifest,
+                # consuming pull quota.  Skip when the cycle-level probe
+                # shows quota exhausted; artifacts stay unprocessed for retry.
+                if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
+                   && [[ -n "${_cycle_create_auth_rem}" ]] \
+                   && (( _cycle_create_auth_rem <= 0 )); then
+                  echo "  [${IMAGE}] Deferring imagetools create: Docker Hub" \
+                       "pull quota exhausted (0 authenticated pulls remaining)." \
+                       "Will retry next cycle."
+                  _img_create_deferred=true
                 else
-                  _create_err="$(cat "${_create_err_file}" 2>/dev/null || true)"
-                  rm -f "${_create_err_file}"
-                  IMG_LAST_ERROR[$key]="${_create_err}"
-                  if [[ -n "${_create_err}" ]]; then
-                    echo "imagetools create failed for ${IMAGE}: ${_create_err}"
+                  _create_err_file="$(mktemp)"
+                  if docker buildx imagetools create \
+                       --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}"; then
+                    rm -f "${_create_err_file}"
+                    echo "  Updated ${IMAGE} with ${#REFS[@]} platform ref(s)."
+                    # Promote temp map to the persistent state file
+                    cp "${REFS_MAP}" "${IMG_PLATFORM_DIGESTS[$key]}"
+                    # ── Mark these artifacts as processed ────────────────
+                    # Only done here, after a successful create, so that a
+                    # failed create in a prior cycle is retried.
+                    # Record "name:id" so that if a build is retried and the
+                    # artifact is re-uploaded (same name, new id via
+                    # overwrite:true), the updated artifact is recognised as
+                    # new and its digest is re-merged.
+                    for i in "${!NEW_PKEYS[@]}"; do
+                      echo "${ARTIFACT_PREFIX}${NEW_PKEYS[$i]}:${NEW_ARTIFACT_IDS[$i]}" \
+                        >> "${IMG_PROCESSED[$key]}"
+                      # Only increment the merged-platform count if this
+                      # platform_key has not been counted before.  A retried
+                      # build re-uploads the artifact with the same platform_key
+                      # but a new artifact id; without this guard the counter
+                      # would exceed TOTAL_PLATFORMS and mark the image done
+                      # prematurely.
+                      pkey="${NEW_PKEYS[$i]}"
+                      if ! grep -qxF "${pkey}" "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
+                        echo "${pkey}" >> "${IMG_MERGED_PKEYS[$key]}"
+                        IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
+                      fi
+                    done
                   else
-                    echo "imagetools create failed for ${IMAGE}."
+                    _create_err="$(cat "${_create_err_file}" 2>/dev/null || true)"
+                    rm -f "${_create_err_file}"
+                    IMG_LAST_ERROR[$key]="${_create_err}"
+                    _img_create_deferred=true
+                    if [[ -n "${_create_err}" ]]; then
+                      echo "imagetools create failed for ${IMAGE}: ${_create_err}"
+                    else
+                      echo "imagetools create failed for ${IMAGE}."
+                    fi
+                    echo "Will retry next cycle."
+                    # State file (IMG_PLATFORM_DIGESTS) is unchanged; the temp
+                    # map is discarded.  New artifacts remain unprocessed so they
+                    # will be retried on the next cycle.
                   fi
-                  echo "Will retry next cycle."
-                  # State file (IMG_PLATFORM_DIGESTS) is unchanged; the temp
-                  # map is discarded.  New artifacts remain unprocessed so they
-                  # will be retried on the next cycle.
                 fi
               fi
             fi
@@ -1017,7 +1052,11 @@ runs:
             # ── Completion checks for this image ──────────────────────────
             digest_merged="${IMG_DIGEST_MERGED[$key]}"
 
-            if [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
+            if [[ "${_img_create_deferred}" == "true" ]]; then
+              # imagetools create was skipped (quota) or failed this cycle.
+              # Propagate the flag so the cycle-level counter is updated.
+              _any_create_deferred=true
+            elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
               if [[ "${digest_merged}" -lt "${TOTAL_PLATFORMS}" ]]; then
                 echo "::warning::Only ${digest_merged}/${TOTAL_PLATFORMS}" \
                      "platform(s) merged for ${IMAGE}; will report at end."
@@ -1030,6 +1069,29 @@ runs:
               echo "All ${TOTAL_PLATFORMS} platform(s) merged for ${IMAGE}."
             fi
           done
+
+          # ── Track create quota wait ────────────────────────────────────────
+          # When every pending image's imagetools create was deferred/failed
+          # in this cycle, increment the elapsed counter and fail the job if
+          # we've been stuck longer than QUOTA_MAX_WAIT.  Reset to zero when
+          # at least one create succeeds so the counter only accumulates
+          # during consecutive quota-blocked cycles.
+          if [[ "${_any_create_deferred}" == "true" ]]; then
+            if (( CREATE_QUOTA_WAIT_ELAPSED >= QUOTA_MAX_WAIT )); then
+              echo "::error::Docker Hub pull quota: imagetools create deferred" \
+                   "for ${CREATE_QUOTA_WAIT_ELAPSED}s with no progress." \
+                   "Wait ~6 hours, then click 'Re-run failed jobs' on this" \
+                   "workflow run's summary page."
+              exit 1
+            fi
+            _auth_rem_display="${_cycle_create_auth_rem:-unknown}"
+            echo "::warning::imagetools create deferred due to Docker Hub pull" \
+                 "quota (${_auth_rem_display} authenticated pulls remaining;" \
+                 "${CREATE_QUOTA_WAIT_ELAPSED}s elapsed)."
+            CREATE_QUOTA_WAIT_ELAPSED=$(( CREATE_QUOTA_WAIT_ELAPSED + POLL_INTERVAL_SECONDS ))
+          else
+            CREATE_QUOTA_WAIT_ELAPSED=0
+          fi
 
           # ── Status summary and sleep ───────────────────────────────────
           DONE_COUNT=0
