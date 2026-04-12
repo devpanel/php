@@ -395,8 +395,9 @@ runs:
     # Uploaded unconditionally (success or failure) so the merge job can detect
     # when all per-platform builds have finished.  Named
     # "build-done-a{RUN_ATTEMPT}-{VERSION}-{platform_key}" so the merge job can
-    # cross-reference the encoded attempt with the Jobs API and ignore stale
-    # markers from a previous failed attempt when re-running.
+    # compare the encoded attempt directly against GITHUB_RUN_ATTEMPT (a default
+    # GitHub Actions environment variable automatically set on every runner) and
+    # ignore stale markers from a previous failed attempt when re-running.
 
     # Diagnostic step: when any bake stage failed, probe Docker Hub's pull
     # rate-limit endpoint and emit an actionable error message.
