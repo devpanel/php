@@ -422,6 +422,17 @@ runs:
           # any other attempt are never even parsed.  GITHUB_RUN_ATTEMPT is a
           # default GitHub Actions environment variable set automatically on
           # every runner — no API call needed.
+          #
+          # On a partial re-run ("Re-run failed jobs"), successful jobs from the
+          # previous attempt are not re-run and therefore do not upload new
+          # current-attempt build-done markers.  In that case
+          # VER_BUILD_DONE[$version] will never reach TOTAL_PLATFORMS for the
+          # version; the merge still completes because the image's completion
+          # check has a second condition: digest_merged >= TOTAL_PLATFORMS.
+          # Non-re-run platforms match the already-live fast-path (their
+          # existing digest artifacts are matched against the seeded Docker Hub
+          # manifest) so they are counted as merged without a new imagetools
+          # create, and digest_merged reaches TOTAL_PLATFORMS normally.
           while IFS=$'\t' read -r aname _; do
             [[ -z "${aname}" ]] && continue
             [[ "${aname}" == "build-done-a${GITHUB_RUN_ATTEMPT}-"* ]] || continue
