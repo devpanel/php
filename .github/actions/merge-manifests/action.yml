@@ -258,14 +258,11 @@ runs:
         QUOTA_WAIT_ELAPSED=0
         QUOTA_MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
 
-        # Pull-quota accounting for imagetools create: wall-clock timestamp
-        # (seconds since epoch) of the first cycle in which any imagetools
-        # create was deferred or failed.  Reset to 0 when a cycle completes
-        # with no deferrals.  Used to compute actual elapsed wait time so
-        # that the QUOTA_MAX_WAIT threshold is reliably enforced in real
-        # time (rather than underestimating via POLL_INTERVAL_SECONDS * cycles,
-        # which ignores artifact-download and imagetools processing overhead).
-        _create_quota_wait_start=0
+        # Wall-clock job start time (seconds since epoch).  Used by the
+        # imagetools create quota block to compute actual elapsed job time so
+        # that QUOTA_MAX_WAIT is enforced against real time and the job always
+        # exits before GitHub's hard job-timeout kills it mid-cleanup.
+        started_at=$(date +%s)
 
         # Total parallel build jobs that may each still need one authenticated
         # Docker Hub pull for the base PHP image.  Decremented as digest
@@ -1078,16 +1075,11 @@ runs:
           # ── Track create quota wait ────────────────────────────────────────
           # When any pending image's imagetools create was deferred or failed
           # in this cycle, check the quota signal and log an appropriate
-          # warning.  Fail the job when actual wall-clock time since the first
-          # deferral exceeds QUOTA_MAX_WAIT.
-          # Reset only on cycles where no create was deferred so the elapsed
-          # counter accumulates during consecutive deferral cycles.
+          # warning.  Fail the job when total job elapsed time since startup
+          # exceeds QUOTA_MAX_WAIT so there is always time for cleanup steps
+          # before GitHub's hard job-timeout.
           if [[ "${_any_create_deferred}" == "true" ]]; then
-            # Capture the wall-clock start of the first consecutive deferral.
-            if (( _create_quota_wait_start == 0 )); then
-              _create_quota_wait_start=$(date +%s)
-            fi
-            _create_elapsed=$(( $(date +%s) - _create_quota_wait_start ))
+            _create_elapsed=$(( $(date +%s) - started_at ))
             if (( _create_elapsed >= QUOTA_MAX_WAIT )); then
               echo "::error::Docker Hub pull quota: imagetools create deferred" \
                    "for ${_create_elapsed}s with no progress." \
@@ -1107,8 +1099,6 @@ runs:
                    "${_create_elapsed}s elapsed)." \
                    "Check earlier imagetools create logs for the underlying failure."
             fi
-          else
-            _create_quota_wait_start=0
           fi
 
           # ── Status summary and sleep ───────────────────────────────────
