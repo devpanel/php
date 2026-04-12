@@ -201,12 +201,12 @@ runs:
         # so we track it per version, not per stage.
         declare -A VER_BUILD_DONE    # version → count of build-done markers seen
 
-        # File tracking all build-done artifact names we have already processed
-        # (both valid current-attempt markers that were counted and stale
-        # wrong-attempt markers that were logged once).  Checked first on every
-        # cycle to avoid double-counting valid markers or re-logging stale ones.
-        BUILD_DONE_SEEN_FILE="${WORK_DIR}/build-done-seen.txt"
-        touch "${BUILD_DONE_SEEN_FILE}"
+        # In-memory set of build-done artifact names already counted this run.
+        # Prevents double-counting when the artifact list is re-read each cycle.
+        # Only current-attempt markers (name prefix "build-done-a${GITHUB_RUN_ATTEMPT}-")
+        # are ever added here; markers from other attempts are ignored by the
+        # prefix filter and never reach this set.
+        declare -A BUILD_DONE_SEEN   # artifact_name → 1
 
         # File tracking unique "VERSION:platform_key" job keys for which at
         # least one digest artifact has been seen.  A digest upload means that
@@ -417,37 +417,27 @@ runs:
 
           # ── Count new build-done markers (per version, shared across stages) ─
           # Format: "build-done-a{ATTEMPT}-{VERSION}-{platform_key}"
-          # Only markers whose encoded attempt matches GITHUB_RUN_ATTEMPT (the
-          # workflow-run-level attempt number shared by every job in this run)
-          # are counted as valid completion signals.  All processed markers
-          # (valid or stale) are added to BUILD_DONE_SEEN_FILE on first
-          # encounter so they are silently skipped on future polling cycles.
+          # Only markers for the current run attempt are considered; the prefix
+          # filter "build-done-a${GITHUB_RUN_ATTEMPT}-" ensures markers from
+          # any other attempt are never even parsed.  GITHUB_RUN_ATTEMPT is a
+          # default GitHub Actions environment variable set automatically on
+          # every runner — no API call needed.
           while IFS=$'\t' read -r aname _; do
             [[ -z "${aname}" ]] && continue
-            [[ "${aname}" == "build-done-a"* ]] || continue
-            grep -qxF "${aname}" "${BUILD_DONE_SEEN_FILE}" 2>/dev/null && continue
+            [[ "${aname}" == "build-done-a${GITHUB_RUN_ATTEMPT}-"* ]] || continue
+            [[ -n "${BUILD_DONE_SEEN[$aname]+set}" ]] && continue
 
             # Parse: build-done-a{attempt}-{version}-{platform_key}
-            _bd_rest="${aname#build-done-a}"      # "{attempt}-{version}-{platform_key}"
-            _bd_attempt="${_bd_rest%%-*}"          # attempt number (before first dash)
-            _bd_verplat="${_bd_rest#*-}"           # "{version}-{platform_key}"
-            # Skip malformed names (non-numeric attempt or missing components).
-            [[ "${_bd_attempt}" =~ ^[0-9]+$ ]] || continue
+            # (attempt already validated by the prefix filter above)
+            _bd_verplat="${aname#"build-done-a${GITHUB_RUN_ATTEMPT}-"}"
             [[ -n "${_bd_verplat}" && "${_bd_verplat}" == *"-"* ]] || continue
 
             for version in "${!VER_BUILD_DONE[@]}"; do
               if [[ "${_bd_verplat}" == "${version}-"* ]]; then
-                echo "${aname}" >> "${BUILD_DONE_SEEN_FILE}"
-                if [[ "${_bd_attempt}" == "${GITHUB_RUN_ATTEMPT}" ]]; then
-                  VER_BUILD_DONE[$version]=$(( VER_BUILD_DONE[$version] + 1 ))
-                  echo "  Build-done marker: ${aname}" \
-                       "(${VER_BUILD_DONE[$version]}/${TOTAL_PLATFORMS} for v${version})"
-                else
-                  _bd_pkey="${_bd_verplat#"${version}-"}"
-                  echo "  Stale build-done marker skipped: ${aname}" \
-                       "(attempt ${_bd_attempt}, expected ${GITHUB_RUN_ATTEMPT}" \
-                       "for ${version}/${_bd_pkey})"
-                fi
+                BUILD_DONE_SEEN[$aname]=1
+                VER_BUILD_DONE[$version]=$(( VER_BUILD_DONE[$version] + 1 ))
+                echo "  Build-done marker: ${aname}" \
+                     "(${VER_BUILD_DONE[$version]}/${TOTAL_PLATFORMS} for v${version})"
                 break
               fi
             done
