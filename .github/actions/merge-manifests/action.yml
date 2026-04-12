@@ -1007,14 +1007,16 @@ runs:
               if [[ ${#REFS[@]} -gt 0 ]]; then
                 # ── Gate imagetools create on pull quota ──────────────────
                 # imagetools create fetches each referenced digest manifest,
-                # consuming pull quota.  Partial completion is allowed: proceed
-                # whenever any quota remains (>= 1) and defer only when the
-                # snapshot is fully exhausted.  After a create attempt the
-                # snapshot is decremented by ${#REFS[@]}, or set to 0 when
-                # remaining < ${#REFS[@]}, so it never goes negative.  The
-                # snapshot may be out of sync with Docker Hub's actual counter
-                # (e.g. if a create consumed fewer or more refs than expected);
-                # this is corrected by re-probing at the start of each cycle.
+                # consuming pull quota.  Proceed whenever any quota remains
+                # (>= 1); defer only when the snapshot is exhausted (< 1).
+                # After a create attempt the snapshot is decremented by
+                # ${#REFS[@]}.  The snapshot may fall below 0 if Docker Hub's
+                # actual remaining count is lower than ours (e.g. another
+                # process consumed quota between the probe and this create).
+                # A negative snapshot is also < 1, so the gate defers all
+                # subsequent images in this cycle correctly.  The snapshot is
+                # re-probed from Docker Hub at the start of each cycle, which
+                # corrects any such discrepancy.
                 if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                    && [[ -n "${_cycle_create_auth_rem}" ]] \
                    && (( _cycle_create_auth_rem < 1 )); then
@@ -1069,17 +1071,16 @@ runs:
                   fi
                   # Decrement the cycle-level quota snapshot by the number of
                   # refs consumed so that subsequent images in this cycle see
-                  # the updated remaining count.  When remaining < ${#REFS[@]}
-                  # (partial completion was attempted), set the snapshot to 0
-                  # rather than subtracting, so it never goes negative and
-                  # subsequent images correctly defer.
+                  # the updated remaining count.  The snapshot may go negative
+                  # if Docker Hub's actual remaining count differs from ours
+                  # (e.g. another process consumed quota between the probe and
+                  # this create).  Any negative value is < 1 so the gate above
+                  # will defer all remaining images in this cycle.  The snapshot
+                  # is re-probed from Docker Hub at the start of each cycle,
+                  # which corrects any such discrepancy.
                   if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                      && [[ -n "${_cycle_create_auth_rem}" ]]; then
-                    if (( _cycle_create_auth_rem >= ${#REFS[@]} )); then
-                      _cycle_create_auth_rem=$(( _cycle_create_auth_rem - ${#REFS[@]} ))
-                    else
-                      _cycle_create_auth_rem=0
-                    fi
+                    _cycle_create_auth_rem=$(( _cycle_create_auth_rem - ${#REFS[@]} ))
                   fi
                 fi
               fi
