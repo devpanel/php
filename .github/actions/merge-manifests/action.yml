@@ -98,6 +98,13 @@ inputs:
       reserved count decrements, allowing seeding to proceed sooner.
       Defaults to 0 (no build-job quota reserved).
     default: '0'
+  run_started_at:
+    description: >
+      ISO 8601 timestamp of when the workflow run started.
+      Pass github.run_started_at from the calling workflow.
+      Used to measure total elapsed job time for the QUOTA_MAX_WAIT safety
+      exit so the job always terminates before GitHub's hard job-timeout.
+    required: true
 
 runs:
   using: composite
@@ -148,6 +155,7 @@ runs:
         DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
         BUILD_MATRIX_LENGTH: ${{ inputs.build_matrix_length }}
+        RUN_STARTED_AT: ${{ inputs.run_started_at }}
       run: |
         set -euo pipefail
 
@@ -258,16 +266,14 @@ runs:
         QUOTA_WAIT_ELAPSED=0
         QUOTA_MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
 
-        # Wall-clock job start time (seconds since epoch).  Fetched from the
-        # GitHub API (run_started_at) so it reflects the actual workflow run
-        # start rather than the moment this step begins executing.  Used by
-        # the imagetools create quota block to enforce QUOTA_MAX_WAIT against
-        # real elapsed time and guarantee the job exits before GitHub's hard
-        # job-timeout so cleanup steps always run.
-        _run_started_at_iso="$(gh api \
-          "repos/${GITHUB_REPO}/actions/runs/${RUN_ID}" \
-          --jq '.run_started_at' 2>/dev/null)" \
-          && started_at="$(date -d "${_run_started_at_iso}" +%s 2>/dev/null)" \
+        # Wall-clock job start time (seconds since epoch).  Derived from the
+        # run_started_at input (github.run_started_at from the calling
+        # workflow) so it reflects the actual workflow run start rather than
+        # the moment this step begins executing.  Used by the imagetools create
+        # quota block to enforce QUOTA_MAX_WAIT against real elapsed time and
+        # guarantee the job exits before GitHub's hard job-timeout so cleanup
+        # steps always run.  Falls back to date +%s on conversion failure.
+        started_at="$(date -d "${RUN_STARTED_AT}" +%s 2>/dev/null)" \
           || started_at="$(date +%s)"
 
         # Total parallel build jobs that may each still need one authenticated
