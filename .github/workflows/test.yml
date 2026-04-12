@@ -1,5 +1,5 @@
 name: Test
-run-name: "${{ github.workflow }}-${{ github.ref }}: ${{ github.event.head_commit.message || github.event.pull_request.title }}"
+run-name: "${{ github.workflow }}-${{ github.ref }}"
 
 on:
   push:
@@ -13,6 +13,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  rename-run:
+    name: Rename run
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Append commit subject to run name
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message || github.event.pull_request.title }}
+          RUN_PREFIX: "${{ github.workflow }}-${{ github.ref }}"
+        run: |
+          subject=$(printf '%s' "${COMMIT_MSG}" | head -1)
+          if [ "${#subject}" -gt 72 ]; then
+            subject="${subject:0:72}..."
+          fi
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            -f display_title="${RUN_PREFIX}: ${subject}"
+
   lint-yaml:
     name: Lint YAML
     runs-on: ubuntu-latest
