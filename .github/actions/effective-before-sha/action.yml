@@ -22,21 +22,21 @@ description: >
 inputs:
   workflow_files:
     description: >
-      Space-separated list of workflow filenames (or github.workflow_ref
-      values) to query for successful runs.  Each entry accepts either a
-      bare filename (e.g. "test.yml") or the full github.workflow_ref
-      value (e.g. the value of github.workflow_ref).
+      Space-separated list of bare workflow filenames (e.g. "test.yml")
+      to query for successful runs.  Full github.workflow_ref values are
+      not supported; pass only bare filenames or numeric workflow IDs.
     required: false
     default: ''
   concurrency_group:
     description: >
-      The concurrency group prefix embedded in the calling workflow's
-      run-name (e.g. "docker-build-refs/heads/main").  Workflow runs
+      The concurrency group expression used in the calling workflow's
+      top-level concurrency.group field, embedded into run-name as a
+      prefix (e.g. "docker-build-refs/heads/main").  Workflow runs
       whose display_title starts with this value followed by ": " are
       collected as candidates first, so only runs from the same
       concurrency slot are matched.  Set this to the same expression
-      used as the concurrency group in the workflow's top-level
-      run-name field.
+      used in the workflow's top-level concurrency.group key and
+      embed that value into run-name as the prefix.
     required: true
   current_sha:
     description: The current commit SHA (github.sha).
