@@ -139,21 +139,33 @@ runs:
             --jq '[.workflow_runs[] | {sha: .head_sha, path: .path}]' \
             2>/dev/null || echo "[]")
 
-          # For each unique workflow path (unique_by ensures one API call per
-          # path), fetch the YAML at a representative run's head_sha and check
-          # whether the concurrency group matches.
+          # For each unique workflow path in those runs, check whether its
+          # concurrency group template matches WF_GROUP.
+          #
+          # Fast path (active workflow): the file is in the local checkout, so
+          # use yq directly — no API call needed.
+          #
+          # Slow path (renamed/deleted workflow): the file is gone from the
+          # checkout; fetch the YAML via the contents API at the run's own
+          # head_sha, where the file still existed.  This is only reached for
+          # workflows that were renamed or deleted, which is rare (typically
+          # 0-1 extra API calls total).
           while IFS= read -r run; do
             run_sha=$(printf '%s' "$run" | jq -r '.sha')
             run_path=$(printf '%s' "$run" | jq -r '.path')
 
-            run_group=$(gh api \
-              "repos/${REPOSITORY}/contents/${run_path}?ref=${run_sha}" \
-              --jq '.content' 2>/dev/null \
-              | base64 -d 2>/dev/null \
-              | yq eval '.concurrency.group' - 2>/dev/null \
-              || true)
+            if [[ -f "$run_path" ]]; then
+              run_group=$(yq eval '.concurrency.group' "$run_path" 2>/dev/null || true)
+            else
+              run_group=$(gh api \
+                "repos/${REPOSITORY}/contents/${run_path}?ref=${run_sha}" \
+                --jq '.content // empty' 2>/dev/null \
+                | base64 -d 2>/dev/null \
+                | yq eval '.concurrency.group' - 2>/dev/null \
+                || true)
+            fi
 
-            if [[ "$run_group" == "$WF_GROUP" ]]; then
+            if [[ -n "$run_group" && "$run_group" != "null" && "$run_group" == "$WF_GROUP" ]]; then
               # Collect every head_sha from runs with this workflow path.
               while IFS= read -r sha; do
                 CANDIDATES+="${sha}"$'\n'
