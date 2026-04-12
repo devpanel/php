@@ -1010,11 +1010,12 @@ runs:
                 # consuming pull quota.  Proceed while any quota remains;
                 # skip only when the cycle-level snapshot has reached 0 so
                 # that each cycle consumes as many pulls as are available.
-                # The snapshot is decremented after each attempt and clamped
-                # to 0, so it never goes negative.
+                # The snapshot is decremented after each create attempt.  If
+                # the quota is tracked correctly it will never go negative;
+                # a negative value exposes a logic flaw.
                 if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                    && [[ -n "${_cycle_create_auth_rem}" ]] \
-                   && (( _cycle_create_auth_rem <= 0 )); then
+                   && (( _cycle_create_auth_rem < 1 )); then
                   echo "  [${IMAGE}] Deferring imagetools create: Docker Hub" \
                        "pull quota exhausted (0 authenticated pulls remaining)." \
                        "Will retry next cycle."
@@ -1111,7 +1112,7 @@ runs:
             _quota_confirmed=false
             if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                && [[ -n "${_cycle_create_auth_rem}" ]] \
-               && (( _cycle_create_auth_rem <= 0 )); then
+               && (( _cycle_create_auth_rem < 1 )); then
               _quota_confirmed=true
             fi
             if (( _create_elapsed >= QUOTA_MAX_WAIT )); then
