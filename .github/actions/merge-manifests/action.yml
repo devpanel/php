@@ -835,7 +835,9 @@ runs:
           # imagetools create fetches the manifest for every referenced
           # digest, consuming authenticated Docker Hub pull quota (200/6 h
           # per account).  Probing once here lets every image in the loop
-          # share the same snapshot and avoids individual 429 errors.
+          # share the same snapshot; the snapshot is decremented by the
+          # number of refs after each attempt so later images in the cycle
+          # see the updated quota and avoid 429s.
           _cycle_create_auth_rem="$(auth_quota_remaining)"
 
           # Tracks whether any imagetools create was deferred or failed in
@@ -1059,6 +1061,13 @@ runs:
                     # map is discarded.  New artifacts remain unprocessed so they
                     # will be retried on the next cycle.
                   fi
+                  # Decrement the cycle-level quota snapshot by the number of
+                  # refs consumed so that subsequent images in this cycle see
+                  # the updated remaining pulls and avoid 429s.
+                  if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
+                     && [[ -n "${_cycle_create_auth_rem}" ]]; then
+                    _cycle_create_auth_rem=$(( _cycle_create_auth_rem - ${#REFS[@]} ))
+                  fi
                 fi
               fi
             fi
@@ -1092,15 +1101,33 @@ runs:
           # before GitHub's hard job-timeout.
           if [[ "${_any_create_deferred}" == "true" ]]; then
             _create_elapsed=$(( $(date +%s) - started_at ))
+            _auth_rem_display="${_cycle_create_auth_rem:-unknown}"
+            # Quota-confirmed: probe was 0 at cycle start, or the snapshot was
+            # decremented to 0/negative by actual create attempts this cycle.
+            _quota_confirmed=false
+            if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
+               && [[ -n "${_cycle_create_auth_rem}" ]] \
+               && (( _cycle_create_auth_rem <= 0 )); then
+              _quota_confirmed=true
+            fi
             if (( _create_elapsed >= QUOTA_MAX_WAIT )); then
-              echo "::error::Docker Hub pull quota: imagetools create deferred" \
-                   "for ${_create_elapsed}s with no progress." \
-                   "Wait ~6 hours, then click 'Re-run failed jobs' on this" \
-                   "workflow run's summary page."
+              if [[ "${_quota_confirmed}" == "true" ]]; then
+                echo "::error::Docker Hub pull quota: imagetools create deferred" \
+                     "for ${_create_elapsed}s with no progress" \
+                     "(${_auth_rem_display} authenticated pulls remaining)." \
+                     "Wait ~6 hours, then click 'Re-run failed jobs' on this" \
+                     "workflow run's summary page."
+              else
+                echo "::error::One or more imagetools create operations failed" \
+                     "or remained deferred for ${_create_elapsed}s without a" \
+                     "confirmed Docker Hub quota signal" \
+                     "(${_auth_rem_display} authenticated pulls remaining)." \
+                     "Check earlier imagetools create logs for the underlying" \
+                     "failure before re-running this workflow."
+              fi
               exit 1
             fi
-            _auth_rem_display="${_cycle_create_auth_rem:-unknown}"
-            if [[ "${_cycle_create_auth_rem:-}" == "0" ]]; then
+            if [[ "${_quota_confirmed}" == "true" ]]; then
               echo "::warning::imagetools create deferred due to Docker Hub pull" \
                    "quota (${_auth_rem_display} authenticated pulls remaining;" \
                    "${_create_elapsed}s elapsed)."
