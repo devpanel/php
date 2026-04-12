@@ -393,9 +393,11 @@ runs:
 
     # ── Build-done marker ──────────────────────────────────────────────────────
     # Uploaded unconditionally (success or failure) so the merge job can detect
-    # when all per-platform builds have finished — without querying the jobs API.
-    # Named "build-done-{VERSION}-{platform_key}" so each merge job can count
-    # how many platform builds are complete for its version.
+    # when all per-platform builds have finished.  Named
+    # "build-done-a{RUN_ATTEMPT}-{VERSION}-{platform_key}" so the merge job can
+    # compare the encoded attempt directly against GITHUB_RUN_ATTEMPT (a default
+    # GitHub Actions environment variable automatically set on every runner) and
+    # ignore stale markers from a previous failed attempt when re-running.
 
     # Diagnostic step: when any bake stage failed, probe Docker Hub's pull
     # rate-limit endpoint and emit an actionable error message.
@@ -470,7 +472,7 @@ runs:
       if: always() && steps.build-done-marker.outputs.platform_key != ''
       uses: actions/upload-artifact@v7
       with:
-        name: build-done-${{ steps.build-done-marker.outputs.version }}-${{ steps.build-done-marker.outputs.platform_key }}
+        name: build-done-a${{ github.run_attempt }}-${{ steps.build-done-marker.outputs.version }}-${{ steps.build-done-marker.outputs.platform_key }}
         path: /tmp/build-done/${{ steps.build-done-marker.outputs.platform_key }}.txt
         if-no-files-found: error
         retention-days: 1

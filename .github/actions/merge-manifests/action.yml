@@ -18,15 +18,25 @@ description: >
      a manifest list built from every entry in the state file — existing
      platforms plus every newly-built platform.
 
-  2. Build-done markers ("build-done-{VERSION}-{platform_key}"): uploaded by
-     every build job when it finishes (success or failure).  When the count of
-     these markers equals total_platforms all builds for that version are done
-     and the merge loop can exit for all stages of that version.
+  2. Build-done markers ("build-done-a{RUN_ATTEMPT}-{VERSION}-{platform_key}"):
+     uploaded by every build job when it finishes (success or failure).  The
+     encoded run_attempt is compared against GITHUB_RUN_ATTEMPT (which is the
+     same for every job in a workflow run) so that stale markers from a
+     previous failed attempt are not treated as completion signals when the job
+     is re-run.  When the count of verified markers equals total_platforms all
+     builds for that version are done and the merge loop can exit for all
+     stages of that version.
 
   Batching multiple completions into one create call per image avoids
   unnecessary intermediate manifest states and reduces Docker Hub API traffic.
   A single job (not a matrix) is used for all images so that concurrent Docker
   Hub API calls — which quickly exhaust the pull rate limit — are avoided.
+
+  After seeding, each digest artifact is compared against the seeded state.
+  If the platform+digest is already live on Docker Hub (exact match), the
+  artifact is marked processed and counted without calling imagetools create.
+  This prevents redundant pushes (and the associated pull-quota cost) when
+  manifests completed in a previous run or attempt are re-encountered.
 
   To conserve the Docker Hub authenticated-pull quota (200/6 h per account),
   manifest inspection at startup first uses an anonymous Docker Hub Registry
@@ -186,15 +196,17 @@ runs:
         #   imagetools create.  Provides within-run preservation without
         #   relying on a per-cycle inspect.
 
-        # Per-version build-done state.  A single "build-done-{VERSION}-*"
+        # Per-version build-done state.  A single "build-done-a{N}-{VERSION}-*"
         # marker covers all stages (base/secure/advance) for that version,
         # so we track it per version, not per stage.
         declare -A VER_BUILD_DONE    # version → count of build-done markers seen
 
-        # File tracking all build-done artifact names we have already counted
-        # (shared across all versions to avoid double-counting on re-read).
-        BUILD_DONE_SEEN_FILE="${WORK_DIR}/build-done-seen.txt"
-        touch "${BUILD_DONE_SEEN_FILE}"
+        # In-memory set of build-done artifact names already counted this run.
+        # Prevents double-counting when the artifact list is re-read each cycle.
+        # Only current-attempt markers (name prefix "build-done-a${GITHUB_RUN_ATTEMPT}-")
+        # are ever added here; markers from other attempts are ignored by the
+        # prefix filter and never reach this set.
+        declare -A BUILD_DONE_SEEN   # artifact_name → 1
 
         # File tracking unique "VERSION:platform_key" job keys for which at
         # least one digest artifact has been seen.  A digest upload means that
@@ -404,15 +416,36 @@ runs:
           fi
 
           # ── Count new build-done markers (per version, shared across stages) ─
-          # Use shell glob matching rather than grep regex so that dots and
-          # other metacharacters in VERSION are treated as literals.
+          # Format: "build-done-a{ATTEMPT}-{VERSION}-{platform_key}"
+          # Only markers for the current run attempt are considered; the prefix
+          # filter "build-done-a${GITHUB_RUN_ATTEMPT}-" ensures markers from
+          # any other attempt are never even parsed.  GITHUB_RUN_ATTEMPT is a
+          # default GitHub Actions environment variable set automatically on
+          # every runner — no API call needed.
+          #
+          # On a partial re-run ("Re-run failed jobs"), successful jobs from the
+          # previous attempt are not re-run and therefore do not upload new
+          # current-attempt build-done markers.  In that case
+          # VER_BUILD_DONE[$version] will never reach TOTAL_PLATFORMS for the
+          # version; the merge still completes because the image's completion
+          # check has a second condition: digest_merged >= TOTAL_PLATFORMS.
+          # Non-re-run platforms match the already-live fast-path (their
+          # existing digest artifacts are matched against the seeded Docker Hub
+          # manifest) so they are counted as merged without a new imagetools
+          # create, and digest_merged reaches TOTAL_PLATFORMS normally.
           while IFS=$'\t' read -r aname _; do
             [[ -z "${aname}" ]] && continue
-            [[ "${aname}" == "build-done-"* ]] || continue
-            grep -qxF "${aname}" "${BUILD_DONE_SEEN_FILE}" 2>/dev/null && continue
+            [[ "${aname}" == "build-done-a${GITHUB_RUN_ATTEMPT}-"* ]] || continue
+            [[ -n "${BUILD_DONE_SEEN[$aname]+set}" ]] && continue
+
+            # Parse: build-done-a{attempt}-{version}-{platform_key}
+            # (attempt already validated by the prefix filter above)
+            _bd_verplat="${aname#"build-done-a${GITHUB_RUN_ATTEMPT}-"}"
+            [[ -n "${_bd_verplat}" && "${_bd_verplat}" == *"-"* ]] || continue
+
             for version in "${!VER_BUILD_DONE[@]}"; do
-              if [[ "${aname}" == "build-done-${version}-"* ]]; then
-                echo "${aname}" >> "${BUILD_DONE_SEEN_FILE}"
+              if [[ "${_bd_verplat}" == "${version}-"* ]]; then
+                BUILD_DONE_SEEN[$aname]=1
                 VER_BUILD_DONE[$version]=$(( VER_BUILD_DONE[$version] + 1 ))
                 echo "  Build-done marker: ${aname}" \
                      "(${VER_BUILD_DONE[$version]}/${TOTAL_PLATFORMS} for v${version})"
@@ -869,9 +902,32 @@ runs:
                   DIGEST="$(jq -r \
                     --arg k "${DIGEST_KEY}" '.[$k] // ""' "${digest_file}")"
                   if [[ -n "${DIGEST}" ]]; then
-                    NEW_PKEYS+=("${platform_key}")
-                    NEW_PDIGESTS+=("${DIGEST}")
-                    NEW_ARTIFACT_IDS+=("${aid}")
+                    # If seeding is complete and this exact platform+digest is
+                    # already live on Docker Hub, count the platform as merged
+                    # without pushing again.  This avoids redundant imagetools
+                    # create calls (and the associated pull-quota cost) when a
+                    # manifest that was fully merged in a previous run or a
+                    # previous attempt is re-encountered on re-run.  The cached
+                    # state only ever contains digests that were either already
+                    # in Docker Hub at seed time or were written by a successful
+                    # imagetools create, so a cache-fallback seed is equally
+                    # reliable for this check.
+                    if [[ "${IMG_SEEDED[$key]}" == "true" ]] && \
+                       grep -qxF "${platform_key}"$'\t'"${DIGEST}" \
+                         "${IMG_PLATFORM_DIGESTS[$key]}" 2>/dev/null; then
+                      echo "  [${IMAGE}] ${platform_key//-/\/}: already live" \
+                           "(digest matches existing manifest); skipping."
+                      echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
+                      if ! grep -qxF "${platform_key}" \
+                             "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
+                        echo "${platform_key}" >> "${IMG_MERGED_PKEYS[$key]}"
+                        IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
+                      fi
+                    else
+                      NEW_PKEYS+=("${platform_key}")
+                      NEW_PDIGESTS+=("${DIGEST}")
+                      NEW_ARTIFACT_IDS+=("${aid}")
+                    fi
                   elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
                     echo "::warning::${aname}: key '${DIGEST_KEY}' empty;" \
                          "all builds complete, skipping."
