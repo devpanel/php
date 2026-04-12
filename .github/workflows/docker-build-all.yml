@@ -51,6 +51,7 @@ jobs:
       total_platforms: ${{ steps.detect.outputs.total_platforms }}
     steps:
       - name: Append subject to run name
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_PREFIX: "docker-build-${{ github.ref }}"

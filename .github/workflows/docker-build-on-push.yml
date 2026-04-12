@@ -31,6 +31,7 @@ jobs:
       before_sha: ${{ steps.effective_sha.outputs.before_sha }}
     steps:
       - name: Append commit subject to run name
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           COMMIT_MSG: ${{ github.event.pull_request.title || github.event.head_commit.message }}
