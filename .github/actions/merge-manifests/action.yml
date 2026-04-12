@@ -20,11 +20,12 @@ description: >
 
   2. Build-done markers ("build-done-a{RUN_ATTEMPT}-{VERSION}-{platform_key}"):
      uploaded by every build job when it finishes (success or failure).  The
-     encoded run_attempt is cross-referenced with the GitHub Jobs API so that
-     stale markers from a previous failed attempt are not treated as completion
-     signals when the job is re-run.  When the count of verified markers equals
-     total_platforms all builds for that version are done and the merge loop
-     can exit for all stages of that version.
+     encoded run_attempt is compared against GITHUB_RUN_ATTEMPT (which is the
+     same for every job in a workflow run) so that stale markers from a
+     previous failed attempt are not treated as completion signals when the job
+     is re-run.  When the count of verified markers equals total_platforms all
+     builds for that version are done and the merge loop can exit for all
+     stages of that version.
 
   Batching multiple completions into one create call per image avoids
   unnecessary intermediate manifest states and reduces Docker Hub API traffic.
@@ -376,91 +377,9 @@ runs:
         MAX_API_FAILURES=5
         API_FAILURE_COUNT=0
 
-        # ── Per-build-job expected run_attempt (from GitHub Jobs API) ────────
-        # Build-done artifact names include the run_attempt of the build job
-        # (format: "build-done-a{N}-{VERSION}-{platform_key}") so that stale
-        # markers from a previous failed attempt are not counted when re-running.
-        # JOB_ATTEMPT maps "VERSION:platform_key" → expected run_attempt (string).
-        declare -A JOB_ATTEMPT   # "VERSION:platform_key" → run_attempt string
-
-        # Consecutive Jobs API failure counter; after JOBS_API_MAX_FAILURES
-        # back-to-back failures the fallback mode is activated.
-        JOBS_API_FAILURE_COUNT=0
-        # After this many consecutive failures, fall back to accepting any
-        # build-done marker regardless of attempt.  This may cause stale
-        # markers to be counted on re-runs, but is a last resort when the
-        # Jobs API is persistently unavailable.
-        JOBS_API_MAX_FAILURES=10
-        _jobs_api_fallback=false
-
-        # Helper: query the GitHub Jobs API and populate JOB_ATTEMPT.
-        # Only adds NEW entries; a job's run_attempt is stable once assigned.
-        # Updates JOBS_API_FAILURE_COUNT and _jobs_api_fallback globals.
-        # Returns 0 when the API call succeeded, 1 on failure.
-        query_jobs_api() {
-          local _jobs_out _rc=0
-          _jobs_out="$(gh api --paginate \
-            "repos/${GITHUB_REPO}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" \
-            --jq '.jobs[] |
-                  select(.name | test("^build \\([^,]+, .+\\)$")) |
-                  [.name, (.run_attempt | tostring)] | join("\t")' \
-            2>/dev/null)" || _rc=$?
-          if [[ ${_rc} -ne 0 || -z "${_jobs_out}" ]]; then
-            JOBS_API_FAILURE_COUNT=$(( JOBS_API_FAILURE_COUNT + 1 ))
-            echo "  Jobs API query failed (${JOBS_API_FAILURE_COUNT}/${JOBS_API_MAX_FAILURES})."
-            if (( JOBS_API_FAILURE_COUNT >= JOBS_API_MAX_FAILURES )); then
-              echo "::warning::Jobs API unavailable after ${JOBS_API_MAX_FAILURES} attempts;" \
-                   "falling back to accepting build-done markers without attempt validation." \
-                   "On re-runs, stale markers from failed attempts may be counted prematurely."
-              _jobs_api_fallback=true
-            fi
-            return 1
-          fi
-          JOBS_API_FAILURE_COUNT=0
-          local _added=0
-          while IFS=$'\t' read -r _jname _jattempt; do
-            [[ -z "${_jname}" ]] && continue
-            if [[ "${_jname}" =~ ^build\ \(([^,]+),\ (.+)\)$ ]]; then
-              local _jver="${BASH_REMATCH[1]}"
-              local _jplat="${BASH_REMATCH[2]}"
-              # Normalize default platform variants (mirrors detect-versions and
-              # build-php-images normalisation).
-              case "${_jplat}" in
-                */arm64/v8) _jplat="${_jplat%/v8}" ;;
-                */amd64/v1) _jplat="${_jplat%/v1}" ;;
-              esac
-              local _jpkey="${_jplat//\//-}"
-              local _jkey="${_jver}:${_jpkey}"
-              if [[ -z "${JOB_ATTEMPT[${_jkey}]+set}" ]]; then
-                JOB_ATTEMPT["${_jkey}"]="${_jattempt}"
-                (( _added++ )) || true
-              fi
-            fi
-          done <<< "${_jobs_out}"
-          if [[ ${_added} -gt 0 ]]; then
-            echo "  Jobs API: mapped ${_added} new job(s)" \
-                 "(${#JOB_ATTEMPT[@]}/${_build_matrix_length} total)."
-          fi
-          return 0
-        }
-
-        if (( _build_matrix_length > 0 )); then
-          echo "Querying Jobs API to map per-build-job run_attempt..."
-          query_jobs_api || true
-        fi
-
         while true; do
 
           POLL_CYCLE=$(( POLL_CYCLE + 1 ))
-
-          # Re-query Jobs API when the per-job attempt map is incomplete so
-          # that jobs not yet visible during the initial query are picked up.
-          if [[ "${_jobs_api_fallback}" != "true" ]] \
-              && (( _build_matrix_length > 0 )) \
-              && (( ${#JOB_ATTEMPT[@]} < _build_matrix_length )); then
-            echo "Jobs API map incomplete (${#JOB_ATTEMPT[@]}/${_build_matrix_length}); re-querying..."
-            query_jobs_api || true
-          fi
 
           # ── Check if all images are done ───────────────────────────────
           PENDING_COUNT=0
@@ -501,14 +420,11 @@ runs:
 
           # ── Count new build-done markers (per version, shared across stages) ─
           # Format: "build-done-a{ATTEMPT}-{VERSION}-{platform_key}"
-          # Only markers whose encoded attempt matches the per-job expected
-          # attempt (from the Jobs API) are counted as valid completion signals.
-          # Stale markers from a previous attempt are recorded in
-          # BUILD_DONE_STALE_FILE so they are logged once and silently skipped
-          # on future cycles.  When the expected attempt for a job is not yet
-          # known (Jobs API still pending), the marker is deferred to the next
-          # cycle.  In fallback mode (persistent Jobs API failure) all markers
-          # are accepted regardless of attempt.
+          # Only markers whose encoded attempt matches GITHUB_RUN_ATTEMPT (the
+          # workflow-run-level attempt number shared by every job in this run)
+          # are counted as valid completion signals.  Stale markers from a
+          # previous attempt are recorded in BUILD_DONE_STALE_FILE so they are
+          # logged once and silently skipped on future cycles.
           while IFS=$'\t' read -r aname _; do
             [[ -z "${aname}" ]] && continue
             [[ "${aname}" == "build-done-a"* ]] || continue
@@ -525,30 +441,16 @@ runs:
 
             for version in "${!VER_BUILD_DONE[@]}"; do
               if [[ "${_bd_verplat}" == "${version}-"* ]]; then
-                _bd_pkey="${_bd_verplat#"${version}-"}"
-                _expected="${JOB_ATTEMPT["${version}:${_bd_pkey}"]:-}"
-
-                if [[ -z "${_expected}" ]]; then
-                  # Expected attempt not yet known; defer until Jobs API responds.
-                  if [[ "${_jobs_api_fallback}" == "true" ]]; then
-                    # Persistent Jobs API failure; accept any marker as fallback.
-                    echo "${aname}" >> "${BUILD_DONE_SEEN_FILE}"
-                    VER_BUILD_DONE[$version]=$(( VER_BUILD_DONE[$version] + 1 ))
-                    echo "  Build-done marker (fallback): ${aname}" \
-                         "(${VER_BUILD_DONE[$version]}/${TOTAL_PLATFORMS} for v${version})"
-                  fi
-                  break
-                fi
-
-                if [[ "${_bd_attempt}" == "${_expected}" ]]; then
+                if [[ "${_bd_attempt}" == "${GITHUB_RUN_ATTEMPT}" ]]; then
                   echo "${aname}" >> "${BUILD_DONE_SEEN_FILE}"
                   VER_BUILD_DONE[$version]=$(( VER_BUILD_DONE[$version] + 1 ))
                   echo "  Build-done marker: ${aname}" \
                        "(${VER_BUILD_DONE[$version]}/${TOTAL_PLATFORMS} for v${version})"
                 else
+                  _bd_pkey="${_bd_verplat#"${version}-"}"
                   echo "${aname}" >> "${BUILD_DONE_STALE_FILE}"
                   echo "  Stale build-done marker skipped: ${aname}" \
-                       "(attempt ${_bd_attempt}, expected ${_expected}" \
+                       "(attempt ${_bd_attempt}, expected ${GITHUB_RUN_ATTEMPT}" \
                        "for ${version}/${_bd_pkey})"
                 fi
                 break
