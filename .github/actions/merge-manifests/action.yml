@@ -396,7 +396,7 @@ runs:
           _jobs_out="$(gh api --paginate \
             "repos/${GITHUB_REPO}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" \
             --jq '.jobs[] |
-                  select(.name | test("^build \\(")) |
+                  select(.name | test("^build \\([^,]+, .+\\)$")) |
                   [.name, (.run_attempt | tostring)] | join("\t")' \
             2>/dev/null)" || _rc=$?
           if [[ ${_rc} -ne 0 || -z "${_jobs_out}" ]]; then
@@ -417,7 +417,7 @@ runs:
             if [[ "${_jname}" =~ ^build\ \(([^,]+),\ (.+)\)$ ]]; then
               local _jver="${BASH_REMATCH[1]}"
               local _jplat="${BASH_REMATCH[2]}"
-              # Normalise default platform variants (mirrors detect-versions and
+              # Normalize default platform variants (mirrors detect-versions and
               # build-php-images normalisation).
               case "${_jplat}" in
                 */arm64/v8) _jplat="${_jplat%/v8}" ;;
@@ -513,6 +513,9 @@ runs:
             _bd_rest="${aname#build-done-a}"      # "{attempt}-{version}-{platform_key}"
             _bd_attempt="${_bd_rest%%-*}"          # attempt number (before first dash)
             _bd_verplat="${_bd_rest#*-}"           # "{version}-{platform_key}"
+            # Skip malformed names (non-numeric attempt or missing components).
+            [[ "${_bd_attempt}" =~ ^[0-9]+$ ]] || continue
+            [[ -n "${_bd_verplat}" && "${_bd_verplat}" == *"-"* ]] || continue
 
             for version in "${!VER_BUILD_DONE[@]}"; do
               if [[ "${_bd_verplat}" == "${version}-"* ]]; then
