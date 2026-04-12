@@ -1,5 +1,5 @@
 name: Build changed Docker images on push
-run-name: "docker-build-${{ github.ref }}: ${{ github.event.head_commit.message }}"
+run-name: "docker-build-${{ github.ref }}"
 
 on:
   push:
@@ -25,11 +25,26 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     permissions:
-      actions: read
+      actions: write
       contents: read
     outputs:
       before_sha: ${{ steps.effective_sha.outputs.before_sha }}
     steps:
+      - name: Append commit subject to run name
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          RUN_PREFIX: "docker-build-${{ github.ref }}"
+        run: |
+          subject=$(printf '%s' "${COMMIT_MSG}" | head -1)
+          if [ "${#subject}" -gt 72 ]; then
+            subject="${subject:0:71}…"
+          fi
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            -f display_title="${RUN_PREFIX}: ${subject}"
+
       - name: Checkout repository
         uses: actions/checkout@v6
 
