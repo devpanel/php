@@ -1010,13 +1010,11 @@ runs:
                 # consuming pull quota.  Partial completion is allowed: proceed
                 # whenever any quota remains (>= 1) and defer only when the
                 # snapshot is fully exhausted.  After a create attempt the
-                # snapshot is decremented by ${#REFS[@]}.  If the remaining
-                # quota was less than ${#REFS[@]} the decrement may drive the
-                # snapshot negative, but the gate still works correctly for
-                # subsequent images in this cycle because any value < 1
-                # (including negative) triggers a defer.  The snapshot is
-                # re-probed from Docker Hub at the start of each cycle, so any
-                # negative value is corrected before the next cycle begins.
+                # snapshot is decremented by ${#REFS[@]}, or set to 0 when
+                # remaining < ${#REFS[@]}, so it never goes negative.  The
+                # snapshot may be out of sync with Docker Hub's actual counter
+                # (e.g. if a create consumed fewer or more refs than expected);
+                # this is corrected by re-probing at the start of each cycle.
                 if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                    && [[ -n "${_cycle_create_auth_rem}" ]] \
                    && (( _cycle_create_auth_rem < 1 )); then
@@ -1071,13 +1069,17 @@ runs:
                   fi
                   # Decrement the cycle-level quota snapshot by the number of
                   # refs consumed so that subsequent images in this cycle see
-                  # the updated remaining count.  The snapshot may go negative
-                  # if the remaining quota was less than ${#REFS[@]}, but the
-                  # gate above treats any value < 1 (including negative) as
-                  # exhausted, so subsequent images defer correctly.
+                  # the updated remaining count.  When remaining < ${#REFS[@]}
+                  # (partial completion was attempted), set the snapshot to 0
+                  # rather than subtracting, so it never goes negative and
+                  # subsequent images correctly defer.
                   if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                      && [[ -n "${_cycle_create_auth_rem}" ]]; then
-                    _cycle_create_auth_rem=$(( _cycle_create_auth_rem - ${#REFS[@]} ))
+                    if (( _cycle_create_auth_rem >= ${#REFS[@]} )); then
+                      _cycle_create_auth_rem=$(( _cycle_create_auth_rem - ${#REFS[@]} ))
+                    else
+                      _cycle_create_auth_rem=0
+                    fi
                   fi
                 fi
               fi
