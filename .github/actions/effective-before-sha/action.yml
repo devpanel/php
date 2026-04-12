@@ -10,46 +10,35 @@ description: >
   found, returns an empty string (callers should treat that as "build
   everything").
 
-  Workflow discovery (push events only): when current_workflow_file is
-  provided, the action extracts the concurrency group template from that
-  file, then fetches recent successful runs for the branch across ALL
-  workflows.  For each unique workflow path in those runs it fetches the
-  YAML at the run's own head_sha and checks whether the concurrency group
-  template matches.  This correctly handles renamed workflows: the old
-  file is read from the commit where it still existed, so prior runs are
-  still discovered.
-
-  Alternatively, workflow_files can list filenames explicitly (kept for
-  callers such as test.yml whose concurrency group is unique to that
-  workflow and the rename case is not a concern).
-  At least one of current_workflow_file or workflow_files is required.
+  Workflow discovery (push events only): fetches recent successful runs
+  for each file listed in workflow_files.  When run_name is also
+  provided, only runs whose display_title matches run_name are
+  considered; this lets callers embed the concurrency group in the
+  workflow's run-name so that only runs from the same concurrency slot
+  are matched.
 
   Required GITHUB_TOKEN permissions on the calling job:
     actions:  read   (list workflow runs)
     contents: read   (compare commits via the Repos API)
 
 inputs:
-  current_workflow_file:
-    description: >
-      Filename or full github.workflow_ref of the calling workflow.
-      Accepts either a bare filename (e.g. "docker-build-on-push.yml")
-      or the full github.workflow_ref value
-      (e.g. "owner/repo/.github/workflows/docker-build-on-push.yml@refs/heads/main").
-      When provided, the action reads the file from the local checkout
-      (.github/workflows/<name>), extracts its concurrency group
-      template, fetches recent successful runs across all workflows on
-      the branch, and checks each run's workflow YAML (at the run's
-      own commit) to see whether it shares the same group.  Handles
-      workflow renames automatically.
-    required: false
-    default: ''
   workflow_files:
     description: >
       Space-separated list of workflow filenames (or github.workflow_ref
       values) to query for successful runs.  Each entry accepts either a
       bare filename (e.g. "test.yml") or the full github.workflow_ref
-      value.  Used only for push events and only when
-      current_workflow_file is not provided.
+      value (e.g. the value of github.workflow_ref).
+    required: false
+    default: ''
+  run_name:
+    description: >
+      The concurrency group prefix embedded in the calling workflow's
+      run-name (e.g. "docker-build-refs/heads/main").  When provided,
+      only workflow runs whose display_title starts with this value
+      followed by a space are considered as candidates, so runs from a
+      different branch or concurrency slot are excluded.  Set this to
+      the same expression used as the concurrency group in the
+      workflow's top-level run-name field.
     required: false
     default: ''
   current_sha:
@@ -95,8 +84,8 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
-        CURRENT_WORKFLOW_FILE: ${{ inputs.current_workflow_file }}
         WORKFLOW_FILES: ${{ inputs.workflow_files }}
+        RUN_NAME: ${{ inputs.run_name }}
         CURRENT_SHA: ${{ inputs.current_sha }}
         REF_NAME: ${{ inputs.ref_name }}
         REPOSITORY: ${{ inputs.repository }}
@@ -119,7 +108,6 @@ runs:
           printf '%s' "$v"
         }
 
-        CURRENT_WORKFLOW_FILE=$(_normalize_wf "${CURRENT_WORKFLOW_FILE:-}")
         # Normalize each space-separated entry in WORKFLOW_FILES.
         if [[ -n "${WORKFLOW_FILES:-}" ]]; then
           read -ra _wf_arr <<< "${WORKFLOW_FILES}"
@@ -144,77 +132,22 @@ runs:
         # competed for the same concurrency slot as this workflow.
         CANDIDATES=""
 
-        if [[ -n "${CURRENT_WORKFLOW_FILE:-}" ]]; then
-          WF_YAML=".github/workflows/${CURRENT_WORKFLOW_FILE}"
-          if [[ ! -f "$WF_YAML" ]]; then
-            echo "::error::Workflow file '${WF_YAML}' not found in local checkout."
-            exit 1
-          fi
-
-          # Extract the concurrency group template from the local file.
-          # yq returns "null" when the key is absent.
-          WF_GROUP=$(yq eval '.concurrency.group' "$WF_YAML" 2>/dev/null || true)
-          if [[ "$WF_GROUP" == "null" || -z "$WF_GROUP" ]]; then
-            echo "::error::Workflow '${CURRENT_WORKFLOW_FILE}' has no concurrency.group; use workflow_files input instead."
-            exit 1
-          fi
-
-          # Fetch recent successful runs for this branch across ALL workflows.
-          # Each run object includes .path (the workflow file path at that run)
-          # and .head_sha.  Querying all workflows (not just the current
-          # filename) means runs from a renamed workflow are still found: the
-          # old path is fetched from the run's own head_sha where it existed.
-          RUNS_JSON=$(gh api \
-            "repos/${REPOSITORY}/actions/runs?branch=${REF_NAME}&status=success&per_page=50" \
-            --jq '[.workflow_runs[] | {sha: .head_sha, path: .path}]' \
-            2>/dev/null || echo "[]")
-
-          # For each unique workflow path in those runs, check whether its
-          # concurrency group template matches WF_GROUP.
-          #
-          # Fast path (active workflow): the file is in the local checkout, so
-          # use yq directly — no API call needed.
-          #
-          # Slow path (renamed/deleted workflow): the file is gone from the
-          # checkout; fetch the YAML via the contents API at the run's own
-          # head_sha, where the file still existed.  This is only reached for
-          # workflows that were renamed or deleted, which is rare (typically
-          # 0-1 extra API calls total).
-          while IFS= read -r run; do
-            run_sha=$(printf '%s' "$run" | jq -r '.sha')
-            run_path=$(printf '%s' "$run" | jq -r '.path')
-
-            if [[ -f "$run_path" ]]; then
-              run_group=$(yq eval '.concurrency.group' "$run_path" 2>/dev/null || true)
-            else
-              run_group=$(gh api \
-                "repos/${REPOSITORY}/contents/${run_path}?ref=${run_sha}" \
-                --jq '.content // empty' 2>/dev/null \
-                | base64 -d 2>/dev/null \
-                | yq eval '.concurrency.group' - 2>/dev/null \
-                || true)
-            fi
-
-            if [[ -n "$run_group" && "$run_group" != "null" && "$run_group" == "$WF_GROUP" ]]; then
-              # Collect every head_sha from runs with this workflow path.
-              while IFS= read -r sha; do
-                CANDIDATES+="${sha}"$'\n'
-              done < <(printf '%s' "$RUNS_JSON" \
-                | jq -r --arg p "$run_path" '.[] | select(.path == $p) | .sha')
-            fi
-          done < <(printf '%s' "$RUNS_JSON" | jq -c 'unique_by(.path)[]')
-
-        elif [[ -n "${WORKFLOW_FILES:-}" ]]; then
+        if [[ -n "${WORKFLOW_FILES:-}" ]]; then
+          # TODO: Once all workflows have been publishing a run-name equal to
+          # their concurrency group for long enough that no older runs remain
+          # in the search window, remove the workflow_files input entirely and
+          # filter solely by run-name across all workflow runs.
           read -ra WF_ARRAY <<< "${WORKFLOW_FILES}"
           CANDIDATES=$(
             for wf in "${WF_ARRAY[@]}"; do
               gh api \
                 "repos/${REPOSITORY}/actions/workflows/${wf}/runs?branch=${REF_NAME}&status=success&per_page=10" \
-                --jq '.workflow_runs[].head_sha // empty' || true
+                --jq '.workflow_runs[] | select($rn == "" or (.display_title | startswith($rn + " "))) | .head_sha // empty' \
+                --arg rn "${RUN_NAME:-}" || true
             done | (grep . || true)
           )
         else
-          echo "::error::Either 'current_workflow_file' or 'workflow_files' input is required."
+          echo "::error::Input 'workflow_files' is required."
           exit 1
         fi
 
