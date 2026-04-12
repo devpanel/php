@@ -131,9 +131,18 @@ runs:
           echo "::error::Platform must not contain whitespace or newlines. Got '${PLATFORM}'."
           exit 1
         fi
-        echo "platform=${platform_trimmed}"             >> "$GITHUB_OUTPUT"
-        echo "platform_key=${platform_trimmed//\//-}" >> "$GITHUB_OUTPUT"
-        echo "version=${VERSION}"                     >> "$GITHUB_OUTPUT"
+        # Normalize default variants so platform keys stay consistent with the
+        # detect-versions action and the merge-manifests seeding logic.
+        #   linux/arm64/v8 → linux/arm64  (arm64 default variant is v8)
+        #   linux/amd64/v1 → linux/amd64  (amd64 default variant is v1)
+        platform_normalized="${platform_trimmed}"
+        case "${platform_trimmed}" in
+          */arm64/v8) platform_normalized="${platform_trimmed%/v8}" ;;
+          */amd64/v1) platform_normalized="${platform_trimmed%/v1}" ;;
+        esac
+        echo "platform=${platform_normalized}"             >> "$GITHUB_OUTPUT"
+        echo "platform_key=${platform_normalized//\//-}" >> "$GITHUB_OUTPUT"
+        echo "version=${VERSION}"                         >> "$GITHUB_OUTPUT"
 
     # Probe the anonymous Docker Hub quota before attempting the unauthenticated
     # pre-pull below.  When the quota is already at 0 the pre-pull would fail

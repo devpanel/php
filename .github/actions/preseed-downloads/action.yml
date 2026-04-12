@@ -167,7 +167,7 @@ runs:
             fi
             _DOCKERHUB_LOGGED_IN=false
             echo "Pulling ${image} to detect Debian codename (unauthenticated)..." >&2
-            if ! docker pull --quiet "$image" >&2 2>/dev/null; then
+            if ! docker pull --quiet "$image" >/dev/null 2>&1; then
               if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
                 echo "  Unauthenticated pull failed; retrying with Docker Hub credentials..." >&2
                 if echo "${DOCKERHUB_TOKEN}" \
