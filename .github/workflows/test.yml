@@ -117,7 +117,7 @@ jobs:
         run: |
           subject=$(printf '%s' "${COMMIT_MSG}" | head -1)
           if [ "${#subject}" -gt 72 ]; then
-            subject="${subject:0:72}…"
+            subject="${subject:0:71}…"
           fi
           gh api --method PATCH \
             "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
