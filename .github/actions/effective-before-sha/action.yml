@@ -35,7 +35,7 @@ inputs:
       The concurrency group prefix embedded in the calling workflow's
       run-name (e.g. "docker-build-refs/heads/main").  When provided,
       only workflow runs whose display_title starts with this value
-      followed by a space are considered as candidates, so runs from a
+      followed by ": " are considered as candidates, so runs from a
       different branch or concurrency slot are excluded.  Set this to
       the same expression used as the concurrency group in the
       workflow's top-level run-name field.
@@ -142,7 +142,7 @@ runs:
             for wf in "${WF_ARRAY[@]}"; do
               gh api \
                 "repos/${REPOSITORY}/actions/workflows/${wf}/runs?branch=${REF_NAME}&status=success&per_page=10" \
-                --jq '.workflow_runs[] | select($rn == "" or (.display_title | startswith($rn + " "))) | .head_sha // empty' \
+                --jq '.workflow_runs[] | select($rn == "" or (.display_title | startswith($rn + ": "))) | .head_sha // empty' \
                 --arg rn "${RUN_NAME:-}" || true
             done | (grep . || true)
           )

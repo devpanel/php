@@ -1,5 +1,5 @@
 name: Build changed Docker images on push
-run-name: docker-build-${{ github.ref }} @ ${{ github.sha }}
+run-name: "docker-build-${{ github.ref }}: ${{ github.event.head_commit.message }}"
 
 on:
   push:
