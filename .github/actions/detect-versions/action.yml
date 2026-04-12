@@ -96,6 +96,14 @@ outputs:
       pre-seed action may need one authenticated pull per version when the
       codenames cache is cold.
     value: ${{ steps.detect.outputs.all_versions_count }}
+  needed_pulls:
+    description: >
+      Worst-case total number of Docker Hub pulls needed: the sum of
+      build_matrix_length (one pull per build job for the base PHP image)
+      and all_versions_count (one pull per PHP version for the pre-seed
+      codename probe when the cache is cold).  Pass directly to the
+      needed_pulls input of wait-pull-quota.
+    value: ${{ steps.detect.outputs.needed_pulls }}
   tag_suffix:
     description: >
       Docker image tag suffix derived from the branch/ref name.  Empty string
@@ -429,6 +437,7 @@ runs:
           echo "merge_matrix=[]"                    >> "$GITHUB_OUTPUT"
           echo "build_matrix=[]"                    >> "$GITHUB_OUTPUT"
           echo "build_matrix_length=0"              >> "$GITHUB_OUTPUT"
+          echo "needed_pulls=${#_all_vers_arr[@]}"  >> "$GITHUB_OUTPUT"
         else
           echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
 
@@ -476,6 +485,7 @@ runs:
           echo "build_matrix=${BUILD_MATRIX}" >> "$GITHUB_OUTPUT"
           BUILD_MATRIX_LENGTH="$(printf '%s' "${BUILD_MATRIX}" | jq 'length')"
           echo "build_matrix_length=${BUILD_MATRIX_LENGTH}" >> "$GITHUB_OUTPUT"
+          echo "needed_pulls=$(( BUILD_MATRIX_LENGTH + ${#_all_vers_arr[@]} ))" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Compute tag suffix
