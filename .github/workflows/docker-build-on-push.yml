@@ -1,4 +1,5 @@
 name: Build changed Docker images on push
+run-name: "docker-build-${{ github.ref }}: ${{ github.event.head_commit.message }}"
 
 on:
   push:
@@ -24,21 +25,11 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     permissions:
-      actions: write
+      actions: read
       contents: read
     outputs:
       before_sha: ${{ steps.effective_sha.outputs.before_sha }}
     steps:
-      - name: Set run name to short commit message
-        env:
-          GH_TOKEN: ${{ github.token }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
-          RUN_NAME_PREFIX: docker-build-${{ github.ref }}
-        run: |
-          short_msg="$(printf '%s' "$COMMIT_MSG" | head -1)"
-          gh api -X PATCH "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            -f "display_title=${RUN_NAME_PREFIX}: ${short_msg}"
-
       - name: Checkout repository
         uses: actions/checkout@v6
 
