@@ -111,7 +111,7 @@ jobs:
       - name: Append commit subject to run name
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMIT_MSG: ${{ github.event.head_commit.message || github.event.pull_request.title }}
+          COMMIT_MSG: ${{ github.event.pull_request.title || github.event.head_commit.message }}
           RUN_PREFIX: "${{ github.workflow }}-${{ github.ref }}"
         run: |
           subject=$(printf '%s' "${COMMIT_MSG}" | head -1)

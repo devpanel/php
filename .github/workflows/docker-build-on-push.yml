@@ -33,7 +33,7 @@ jobs:
       - name: Append commit subject to run name
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          COMMIT_MSG: ${{ github.event.pull_request.title || github.event.head_commit.message }}
           RUN_PREFIX: "docker-build-${{ github.ref }}"
         run: |
           subject=$(printf '%s' "${COMMIT_MSG}" | head -1)
