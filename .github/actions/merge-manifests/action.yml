@@ -1007,13 +1007,15 @@ runs:
               if [[ ${#REFS[@]} -gt 0 ]]; then
                 # ── Gate imagetools create on pull quota ──────────────────
                 # imagetools create fetches each referenced digest manifest,
-                # consuming pull quota.  Skip when the cycle-level probe
-                # shows quota exhausted; artifacts stay unprocessed for retry.
+                # consuming pull quota.  Skip when the cycle-level snapshot
+                # has fewer remaining pulls than refs needed; artifacts stay
+                # unprocessed for retry next cycle.
                 if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                    && [[ -n "${_cycle_create_auth_rem}" ]] \
-                   && (( _cycle_create_auth_rem <= 0 )); then
+                   && (( _cycle_create_auth_rem < ${#REFS[@]} )); then
                   echo "  [${IMAGE}] Deferring imagetools create: Docker Hub" \
-                       "pull quota exhausted (0 authenticated pulls remaining)." \
+                       "pull quota insufficient (${_cycle_create_auth_rem}" \
+                       "authenticated pulls remaining, ${#REFS[@]} needed)." \
                        "Will retry next cycle."
                   _img_create_deferred=true
                 else
