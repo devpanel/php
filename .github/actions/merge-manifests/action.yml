@@ -258,11 +258,17 @@ runs:
         QUOTA_WAIT_ELAPSED=0
         QUOTA_MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
 
-        # Wall-clock job start time (seconds since epoch).  Used by the
-        # imagetools create quota block to compute actual elapsed job time so
-        # that QUOTA_MAX_WAIT is enforced against real time and the job always
-        # exits before GitHub's hard job-timeout kills it mid-cleanup.
-        started_at=$(date +%s)
+        # Wall-clock job start time (seconds since epoch).  Fetched from the
+        # GitHub API (run_started_at) so it reflects the actual workflow run
+        # start rather than the moment this step begins executing.  Used by
+        # the imagetools create quota block to enforce QUOTA_MAX_WAIT against
+        # real elapsed time and guarantee the job exits before GitHub's hard
+        # job-timeout so cleanup steps always run.
+        _run_started_at_iso="$(gh api \
+          "repos/${GITHUB_REPO}/actions/runs/${RUN_ID}" \
+          --jq '.run_started_at' 2>/dev/null)" \
+          && started_at="$(date -d "${_run_started_at_iso}" +%s 2>/dev/null)" \
+          || started_at="$(date +%s)"
 
         # Total parallel build jobs that may each still need one authenticated
         # Docker Hub pull for the base PHP image.  Decremented as digest
