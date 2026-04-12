@@ -122,7 +122,7 @@ jobs:
         if: steps.detect.outputs.versions != ''
         uses: ./.github/actions/wait-pull-quota
         with:
-          needed_pulls: ${{ fromJSON(steps.detect.outputs.build_matrix_length) + fromJSON(steps.detect.outputs.all_versions_count) }}
+          needed_pulls: ${{ fromJSON(steps.detect.outputs.build_matrix_length) }} + ${{ fromJSON(steps.detect.outputs.all_versions_count) }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           build_matrix_length: ${{ steps.detect.outputs.build_matrix_length }}
