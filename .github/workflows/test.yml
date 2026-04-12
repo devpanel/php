@@ -109,7 +109,6 @@ jobs:
       ghcr_repo:    ${{ steps.ghcr.outputs.repo }}
     steps:
       - name: Append commit subject to run name
-        continue-on-error: true
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message || github.event.pull_request.title }}
           RUN_PREFIX: "${{ github.workflow }}-${{ github.ref }}"
