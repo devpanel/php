@@ -31,6 +31,12 @@ description: >
   A single job (not a matrix) is used for all images so that concurrent Docker
   Hub API calls — which quickly exhaust the pull rate limit — are avoided.
 
+  After seeding, each digest artifact is compared against the seeded state.
+  If the platform+digest is already live on Docker Hub (exact match), the
+  artifact is marked processed and counted without calling imagetools create.
+  This prevents redundant pushes (and the associated pull-quota cost) when
+  manifests completed in a previous run or attempt are re-encountered.
+
   To conserve the Docker Hub authenticated-pull quota (200/6 h per account),
   manifest inspection at startup first uses an anonymous Docker Hub Registry
   API token (100 unauthenticated pulls/6 h from the same IP).  If that fails
@@ -998,9 +1004,28 @@ runs:
                   DIGEST="$(jq -r \
                     --arg k "${DIGEST_KEY}" '.[$k] // ""' "${digest_file}")"
                   if [[ -n "${DIGEST}" ]]; then
-                    NEW_PKEYS+=("${platform_key}")
-                    NEW_PDIGESTS+=("${DIGEST}")
-                    NEW_ARTIFACT_IDS+=("${aid}")
+                    # If seeding is complete and this exact platform+digest is
+                    # already live on Docker Hub, count the platform as merged
+                    # without pushing again.  This avoids redundant imagetools
+                    # create calls (and the associated pull-quota cost) when a
+                    # manifest that was fully merged in a previous run or a
+                    # previous attempt is re-encountered on re-run.
+                    if [[ "${IMG_SEEDED[$key]}" == "true" ]] && \
+                       grep -qxF "${platform_key}"$'\t'"${DIGEST}" \
+                         "${IMG_PLATFORM_DIGESTS[$key]}" 2>/dev/null; then
+                      echo "  [${IMAGE}] ${platform_key//-/\/}: already live" \
+                           "(digest matches existing manifest); skipping."
+                      echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
+                      if ! grep -qxF "${platform_key}" \
+                             "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
+                        echo "${platform_key}" >> "${IMG_MERGED_PKEYS[$key]}"
+                        IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
+                      fi
+                    else
+                      NEW_PKEYS+=("${platform_key}")
+                      NEW_PDIGESTS+=("${DIGEST}")
+                      NEW_ARTIFACT_IDS+=("${aid}")
+                    fi
                   elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
                     echo "::warning::${aname}: key '${DIGEST_KEY}' empty;" \
                          "all builds complete, skipping."
