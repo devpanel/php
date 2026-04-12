@@ -10,12 +10,10 @@ description: >
   found, returns an empty string (callers should treat that as "build
   everything").
 
-  Workflow discovery (push events only): fetches recent successful runs
-  for each file listed in workflow_files.  When concurrency_group is also
-  provided, only runs whose display_title matches concurrency_group are
-  considered; this lets callers embed the concurrency group in the
-  workflow's run-name so that only runs from the same concurrency slot
-  are matched.
+  Workflow discovery (push events only): first fetches recent successful
+  runs whose display_title starts with the concurrency_group prefix (so
+  only runs from the same concurrency slot are matched), then optionally
+  supplements those candidates with runs found via workflow_files.
 
   Required GITHUB_TOKEN permissions on the calling job:
     actions:  read   (list workflow runs)
@@ -33,14 +31,13 @@ inputs:
   concurrency_group:
     description: >
       The concurrency group prefix embedded in the calling workflow's
-      run-name (e.g. "docker-build-refs/heads/main").  When provided,
-      only workflow runs whose display_title starts with this value
-      followed by ": " are considered as candidates, so runs from a
-      different branch or concurrency slot are excluded.  Set this to
-      the same expression used as the concurrency group in the
-      workflow's top-level run-name field.
-    required: false
-    default: ''
+      run-name (e.g. "docker-build-refs/heads/main").  Workflow runs
+      whose display_title starts with this value followed by ": " are
+      collected as candidates first, so only runs from the same
+      concurrency slot are matched.  Set this to the same expression
+      used as the concurrency group in the workflow's top-level
+      run-name field.
+    required: true
   current_sha:
     description: The current commit SHA (github.sha).
     required: true
@@ -85,7 +82,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         WORKFLOW_FILES: ${{ inputs.workflow_files }}
-        RUN_NAME: ${{ inputs.concurrency_group }}
+        CONCURRENCY_GROUP: ${{ inputs.concurrency_group }}
         CURRENT_SHA: ${{ inputs.current_sha }}
         REF_NAME: ${{ inputs.ref_name }}
         REPOSITORY: ${{ inputs.repository }}
@@ -132,23 +129,30 @@ runs:
         # competed for the same concurrency slot as this workflow.
         CANDIDATES=""
 
+        # Step 1: Search by concurrency group embedded in run-name.
+        CG_CANDIDATES=$(
+          gh api \
+            "repos/${REPOSITORY}/actions/runs?branch=${REF_NAME}&status=success&per_page=100" \
+            --jq '.workflow_runs[] | select(.display_title | startswith($rn + ": ")) | .head_sha // empty' \
+            --arg rn "${CONCURRENCY_GROUP}" || true
+        )
+        CANDIDATES="$CG_CANDIDATES"
+
+        # Step 2: Supplement with workflow_files (catches older runs that
+        # pre-date the concurrency group being embedded in run-name).
+        # TODO: see TODO.md — remove workflow_files once no longer needed.
         if [[ -n "${WORKFLOW_FILES:-}" ]]; then
-          # TODO: Once all workflows have been publishing a run-name equal to
-          # their concurrency group for long enough that no older runs remain
-          # in the search window, remove the workflow_files input entirely and
-          # filter solely by run-name across all workflow runs.
           read -ra WF_ARRAY <<< "${WORKFLOW_FILES}"
-          CANDIDATES=$(
+          WF_CANDIDATES=$(
             for wf in "${WF_ARRAY[@]}"; do
               gh api \
                 "repos/${REPOSITORY}/actions/workflows/${wf}/runs?branch=${REF_NAME}&status=success&per_page=10" \
-                --jq '.workflow_runs[] | select($rn == "" or (.display_title | startswith($rn + ": "))) | .head_sha // empty' \
-                --arg rn "${RUN_NAME:-}" || true
+                --jq '.workflow_runs[] | .head_sha // empty' || true
             done | (grep . || true)
           )
-        else
-          echo "::error::Input 'workflow_files' is required."
-          exit 1
+          if [[ -n "$WF_CANDIDATES" ]]; then
+            CANDIDATES=$(printf '%s\n%s' "$CANDIDATES" "$WF_CANDIDATES")
+          fi
         fi
 
         CANDIDATES=$(printf '%s' "$CANDIDATES" | sort -u | (grep . || true))
