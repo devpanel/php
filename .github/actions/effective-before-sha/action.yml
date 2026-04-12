@@ -11,8 +11,8 @@ description: >
   everything").
 
   Workflow discovery (push events only): fetches recent successful runs
-  for each file listed in workflow_files.  When run_name is also
-  provided, only runs whose display_title matches run_name are
+  for each file listed in workflow_files.  When concurrency_group is also
+  provided, only runs whose display_title matches concurrency_group are
   considered; this lets callers embed the concurrency group in the
   workflow's run-name so that only runs from the same concurrency slot
   are matched.
@@ -30,7 +30,7 @@ inputs:
       value (e.g. the value of github.workflow_ref).
     required: false
     default: ''
-  run_name:
+  concurrency_group:
     description: >
       The concurrency group prefix embedded in the calling workflow's
       run-name (e.g. "docker-build-refs/heads/main").  When provided,
@@ -85,7 +85,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         WORKFLOW_FILES: ${{ inputs.workflow_files }}
-        RUN_NAME: ${{ inputs.run_name }}
+        RUN_NAME: ${{ inputs.concurrency_group }}
         CURRENT_SHA: ${{ inputs.current_sha }}
         REF_NAME: ${{ inputs.ref_name }}
         REPOSITORY: ${{ inputs.repository }}
