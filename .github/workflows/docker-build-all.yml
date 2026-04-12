@@ -1,5 +1,5 @@
 name: Build all Docker images
-run-name: "docker-build-${{ github.ref }}"
+run-name: "docker-build-${{ github.ref }}: manual full rebuild"
 
 on:
   workflow_dispatch:
@@ -50,16 +50,6 @@ jobs:
       # when all platform digests have been uploaded.
       total_platforms: ${{ steps.detect.outputs.total_platforms }}
     steps:
-      - name: Append subject to run name
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_PREFIX: "docker-build-${{ github.ref }}"
-        run: |
-          gh api --method PATCH \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-            -f display_title="${RUN_PREFIX}: manual full rebuild"
-
       - name: Checkout repository
         uses: actions/checkout@v6
 
