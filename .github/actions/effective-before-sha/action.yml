@@ -31,7 +31,10 @@ description: >
 inputs:
   current_workflow_file:
     description: >
-      Filename of the calling workflow (e.g. "docker-build-on-push.yml").
+      Filename or full github.workflow_ref of the calling workflow.
+      Accepts either a bare filename (e.g. "docker-build-on-push.yml")
+      or the full github.workflow_ref value
+      (e.g. "owner/repo/.github/workflows/docker-build-on-push.yml@refs/heads/main").
       When provided, the action reads the file from the local checkout
       (.github/workflows/<name>), extracts its concurrency group
       template, fetches recent successful runs across all workflows on
@@ -42,8 +45,10 @@ inputs:
     default: ''
   workflow_files:
     description: >
-      Space-separated list of workflow filenames to query for successful
-      runs (e.g. "test.yml").  Used only for push events and only when
+      Space-separated list of workflow filenames (or github.workflow_ref
+      values) to query for successful runs.  Each entry accepts either a
+      bare filename (e.g. "test.yml") or the full github.workflow_ref
+      value.  Used only for push events and only when
       current_workflow_file is not provided.
     required: false
     default: ''
@@ -99,6 +104,31 @@ runs:
         PR_BASE_SHA: ${{ inputs.pr_base_sha }}
       run: |
         set -euo pipefail
+
+        # Normalize a workflow_ref value (e.g. "owner/repo/.github/workflows/foo.yml@refs/heads/main")
+        # to a bare filename (e.g. "foo.yml").  If the value is already a bare
+        # filename it is returned unchanged.
+        _normalize_wf() {
+          local v="$1"
+          # Strip everything up to and including "/.github/workflows/" if present.
+          if [[ "$v" == *"/.github/workflows/"* ]]; then
+            v="${v##*/.github/workflows/}"
+            # Strip the "@ref" suffix.
+            v="${v%%@*}"
+          fi
+          printf '%s' "$v"
+        }
+
+        CURRENT_WORKFLOW_FILE=$(_normalize_wf "${CURRENT_WORKFLOW_FILE:-}")
+        # Normalize each space-separated entry in WORKFLOW_FILES.
+        if [[ -n "${WORKFLOW_FILES:-}" ]]; then
+          read -ra _wf_arr <<< "${WORKFLOW_FILES}"
+          _normalized_wf_files=()
+          for _wf in "${_wf_arr[@]}"; do
+            _normalized_wf_files+=("$(_normalize_wf "$_wf")")
+          done
+          WORKFLOW_FILES="${_normalized_wf_files[*]}"
+        fi
 
         if [[ "${EVENT_NAME}" == "pull_request" ]]; then
           if [[ -z "${PR_BASE_SHA}" ]]; then

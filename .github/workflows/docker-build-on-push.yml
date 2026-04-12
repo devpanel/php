@@ -36,7 +36,7 @@ jobs:
         id: effective_sha
         uses: ./.github/actions/effective-before-sha
         with:
-          current_workflow_file: docker-build-on-push.yml
+          current_workflow_file: ${{ github.workflow_ref }}
           current_sha: ${{ github.sha }}
           ref_name: ${{ github.ref_name }}
           repository: ${{ github.repository }}
