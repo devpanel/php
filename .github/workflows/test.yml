@@ -121,7 +121,12 @@ jobs:
       - name: Detect PHP versions for build test
         id: versions
         run: |
-          versions_str=$(bash tests/detect-versions.sh --before "${{ needs.prepare.outputs.before_sha }}" --after "${{ github.sha }}" | sort -V | tr '\n' ' ' | sed 's/ $//')
+          before_sha="${{ needs.prepare.outputs.before_sha }}"
+          if [[ -n "$before_sha" ]]; then
+            versions_str=$(bash tests/detect-versions.sh --before "$before_sha" --after "${{ github.sha }}" | sort -V | tr '\n' ' ' | sed 's/ $//')
+          else
+            versions_str=$(bash tests/detect-versions.sh | sort -V | tr '\n' ' ' | sed 's/ $//')
+          fi
           versions_json=$(printf '%s\n' $versions_str | jq -R -s -c '[split("\n")[] | select(length > 0)]')
           echo "versions=${versions_json}" >> "$GITHUB_OUTPUT"
           echo "versions_str=${versions_str}" >> "$GITHUB_OUTPUT"

@@ -1,4 +1,5 @@
 name: Build all Docker images
+run-name: "docker-build-${{ github.ref }}: manual full rebuild"
 
 on:
   workflow_dispatch:

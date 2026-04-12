@@ -132,8 +132,9 @@ runs:
         CANDIDATES=$(
           gh api \
             "repos/${REPOSITORY}/actions/runs?branch=${REF_NAME}&status=success&per_page=100" \
-            --jq '.workflow_runs[] | select(.display_title | startswith($rn + ": ")) | .head_sha // empty' \
-            --arg rn "${CONCURRENCY_GROUP}" || true
+            | jq -r --arg rn "${CONCURRENCY_GROUP}" \
+              '.workflow_runs[] | select(.display_title | startswith($rn + ": ")) | .head_sha // empty' \
+            || true
         )
 
         # Step 2: Supplement with workflow_files (catches older runs that

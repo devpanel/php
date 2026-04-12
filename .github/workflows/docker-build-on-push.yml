@@ -37,7 +37,9 @@ jobs:
         id: effective_sha
         uses: ./.github/actions/effective-before-sha
         with:
-          workflow_files: ${{ github.workflow_ref }}
+          workflow_files: |
+            ${{ github.workflow_ref }}
+            .github/workflows/docker-build-all.yml
           concurrency_group: docker-build-${{ github.ref }}
           current_sha: ${{ github.sha }}
           ref_name: ${{ github.ref_name }}
