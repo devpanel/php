@@ -1010,11 +1010,12 @@ runs:
                 # consuming pull quota.  Proceed whenever any quota remains
                 # (>= 1); defer only when the snapshot is exhausted (< 1).
                 # After a create attempt the snapshot is decremented by
-                # ${#REFS[@]} and clamped to 0.  The snapshot never goes
-                # negative.  It may fall out of sync with Docker Hub's actual
-                # remaining count (e.g. another process consumed quota between
-                # the probe and this create), but that is corrected by
-                # re-probing from Docker Hub at the start of each cycle.
+                # ${#REFS[@]}.  The snapshot never goes below 0.  It may fall
+                # out of sync with Docker Hub's actual remaining count (e.g.
+                # another process consumed quota between the probe and this
+                # create), meaning our snapshot may show more quota than Docker
+                # Hub has; that is corrected by re-probing at the start of
+                # each cycle.
                 if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                    && [[ -n "${_cycle_create_auth_rem}" ]] \
                    && (( _cycle_create_auth_rem < 1 )); then
@@ -1069,15 +1070,14 @@ runs:
                   fi
                   # Decrement the cycle-level quota snapshot by the number of
                   # refs consumed so that subsequent images in this cycle see
-                  # the updated remaining count, then clamp to 0.  The snapshot
-                  # never goes negative.  It may fall out of sync with Docker
-                  # Hub's actual remaining count if another process consumed
-                  # quota between the probe and this create, but that is
-                  # corrected by re-probing at the start of each cycle.
+                  # the updated remaining count.  The snapshot never goes
+                  # negative.  It may fall out of sync with Docker Hub's actual
+                  # remaining count if another process consumed quota between
+                  # the probe and this create, but that is corrected by
+                  # re-probing at the start of each cycle.
                   if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                      && [[ -n "${_cycle_create_auth_rem}" ]]; then
-                    _new_rem=$(( _cycle_create_auth_rem - ${#REFS[@]} ))
-                    _cycle_create_auth_rem=$(( _new_rem < 0 ? 0 : _new_rem ))
+                    _cycle_create_auth_rem=$(( _cycle_create_auth_rem - ${#REFS[@]} ))
                   fi
                 fi
               fi
