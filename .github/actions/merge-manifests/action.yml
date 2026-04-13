@@ -843,6 +843,16 @@ runs:
           # number of refs after each attempt so later images in the cycle
           # see the updated quota and avoid 429s.
           _cycle_create_auth_rem="$(auth_quota_remaining)"
+          # auth_quota_remaining prints '' on any non-2xx response (including
+          # 429 when quota is exhausted).  Treat an empty result as 0 so the
+          # create gate below defers all creates this cycle rather than
+          # bypassing the gate and attempting creates while rate-limited.
+          if [[ -z "${_cycle_create_auth_rem}" ]]; then
+            echo "::warning::Authenticated Docker Hub quota probe failed or was" \
+                 "rate-limited; treating remaining quota as exhausted for this" \
+                 "cycle and deferring imagetools create attempts."
+            _cycle_create_auth_rem=0
+          fi
 
           # Tracks whether any imagetools create was deferred or failed in
           # this cycle so the post-cycle elapsed-time check can warn and
@@ -851,6 +861,10 @@ runs:
           # Tracks whether any deferral was specifically due to insufficient
           # quota (as opposed to an imagetools create failure).
           _any_quota_deferred=false
+          # Tracks whether any deferral was specifically because seeding had
+          # not yet completed and there was no cached baseline.  Distinct from
+          # a create failure so the post-cycle message is accurate.
+          _any_seeding_deferred=false
 
           for vs in "${VERSIONS_STAGES[@]}"; do
             version="${vs%%:*}"
@@ -989,6 +1003,7 @@ runs:
                      "deferring imagetools create to avoid dropping existing platforms."
                 _img_create_deferred=true
                 _any_create_deferred=true
+                _any_seeding_deferred=true
                 continue
               fi
               echo "Merging ${#NEW_PKEYS[@]} new platform(s) into ${IMAGE}..."
@@ -1135,11 +1150,15 @@ runs:
                      "total job elapsed time ${_create_elapsed}s exceeds" \
                      "QUOTA_MAX_WAIT. Wait ~6 hours, then click" \
                      "'Re-run failed jobs' on this workflow run's summary page."
+              elif [[ "${_any_seeding_deferred}" == "true" ]]; then
+                echo "::error::imagetools create deferred (waiting for seeding" \
+                     "to complete); total job elapsed time ${_create_elapsed}s" \
+                     "exceeds QUOTA_MAX_WAIT. Seeding may be stalled or the" \
+                     "existing manifest could not be fetched — re-run the workflow."
               else
-                echo "::error::One or more imagetools create operations failed" \
-                     "or remained deferred; total job elapsed time" \
-                     "${_create_elapsed}s exceeds QUOTA_MAX_WAIT without a" \
-                     "confirmed Docker Hub quota signal" \
+                echo "::error::One or more imagetools create operations failed;" \
+                     "total job elapsed time ${_create_elapsed}s exceeds" \
+                     "QUOTA_MAX_WAIT" \
                      "(${_auth_rem_display} authenticated pulls remaining)." \
                      "Check earlier imagetools create logs for the underlying" \
                      "failure before re-running this workflow."
@@ -1150,9 +1169,11 @@ runs:
               echo "::warning::imagetools create deferred due to Docker Hub pull" \
                    "quota (${_auth_rem_display} authenticated pulls remaining;" \
                    "${_create_elapsed}s elapsed)."
+            elif [[ "${_any_seeding_deferred}" == "true" ]]; then
+              echo "::warning::imagetools create deferred (waiting for seeding" \
+                   "to complete; ${_create_elapsed}s elapsed)."
             else
               echo "::warning::One or more imagetools create operations failed" \
-                   "without a confirmed Docker Hub quota signal" \
                    "(${_auth_rem_display} authenticated pulls remaining;" \
                    "${_create_elapsed}s elapsed)." \
                    "Check earlier imagetools create logs for the underlying failure."
