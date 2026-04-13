@@ -4,10 +4,13 @@ description: >
   for every image in the merge matrix.  Runs as a single job alongside every
   per-platform build job.
 
-  Before polling begins, each image's existing manifest is inspected once to
-  seed a per-image platform-digest state file.  This captures any platforms
-  already published (e.g. from a previous workflow run) so they are preserved
-  in every subsequent imagetools create call.
+  Before polling begins, images with a non-empty cached platform-digest
+  state file (restored from a previous run's Actions cache) are marked
+  pre-seeded and require no Docker Hub manifest inspection.  For images
+  with no cached state (first push or cold cache), the existing manifest
+  is inspected once to seed the platform-digest state file.  This captures
+  any platforms already published so they are preserved in every subsequent
+  imagetools create call.
 
   On every polling cycle it fetches the full artifact list for the run once and
   uses it for all images:
@@ -249,6 +252,10 @@ runs:
             IMG_SEEDED[$key]="true"
           else
             echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
+          fi
+
+          if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
+            VER_BUILD_DONE[$version]=0
           fi
         done
         echo "(${TOTAL_PLATFORMS} platform(s) expected per image)"
