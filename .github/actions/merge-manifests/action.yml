@@ -42,7 +42,8 @@ description: >
   (e.g. 429 rate-limit, network error), it falls back to docker buildx
   imagetools inspect which uses the stored Docker Hub credentials.  If both
   attempts fail for a reason other than "tag not found", the job does NOT fail;
-  instead it starts with an empty platform-digest state.
+  instead the image remains unseeded and imagetools create is deferred until
+  a platform digest is available from a build artifact.
 
 inputs:
   merge_matrix:
@@ -506,7 +507,8 @@ runs:
           #   3. docker buildx imagetools inspect (last resort, network fallback).
           #
           # If the tag does not exist → empty state (first push).
-          # If all attempts fail → start with empty state.
+          # If all attempts fail → leave the image unseeded and defer
+          # imagetools create until seeding succeeds later.
           _unseeded=()
           for vs in "${VERSIONS_STAGES[@]}"; do
             key="${vs%%:*}:${vs##*:}"
