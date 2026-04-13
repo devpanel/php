@@ -102,9 +102,12 @@ inputs:
     description: >
       ISO 8601 timestamp of when the workflow run started.
       Pass github.run_started_at from the calling workflow.
-      Used to measure total elapsed job time for QUOTA_MAX_WAIT safety
-      exits (both manifest seeding and imagetools create deferral paths)
-      so the job always terminates before GitHub's hard job-timeout.
+      Used to measure total elapsed workflow-run time for QUOTA_MAX_WAIT
+      safety exits (both manifest seeding and imagetools create deferral
+      paths). This is anchored to the workflow run start, not the merge
+      job start, so earlier workflow time is included in the elapsed-time
+      calculation, which is the correct basis for avoiding GitHub's hard
+      run timeout.
     required: true
 
 runs:
