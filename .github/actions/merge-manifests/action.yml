@@ -241,15 +241,24 @@ runs:
           # Only create the digests file if it wasn't pre-populated by the
           # cache restore step.
           [[ -f "${IMG_PLATFORM_DIGESTS[$key]}" ]] || touch "${IMG_PLATFORM_DIGESTS[$key]}"
-          # If the cache already has state for this image, mark it as
-          # pre-seeded so we never pull from Docker Hub just to re-read the
-          # manifest that the previous run already captured.
+          # Only trust a restored cache file if it contains at least one
+          # well-formed "platform_key<TAB>sha256:..." entry. Non-empty but
+          # invalid files can happen if a cache was truncated or otherwise
+          # corrupted; in that case, clear the file and let the normal
+          # manifest-inspection seeding path rebuild the baseline.
           _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
           if [[ -s "${_pdigest_file}" ]]; then
-            _preseed_n=$(wc -l < "${_pdigest_file}")
-            echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
-                 "pre-seeded from cache (${_preseed_n} platform(s))."
-            IMG_SEEDED[$key]="true"
+            _preseed_n=$(grep -Ec $'^[^[:space:]][^\t]*\tsha256:[[:xdigit:]]{64}$' \
+                         "${_pdigest_file}" || true)
+            if (( _preseed_n > 0 )); then
+              echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
+                   "pre-seeded from cache (${_preseed_n} platform(s))."
+              IMG_SEEDED[$key]="true"
+            else
+              echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
+                   "discarding invalid cached digest state; re-seeding."
+              : > "${_pdigest_file}"
+            fi
           else
             echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
           fi
