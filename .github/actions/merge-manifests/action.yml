@@ -845,7 +845,8 @@ runs:
           _cycle_create_auth_rem="$(auth_quota_remaining)"
 
           # Tracks whether any imagetools create was deferred or failed in
-          # this cycle so the quota-wait counter can be updated afterwards.
+          # this cycle so the post-cycle elapsed-time check can warn and
+          # enforce QUOTA_MAX_WAIT when progress is blocked.
           _any_create_deferred=false
           # Tracks whether any deferral was specifically due to insufficient
           # quota (as opposed to an imagetools create failure).
@@ -987,6 +988,7 @@ runs:
                 echo "  [${IMAGE}] Seeding not yet complete and no cached baseline;" \
                      "deferring imagetools create to avoid dropping existing platforms."
                 _img_create_deferred=true
+                _any_create_deferred=true
                 continue
               fi
               echo "Merging ${#NEW_PKEYS[@]} new platform(s) into ${IMAGE}..."
