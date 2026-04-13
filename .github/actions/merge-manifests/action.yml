@@ -1122,18 +1122,8 @@ runs:
           if [[ "${_any_create_deferred}" == "true" ]]; then
             _create_elapsed=$(( $(date +%s) - started_at ))
             _auth_rem_display="${_cycle_create_auth_rem:-unknown}"
-            # Quota-confirmed only when a create was proactively deferred this
-            # cycle because the authenticated-pull snapshot was insufficient
-            # for its refs count.  Do not infer a confirmed quota condition
-            # from the snapshot reaching 0, because failed imagetools create
-            # attempts also decrement the snapshot and could mislabel a
-            # non-quota failure as quota-confirmed.
-            _quota_confirmed=false
-            if [[ "${_any_quota_deferred}" == "true" ]]; then
-              _quota_confirmed=true
-            fi
             if (( _create_elapsed >= QUOTA_MAX_WAIT )); then
-              if [[ "${_quota_confirmed}" == "true" ]]; then
+              if [[ "${_any_quota_deferred}" == "true" ]]; then
                 echo "::error::Docker Hub pull quota: imagetools create deferred" \
                      "(${_auth_rem_display} authenticated pulls remaining);" \
                      "total job elapsed time ${_create_elapsed}s exceeds" \
@@ -1150,7 +1140,7 @@ runs:
               fi
               exit 1
             fi
-            if [[ "${_quota_confirmed}" == "true" ]]; then
+            if [[ "${_any_quota_deferred}" == "true" ]]; then
               echo "::warning::imagetools create deferred due to Docker Hub pull" \
                    "quota (${_auth_rem_display} authenticated pulls remaining;" \
                    "${_create_elapsed}s elapsed)."
