@@ -986,6 +986,7 @@ runs:
                  [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
                 echo "  [${IMAGE}] Seeding not yet complete and no cached baseline;" \
                      "deferring imagetools create to avoid dropping existing platforms."
+                _img_create_deferred=true
                 continue
               fi
               echo "Merging ${#NEW_PKEYS[@]} new platform(s) into ${IMAGE}..."
