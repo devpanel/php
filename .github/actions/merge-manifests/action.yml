@@ -241,8 +241,9 @@ runs:
           # If the cache already has state for this image, mark it as
           # pre-seeded so we never pull from Docker Hub just to re-read the
           # manifest that the previous run already captured.
-          if [[ -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
-            _preseed_n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
+          _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
+          if [[ -s "${_pdigest_file}" ]]; then
+            _preseed_n=$(wc -l < "${_pdigest_file}")
             echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
                  "pre-seeded from cache (${_preseed_n} platform(s))."
             IMG_SEEDED[$key]="true"
