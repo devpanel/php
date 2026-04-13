@@ -250,7 +250,7 @@ runs:
           _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
           if [[ -s "${_pdigest_file}" ]]; then
             _clean_tmp="${_pdigest_file}.clean"
-            grep -E $'^[^[:space:]][^\t]*\tsha256:[[:xdigit:]]{64}$' \
+            grep -E $'^[^[:space:]]+\tsha256:[[:xdigit:]]{64}$' \
               "${_pdigest_file}" > "${_clean_tmp}" || true
             mv "${_clean_tmp}" "${_pdigest_file}"
             _preseed_n=$(wc -l < "${_pdigest_file}")
@@ -704,6 +704,7 @@ runs:
               fi
 
               # ── Handle inspect result ───────────────────────────────────
+              _seeding_succeeded=true
               case "${_seed_status}" in
                 ok)
                   # Fresh manifest obtained; rewrite state file from it.
@@ -816,16 +817,22 @@ runs:
                   echo "  ${IMAGE_SEED}: no existing manifest (first push)."
                   ;;
                 error)
-                  # Both inspect attempts failed; start with empty state.
+                  # Both inspect attempts failed; leave the image unseeded so
+                  # imagetools create is deferred until seeding succeeds (or the
+                  # image is pre-seeded from cache on the next run).  Setting
+                  # IMG_SEEDED=true here when there is no baseline would silently
+                  # drop previously-published platforms on a cold-cache run.
                   # (Images with cached state were already pre-seeded in init
                   # and never reach this path.)
-                  > "${IMG_PLATFORM_DIGESTS[$key]}"
                   echo "::warning::${IMAGE_SEED}: inspect failed;" \
-                       "starting with empty state."
+                       "image will remain unseeded this cycle."
+                  _seeding_succeeded=false
                   ;;
               esac
 
-              IMG_SEEDED[$key]="true"
+              if [[ "${_seeding_succeeded}" == "true" ]]; then
+                IMG_SEEDED[$key]="true"
+              fi
               # When authenticated quota is limited, track actual auth-path
               # usage and break the seeding loop as soon as the unreserved
               # quota is exhausted.  Remaining unseeded images are left for
