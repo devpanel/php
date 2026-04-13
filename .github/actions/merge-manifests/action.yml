@@ -1122,14 +1122,14 @@ runs:
           if [[ "${_any_create_deferred}" == "true" ]]; then
             _create_elapsed=$(( $(date +%s) - started_at ))
             _auth_rem_display="${_cycle_create_auth_rem:-unknown}"
-            # Quota-confirmed: any image was proactively deferred this cycle
-            # because the snapshot was insufficient for its refs count, or the
-            # snapshot reached 0 through successful creates.
+            # Quota-confirmed only when a create was proactively deferred this
+            # cycle because the authenticated-pull snapshot was insufficient
+            # for its refs count.  Do not infer a confirmed quota condition
+            # from the snapshot reaching 0, because failed imagetools create
+            # attempts also decrement the snapshot and could mislabel a
+            # non-quota failure as quota-confirmed.
             _quota_confirmed=false
-            if [[ "${_any_quota_deferred}" == "true" ]] \
-               || { [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
-                 && [[ -n "${_cycle_create_auth_rem}" ]] \
-                 && (( _cycle_create_auth_rem < 1 )); }; then
+            if [[ "${_any_quota_deferred}" == "true" ]]; then
               _quota_confirmed=true
             fi
             if (( _create_elapsed >= QUOTA_MAX_WAIT )); then
