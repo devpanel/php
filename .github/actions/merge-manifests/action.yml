@@ -1154,7 +1154,7 @@ runs:
                 echo "::error::imagetools create deferred (waiting for seeding" \
                      "to complete); total job elapsed time ${_create_elapsed}s" \
                      "exceeds QUOTA_MAX_WAIT. Seeding may be stalled or the" \
-                     "existing manifest could not be fetched — re-run the workflow."
+                     "existing manifest could not be fetched - re-run the workflow."
               else
                 echo "::error::One or more imagetools create operations failed;" \
                      "total job elapsed time ${_create_elapsed}s exceeds" \
