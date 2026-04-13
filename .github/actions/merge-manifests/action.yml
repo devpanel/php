@@ -552,10 +552,10 @@ runs:
               fi
               if [[ "${_anon_can_seed}" == "false" ]]; then
                 _do_seed=false
-                _job_elapsed=$(( $(date +%s) - started_at ))
-                if (( _job_elapsed >= QUOTA_MAX_WAIT )); then
-                  echo "::error::Docker Hub pull quota: total job elapsed time" \
-                       "${_job_elapsed}s exceeds QUOTA_MAX_WAIT with no" \
+                _run_elapsed=$(( $(date +%s) - started_at ))
+                if (( _run_elapsed >= QUOTA_MAX_WAIT )); then
+                  echo "::error::Docker Hub pull quota: total workflow-run elapsed time" \
+                       "${_run_elapsed}s exceeds QUOTA_MAX_WAIT with no" \
                        "unreserved pulls available" \
                        "(${_anon_display} anonymous remaining;" \
                        "${_auth_rem:-unknown} authenticated remaining," \
@@ -567,7 +567,7 @@ runs:
                      "Docker Hub pulls (${_anon_display} anonymous remaining;" \
                      "${_auth_rem:-unknown} authenticated remaining," \
                      "${_remaining_builds} reserved for build jobs)." \
-                     "Total job elapsed: ${_job_elapsed}s."
+                     "Total workflow-run elapsed: ${_run_elapsed}s."
               fi
             fi
           fi
@@ -865,6 +865,10 @@ runs:
           # not yet completed and there was no cached baseline.  Distinct from
           # a create failure so the post-cycle message is accurate.
           _any_seeding_deferred=false
+          # Tracks whether any imagetools create command exited non-zero this
+          # cycle.  Distinct from quota/seeding deferral so that a cycle with
+          # both a quota deferral and a create failure reports both causes.
+          _any_create_failed=false
 
           for vs in "${VERSIONS_STAGES[@]}"; do
             version="${vs%%:*}"
@@ -1085,6 +1089,7 @@ runs:
                     rm -f "${_create_err_file}"
                     IMG_LAST_ERROR[$key]="${_create_err}"
                     _img_create_deferred=true
+                    _any_create_failed=true
                     if [[ -n "${_create_err}" ]]; then
                       echo "imagetools create failed for ${IMAGE}: ${_create_err}"
                     else
@@ -1136,10 +1141,12 @@ runs:
 
           # ── Track create quota wait ────────────────────────────────────────
           # When any pending image's imagetools create was deferred or failed
-          # in this cycle, check the quota signal and log an appropriate
-          # warning.  Fail the job when total workflow-run elapsed time since
-          # run start exceeds QUOTA_MAX_WAIT so there is always time for
-          # cleanup steps before GitHub's hard job-timeout.
+          # in this cycle, log a message per cause and fail the job when total
+          # workflow-run elapsed time since run start exceeds QUOTA_MAX_WAIT
+          # so there is always time for cleanup steps before GitHub's hard
+          # job-timeout.  All causes that occurred in the cycle are reported
+          # independently so operators have a complete picture when multiple
+          # causes happen in the same cycle.
           if [[ "${_any_create_deferred}" == "true" ]]; then
             _create_elapsed=$(( $(date +%s) - started_at ))
             _auth_rem_display="${_cycle_create_auth_rem:-unknown}"
@@ -1150,12 +1157,14 @@ runs:
                      "total workflow-run elapsed time ${_create_elapsed}s exceeds" \
                      "QUOTA_MAX_WAIT. Wait ~6 hours, then click" \
                      "'Re-run failed jobs' on this workflow run's summary page."
-              elif [[ "${_any_seeding_deferred}" == "true" ]]; then
+              fi
+              if [[ "${_any_seeding_deferred}" == "true" ]]; then
                 echo "::error::imagetools create deferred (waiting for seeding" \
                      "to complete); total workflow-run elapsed time ${_create_elapsed}s" \
                      "exceeds QUOTA_MAX_WAIT. Seeding may be stalled or the" \
                      "existing manifest could not be fetched - re-run the workflow."
-              else
+              fi
+              if [[ "${_any_create_failed}" == "true" ]]; then
                 echo "::error::One or more imagetools create operations failed;" \
                      "total workflow-run elapsed time ${_create_elapsed}s exceeds" \
                      "QUOTA_MAX_WAIT" \
@@ -1169,10 +1178,12 @@ runs:
               echo "::warning::imagetools create deferred due to Docker Hub pull" \
                    "quota (${_auth_rem_display} authenticated pulls remaining;" \
                    "${_create_elapsed}s elapsed)."
-            elif [[ "${_any_seeding_deferred}" == "true" ]]; then
+            fi
+            if [[ "${_any_seeding_deferred}" == "true" ]]; then
               echo "::warning::imagetools create deferred (waiting for seeding" \
                    "to complete; ${_create_elapsed}s elapsed)."
-            else
+            fi
+            if [[ "${_any_create_failed}" == "true" ]]; then
               echo "::warning::One or more imagetools create operations failed" \
                    "(${_auth_rem_display} authenticated pulls remaining;" \
                    "${_create_elapsed}s elapsed)." \
