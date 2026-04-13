@@ -549,10 +549,10 @@ runs:
               fi
               if [[ "${_anon_can_seed}" == "false" ]]; then
                 _do_seed=false
-                _seed_elapsed=$(( $(date +%s) - started_at ))
-                if (( _seed_elapsed >= QUOTA_MAX_WAIT )); then
+                _job_elapsed=$(( $(date +%s) - started_at ))
+                if (( _job_elapsed >= QUOTA_MAX_WAIT )); then
                   echo "::error::Docker Hub pull quota: total job elapsed time" \
-                       "${_seed_elapsed}s exceeds QUOTA_MAX_WAIT with no" \
+                       "${_job_elapsed}s exceeds QUOTA_MAX_WAIT with no" \
                        "unreserved pulls available" \
                        "(${_anon_display} anonymous remaining;" \
                        "${_auth_rem:-unknown} authenticated remaining," \
@@ -564,7 +564,7 @@ runs:
                      "Docker Hub pulls (${_anon_display} anonymous remaining;" \
                      "${_auth_rem:-unknown} authenticated remaining," \
                      "${_remaining_builds} reserved for build jobs)." \
-                     "Total job elapsed: ${_seed_elapsed}s."
+                     "Total job elapsed: ${_job_elapsed}s."
               fi
             fi
           fi
