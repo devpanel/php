@@ -31,11 +31,12 @@ description: >
   A single job (not a matrix) is used for all images so that concurrent Docker
   Hub API calls — which quickly exhaust the pull rate limit — are avoided.
 
-  When a non-empty platform-digest state file exists and produces a new cache
-  key, that state is saved/updated in the Actions cache at the end of the run
-  (including failed runs).  On the next run, any image whose restored cache
-  file is already non-empty is considered pre-seeded and requires no Docker Hub
-  manifest inspection at all, saving pull quota.
+  When the platform-digest state files produce a new cache key, that state is
+  saved/updated in the Actions cache at the end of the run (including failed
+  runs), even if some restored files are still empty placeholders.  On the
+  next run, only images whose restored cache file is already non-empty are
+  considered pre-seeded and require no Docker Hub manifest inspection at all,
+  saving pull quota.
 
   For images with no cached state (first push or cold cache), manifest
   inspection first uses an anonymous Docker Hub Registry API token
