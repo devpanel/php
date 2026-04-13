@@ -241,15 +241,19 @@ runs:
           # Only create the digests file if it wasn't pre-populated by the
           # cache restore step.
           [[ -f "${IMG_PLATFORM_DIGESTS[$key]}" ]] || touch "${IMG_PLATFORM_DIGESTS[$key]}"
-          # Only trust a restored cache file if it contains at least one
-          # well-formed "platform_key<TAB>sha256:..." entry. Non-empty but
-          # invalid files can happen if a cache was truncated or otherwise
-          # corrupted; in that case, clear the file and let the normal
-          # manifest-inspection seeding path rebuild the baseline.
+          # Sanitize the restored cache file: keep only well-formed
+          # "platform_key<TAB>sha256:..." lines so that any truncated,
+          # partially-written, or otherwise corrupted entries are stripped
+          # before they can reach imagetools create.  The filtered content
+          # replaces the file in place; if no valid lines remain the file is
+          # left empty and the image falls back to manifest-inspection seeding.
           _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
           if [[ -s "${_pdigest_file}" ]]; then
-            _preseed_n=$(grep -Ec $'^[^[:space:]][^\t]*\tsha256:[[:xdigit:]]{64}$' \
-                         "${_pdigest_file}" || true)
+            _clean_tmp="${_pdigest_file}.clean"
+            grep -E $'^[^[:space:]][^\t]*\tsha256:[[:xdigit:]]{64}$' \
+              "${_pdigest_file}" > "${_clean_tmp}" || true
+            mv "${_clean_tmp}" "${_pdigest_file}"
+            _preseed_n=$(wc -l < "${_pdigest_file}")
             if (( _preseed_n > 0 )); then
               echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
                    "pre-seeded from cache (${_preseed_n} platform(s))."
@@ -257,7 +261,6 @@ runs:
             else
               echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
                    "discarding invalid cached digest state; re-seeding."
-              : > "${_pdigest_file}"
             fi
           else
             echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
