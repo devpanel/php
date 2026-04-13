@@ -843,6 +843,9 @@ runs:
           # Tracks whether any imagetools create was deferred or failed in
           # this cycle so the quota-wait counter can be updated afterwards.
           _any_create_deferred=false
+          # Tracks whether any deferral was specifically due to insufficient
+          # quota (as opposed to an imagetools create failure).
+          _any_quota_deferred=false
 
           for vs in "${VERSIONS_STAGES[@]}"; do
             version="${vs%%:*}"
@@ -1007,22 +1010,24 @@ runs:
               if [[ ${#REFS[@]} -gt 0 ]]; then
                 # ── Gate imagetools create on pull quota ──────────────────
                 # imagetools create fetches each referenced digest manifest,
-                # consuming pull quota.  Proceed whenever any quota remains
-                # (>= 1); defer only when the snapshot is exhausted (< 1).
-                # After a create attempt the snapshot is decremented by
-                # ${#REFS[@]}.  The snapshot never goes below 0.  It may fall
-                # out of sync with Docker Hub's actual remaining count (e.g.
-                # another process consumed quota between the probe and this
-                # create), meaning our snapshot may show more quota than Docker
-                # Hub has; that is corrected by re-probing at the start of
-                # each cycle.
+                # consuming pull quota.  Defer when the cycle-level snapshot
+                # is smaller than the number of refs that will be fetched,
+                # so that we never attempt a create that would consume more
+                # quota than remains.  This guarantees the snapshot never goes
+                # below 0 after decrementing.  The snapshot may fall out of
+                # sync with Docker Hub's actual remaining count (e.g. another
+                # process consumed quota between the probe and this create),
+                # meaning our snapshot may show more quota than Docker Hub has;
+                # that is corrected by re-probing at the start of each cycle.
                 if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                    && [[ -n "${_cycle_create_auth_rem}" ]] \
-                   && (( _cycle_create_auth_rem < 1 )); then
+                   && (( _cycle_create_auth_rem < ${#REFS[@]} )); then
                   echo "  [${IMAGE}] Deferring imagetools create: Docker Hub" \
-                       "pull quota exhausted (0 authenticated pulls remaining)." \
+                       "pull quota insufficient (${_cycle_create_auth_rem}" \
+                       "authenticated pulls remaining, ${#REFS[@]} required)." \
                        "Will retry next cycle."
                   _img_create_deferred=true
+                  _any_quota_deferred=true
                 else
                   _create_err_file="$(mktemp)"
                   if docker buildx imagetools create \
@@ -1071,10 +1076,13 @@ runs:
                   # Decrement the cycle-level quota snapshot by the number of
                   # refs consumed so that subsequent images in this cycle see
                   # the updated remaining count.  The snapshot never goes
-                  # negative.  It may fall out of sync with Docker Hub's actual
-                  # remaining count if another process consumed quota between
-                  # the probe and this create, but that is corrected by
-                  # re-probing at the start of each cycle.
+                  # negative because we only reach this point when
+                  # _cycle_create_auth_rem >= ${#REFS[@]} (the gate above
+                  # defers when the snapshot is insufficient).  The snapshot
+                  # may fall out of sync with Docker Hub's actual remaining
+                  # count if another process consumed quota between the probe
+                  # and this create, but that is corrected by re-probing at
+                  # the start of each cycle.
                   if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                      && [[ -n "${_cycle_create_auth_rem}" ]]; then
                     _cycle_create_auth_rem=$(( _cycle_create_auth_rem - ${#REFS[@]} ))
@@ -1113,12 +1121,14 @@ runs:
           if [[ "${_any_create_deferred}" == "true" ]]; then
             _create_elapsed=$(( $(date +%s) - started_at ))
             _auth_rem_display="${_cycle_create_auth_rem:-unknown}"
-            # Quota-confirmed: probe was 0 at cycle start, or the snapshot was
-            # decremented to 0 by actual create attempts this cycle.
+            # Quota-confirmed: any image was proactively deferred this cycle
+            # because the snapshot was insufficient for its refs count, or the
+            # snapshot reached 0 through successful creates.
             _quota_confirmed=false
-            if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
-               && [[ -n "${_cycle_create_auth_rem}" ]] \
-               && (( _cycle_create_auth_rem < 1 )); then
+            if [[ "${_any_quota_deferred}" == "true" ]] \
+               || { [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
+                 && [[ -n "${_cycle_create_auth_rem}" ]] \
+                 && (( _cycle_create_auth_rem < 1 )); }; then
               _quota_confirmed=true
             fi
             if (( _create_elapsed >= QUOTA_MAX_WAIT )); then
