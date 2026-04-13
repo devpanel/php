@@ -31,8 +31,9 @@ description: >
   A single job (not a matrix) is used for all images so that concurrent Docker
   Hub API calls — which quickly exhaust the pull rate limit — are avoided.
 
-  The platform-digest state is always saved to the Actions cache at the end of
-  each run (even if the run fails).  On the next run, any image whose cache
+  When a non-empty platform-digest state file exists and produces a new cache
+  key, that state is saved/updated in the Actions cache at the end of the run
+  (including failed runs).  On the next run, any image whose restored cache
   file is already non-empty is considered pre-seeded and requires no Docker Hub
   manifest inspection at all, saving pull quota.
 
@@ -831,6 +832,13 @@ runs:
                   _seeding_succeeded=false
                   ;;
               esac
+
+              if [[ "${_seed_status}" == "ok" ]] \
+                  && [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
+                echo "::warning::${IMAGE_SEED}: seeding produced no baseline;" \
+                     "image will remain unseeded this cycle."
+                _seeding_succeeded=false
+              fi
 
               if [[ "${_seeding_succeeded}" == "true" ]]; then
                 IMG_SEEDED[$key]="true"
