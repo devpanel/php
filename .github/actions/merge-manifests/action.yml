@@ -268,15 +268,15 @@ runs:
         # Pull-quota accounting.
         QUOTA_MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
 
-        # Wall-clock job start time (seconds since epoch).  Derived from the
-        # run_started_at input (github.run_started_at from the calling
-        # workflow) so it reflects the actual workflow run start rather than
-        # the moment this step begins executing.  Used by both the seeding
-        # and imagetools create quota blocks to enforce QUOTA_MAX_WAIT against
-        # real elapsed time and guarantee the job exits before GitHub's hard
-        # job-timeout so cleanup steps always run.  Parse failures are fatal
-        # because substituting the current time would undercount elapsed
-        # runtime, defeating that safety check.
+        # Wall-clock workflow run start time (seconds since epoch).  Derived
+        # from the run_started_at input (github.run_started_at from the
+        # calling workflow) so it reflects the actual workflow run start
+        # rather than the moment this step begins executing.  Used by both
+        # the seeding and imagetools create quota blocks to enforce
+        # QUOTA_MAX_WAIT against real elapsed time and guarantee the job
+        # exits before GitHub's hard job-timeout so cleanup steps always
+        # run.  Parse failures are fatal because substituting the current
+        # time would undercount elapsed runtime, defeating that safety check.
         if ! started_at="$(date -d "${RUN_STARTED_AT}" +%s)"; then
           echo "::error::Failed to parse required run_started_at input: ${RUN_STARTED_AT}" >&2
           exit 1
@@ -1137,9 +1137,9 @@ runs:
           # ── Track create quota wait ────────────────────────────────────────
           # When any pending image's imagetools create was deferred or failed
           # in this cycle, check the quota signal and log an appropriate
-          # warning.  Fail the job when total job elapsed time since startup
-          # exceeds QUOTA_MAX_WAIT so there is always time for cleanup steps
-          # before GitHub's hard job-timeout.
+          # warning.  Fail the job when total workflow-run elapsed time since
+          # run start exceeds QUOTA_MAX_WAIT so there is always time for
+          # cleanup steps before GitHub's hard job-timeout.
           if [[ "${_any_create_deferred}" == "true" ]]; then
             _create_elapsed=$(( $(date +%s) - started_at ))
             _auth_rem_display="${_cycle_create_auth_rem:-unknown}"
@@ -1147,17 +1147,17 @@ runs:
               if [[ "${_any_quota_deferred}" == "true" ]]; then
                 echo "::error::Docker Hub pull quota: imagetools create deferred" \
                      "(${_auth_rem_display} authenticated pulls remaining);" \
-                     "total job elapsed time ${_create_elapsed}s exceeds" \
+                     "total workflow-run elapsed time ${_create_elapsed}s exceeds" \
                      "QUOTA_MAX_WAIT. Wait ~6 hours, then click" \
                      "'Re-run failed jobs' on this workflow run's summary page."
               elif [[ "${_any_seeding_deferred}" == "true" ]]; then
                 echo "::error::imagetools create deferred (waiting for seeding" \
-                     "to complete); total job elapsed time ${_create_elapsed}s" \
+                     "to complete); total workflow-run elapsed time ${_create_elapsed}s" \
                      "exceeds QUOTA_MAX_WAIT. Seeding may be stalled or the" \
                      "existing manifest could not be fetched - re-run the workflow."
               else
                 echo "::error::One or more imagetools create operations failed;" \
-                     "total job elapsed time ${_create_elapsed}s exceeds" \
+                     "total workflow-run elapsed time ${_create_elapsed}s exceeds" \
                      "QUOTA_MAX_WAIT" \
                      "(${_auth_rem_display} authenticated pulls remaining)." \
                      "Check earlier imagetools create logs for the underlying" \
