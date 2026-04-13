@@ -272,9 +272,24 @@ runs:
         # the moment this step begins executing.  Used by the imagetools create
         # quota block to enforce QUOTA_MAX_WAIT against real elapsed time and
         # guarantee the job exits before GitHub's hard job-timeout so cleanup
-        # steps always run.  Falls back to date +%s on conversion failure.
-        started_at="$(date -d "${RUN_STARTED_AT}" +%s 2>/dev/null)" \
-          || started_at="$(date +%s)"
+        # steps always run.  Parse failures are fatal because substituting the
+        # current time would undercount elapsed runtime, defeating that safety
+        # check.
+        if ! started_at="$(python3 - <<'PY'
+import datetime, os, sys
+raw = os.environ.get("RUN_STARTED_AT", "")
+if raw.endswith("Z"):
+    raw = raw[:-1] + "+00:00"
+try:
+    print(int(datetime.datetime.fromisoformat(raw).timestamp()))
+except Exception as e:
+    print(f"cannot parse RUN_STARTED_AT={raw!r}: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+        )"; then
+          echo "::error::Failed to parse required run_started_at input: ${RUN_STARTED_AT}" >&2
+          exit 1
+        fi
 
         # Total parallel build jobs that may each still need one authenticated
         # Docker Hub pull for the base PHP image.  Decremented as digest
