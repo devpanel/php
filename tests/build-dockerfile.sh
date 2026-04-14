@@ -110,9 +110,11 @@ PLATFORM_KEY="${NORMALIZED_PLATFORM//\//-}"
 # ---------------------------------------------------------------------------
 # Test-mode overrides:
 #   REPO         Use a local test namespace so no real registry is pushed.
-#   GHCR_REPO    Defaults to the local test namespace for standalone runs
-#                (no cache reuse).  Override via environment to point to the
-#                real GHCR registry for cache reads in CI.
+#   GHCR_REPO    Defaults to localhost:0/<test-namespace> for standalone runs
+#                so that registry-cache attempts (cache-to with ignore-error=true)
+#                resolve to an unreachable local address rather than Docker Hub.
+#                Override via environment to point to the real GHCR registry for
+#                cache reads in CI.
 #   VERSIONS_BASE/SECURE Set equal to VERSIONS so every version's stages build.
 #   TAG_SUFFIX           Empty; tags match run-dockerfile.sh's TAG_PREFIX.
 #   CACHE_FROM_ENABLED   Defaults to false (clean build from source) for local
@@ -147,7 +149,7 @@ BAKE_ENV=(
   VERSIONS_BASE="$VERSIONS_LIST"
   VERSIONS_SECURE="$VERSIONS_LIST"
   REPO="$TEST_REPO"
-  GHCR_REPO="${GHCR_REPO:-$TEST_REPO}"
+  GHCR_REPO="${GHCR_REPO:-localhost:0/$TEST_REPO}"
   TAG_SUFFIX=""
   PLATFORMS="$PLATFORMS"
   PLATFORM_KEY="$PLATFORM_KEY"
