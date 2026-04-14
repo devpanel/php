@@ -262,17 +262,20 @@ runs:
           # Sanitize the restored cache file: keep only well-formed
           # "platform_key<TAB>sha256:..." lines so that any truncated,
           # partially-written, or otherwise corrupted entries are stripped
-          # before they can reach imagetools create.  The filtered content
-          # replaces the file in place; if no valid lines remain the file is
-          # left empty and the image falls back to manifest-inspection seeding.
-          # If grep itself fails with an I/O error (exit code ≥2), the
-          # invalid file is cleared/recreated as an empty placeholder and
-          # the image is forced to re-seed.
+          # before they can reach imagetools create.  Duplicate entries for
+          # the same platform_key are collapsed to the last occurrence.
+          # The filtered content replaces the file in place; if no valid
+          # lines remain the file is left empty and the image falls back to
+          # manifest-inspection seeding.  If grep itself fails with an I/O
+          # error (exit code ≥2), the invalid file is cleared/recreated as
+          # an empty placeholder and the image is forced to re-seed.
           _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
           if [[ -s "${_pdigest_file}" ]]; then
             _grep_status=0
             _clean_content=$(grep -E $'^[^[:space:]]+\tsha256:[[:xdigit:]]{64}$' \
-              "${_pdigest_file}") || _grep_status=$?
+              "${_pdigest_file}" \
+              | awk -F'\t' '{ lines[$1]=$0 } END { for (k in lines) print lines[k] }') \
+              || _grep_status=$?
             if [[ ${_grep_status} -eq 0 || ${_grep_status} -eq 1 ]]; then
               if [[ -n "${_clean_content}" ]]; then
                 printf '%s\n' "${_clean_content}" > "${_pdigest_file}"
@@ -887,7 +890,7 @@ runs:
 
               if [[ "${_seed_status}" == "ok" ]] \
                   && [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
-                echo "::error::${IMAGE_SEED}: manifest inspection succeeded but seeding produced no baseline; refusing to continue with an unseeded image because manifest merging would otherwise stall until timeout."
+                echo "::error::${IMAGE_SEED}: manifest inspection succeeded but no baseline could be derived from the fetched manifest; refusing to continue because doing so could publish an incomplete manifest list and drop previously published platforms. Re-run later or investigate the Docker Hub manifest response."
                 exit 1
               fi
 
