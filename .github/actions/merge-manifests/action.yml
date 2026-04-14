@@ -269,7 +269,7 @@ runs:
           # invalid file is deleted and the image is forced to re-seed.
           _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
           if [[ -s "${_pdigest_file}" ]]; then
-            _clean_tmp="${WORK_DIR}/sanitize-tmp-${safe_key}.txt"
+            _clean_tmp="${DIGESTS_CACHE_DIR}/sanitize-tmp-${safe_key}.txt"
             if grep -E $'^[^[:space:]]+\tsha256:[[:xdigit:]]{64}$' \
               "${_pdigest_file}" > "${_clean_tmp}"; then
               _grep_status=0
@@ -888,9 +888,11 @@ runs:
 
               if [[ "${_seed_status}" == "ok" ]] \
                   && [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
-                echo "::warning::${IMAGE_SEED}: seeding produced no baseline;" \
-                     "image will remain unseeded this cycle."
-                _seeding_succeeded=false
+                echo "::error::${IMAGE_SEED}: manifest inspection succeeded" \
+                     "but seeding produced no baseline; refusing to continue" \
+                     "with an unseeded image because manifest merging would" \
+                     "otherwise stall until timeout."
+                exit 1
               fi
 
               if [[ "${_seeding_succeeded}" == "true" ]]; then
