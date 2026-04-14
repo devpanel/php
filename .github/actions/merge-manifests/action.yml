@@ -310,10 +310,10 @@ runs:
 
         POLL_CYCLE=0
 
-        # Docker Hub token globals.  Updated directly by get_inspect_token
-        # in the main shell (no subshell needed); subshells (e.g. quota-probe
-        # functions called via $(...)) inherit the current value as a read-only
-        # copy so they always see the latest token.
+        # Anonymous Docker Hub inspect token globals.  Updated directly by
+        # get_inspect_token in the main shell (no subshell needed); subshells
+        # (e.g. quota-probe functions called via $(...)) inherit the current
+        # value as a read-only copy so they always see the latest token.
         ANON_TOKEN=""
         ANON_TOKEN_TIME=0
 
@@ -409,6 +409,8 @@ runs:
             echo "  Refreshed anonymous Docker Hub token (unauthenticated inspect)."
             return 0
           else
+            ANON_TOKEN=""
+            ANON_TOKEN_TIME=0
             echo "  Could not refresh anonymous token; will fall back to imagetools inspect."
             return 1
           fi
