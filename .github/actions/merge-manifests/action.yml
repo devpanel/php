@@ -54,8 +54,9 @@ description: >
   (e.g. 429 rate-limit, network error), it falls back to docker buildx
   imagetools inspect which uses the stored Docker Hub credentials.  If both
   attempts fail for a reason other than "tag not found", the job does NOT fail;
-  instead the image remains unseeded and imagetools create is deferred until
-  a platform digest is available from a build artifact.
+  instead the image remains unseeded and imagetools create stays deferred
+  until the image is seeded by a successful inspect or a non-empty cached
+  platform-digest state is available.
 
 inputs:
   merge_matrix:
@@ -265,8 +266,12 @@ runs:
           _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
           if [[ -s "${_pdigest_file}" ]]; then
             _clean_tmp="${_pdigest_file}.clean"
-            grep -E $'^[^[:space:]]+\tsha256:[[:xdigit:]]{64}$' \
-              "${_pdigest_file}" > "${_clean_tmp}"; _grep_status=$?
+            if grep -E $'^[^[:space:]]+\tsha256:[[:xdigit:]]{64}$' \
+              "${_pdigest_file}" > "${_clean_tmp}"; then
+              _grep_status=0
+            else
+              _grep_status=$?
+            fi
             if [[ ${_grep_status} -eq 0 || ${_grep_status} -eq 1 ]]; then
               mv "${_clean_tmp}" "${_pdigest_file}"
               _preseed_n=$(wc -l < "${_pdigest_file}")
