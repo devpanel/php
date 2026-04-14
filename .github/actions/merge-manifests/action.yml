@@ -267,7 +267,7 @@ runs:
           # left empty and the image falls back to manifest-inspection seeding.
           _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
           if [[ -s "${_pdigest_file}" ]]; then
-            _clean_tmp="${_pdigest_file}.clean"
+            _clean_tmp="${WORK_DIR}/sanitize-tmp-${safe_key}.txt"
             if grep -E $'^[^[:space:]]+\tsha256:[[:xdigit:]]{64}$' \
               "${_pdigest_file}" > "${_clean_tmp}"; then
               _grep_status=0
