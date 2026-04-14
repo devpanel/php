@@ -53,14 +53,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Log runner public IP
-        shell: bash
-        run: |
-          _ip="$(curl -sf --max-time 5 https://api.ipify.org \
-            || curl -sf --max-time 5 https://checkip.amazonaws.com \
-            || echo '(unknown)')"
-          echo "::notice::detect job runner public IP: ${_ip}"
-
       - name: Detect versions
         id: detect
         uses: ./.github/actions/detect-versions
@@ -150,14 +142,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Log runner public IP
-        shell: bash
-        run: |
-          _ip="$(curl -sf --max-time 5 https://api.ipify.org \
-            || curl -sf --max-time 5 https://checkip.amazonaws.com \
-            || echo '(unknown)')"
-          echo "::notice::build job (${{ matrix.version }}, ${{ matrix.platform }}) runner public IP: ${_ip}"
-
       # Download the pre-seeded code-server .deb and Copilot Chat VSIX files
       # that the detect job assembled and uploaded.  Using a workflow artifact
       # (not the GHA preseed cache) guarantees these files are present for the
@@ -218,14 +202,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-
-      - name: Log runner public IP
-        shell: bash
-        run: |
-          _ip="$(curl -sf --max-time 5 https://api.ipify.org \
-            || curl -sf --max-time 5 https://checkip.amazonaws.com \
-            || echo '(unknown)')"
-          echo "::notice::merge job runner public IP: ${_ip}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
