@@ -265,6 +265,8 @@ runs:
           # before they can reach imagetools create.  The filtered content
           # replaces the file in place; if no valid lines remain the file is
           # left empty and the image falls back to manifest-inspection seeding.
+          # If grep itself fails with an I/O error (exit code ≥2), the
+          # invalid file is deleted and the image is forced to re-seed.
           _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
           if [[ -s "${_pdigest_file}" ]]; then
             _clean_tmp="${WORK_DIR}/sanitize-tmp-${safe_key}.txt"
@@ -286,15 +288,12 @@ runs:
                      "discarding invalid cached digest state; re-seeding."
               fi
             else
-              rm -f "${_clean_tmp}"
-              _bad_pdigest_file="${WORK_DIR}/unsanitized-digests-${safe_key}.txt"
-              rm -f "${_bad_pdigest_file}"
-              mv "${_pdigest_file}" "${_bad_pdigest_file}"
+              rm -f "${_clean_tmp}" "${_pdigest_file}"
               : > "${_pdigest_file}"
               echo "  WARNING: ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
                    "failed to sanitize cached digest state;" \
-                   "moved original file to ${_bad_pdigest_file} and forcing re-seeding."
-              echo "::warning::${REPO}:${version}-${stage}${TAG_SUFFIX}: failed to sanitize cached digest state; moved the original file to ${_bad_pdigest_file} and cleared the baseline so manifest creation stays deferred until re-seeding succeeds."
+                   "cleared the cached baseline and forcing re-seeding."
+              echo "::warning::${REPO}:${version}-${stage}${TAG_SUFFIX}: failed to sanitize cached digest state; cleared the baseline so manifest creation stays deferred until re-seeding succeeds."
             fi
           else
             echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
