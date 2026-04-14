@@ -270,16 +270,16 @@ runs:
           # the image is forced to re-seed.
           _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
           if [[ -s "${_pdigest_file}" ]]; then
-            _clean_tmp="${DIGESTS_CACHE_DIR}/sanitize-tmp-${safe_key}.txt"
-            if grep -E $'^[^[:space:]]+\tsha256:[[:xdigit:]]{64}$' \
-              "${_pdigest_file}" > "${_clean_tmp}"; then
-              _grep_status=0
-            else
-              _grep_status=$?
-            fi
+            _grep_status=0
+            _clean_content=$(grep -E $'^[^[:space:]]+\tsha256:[[:xdigit:]]{64}$' \
+              "${_pdigest_file}") || _grep_status=$?
             if [[ ${_grep_status} -eq 0 || ${_grep_status} -eq 1 ]]; then
-              mv "${_clean_tmp}" "${_pdigest_file}"
-              _preseed_n=$(wc -l < "${_pdigest_file}" | awk '{print $1}')
+              if [[ -n "${_clean_content}" ]]; then
+                printf '%s\n' "${_clean_content}" > "${_pdigest_file}"
+              else
+                : > "${_pdigest_file}"
+              fi
+              _preseed_n=$(wc -l < "${_pdigest_file}")
               if (( _preseed_n > 0 )); then
                 echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
                      "pre-seeded from cache (${_preseed_n} platform(s))."
@@ -289,7 +289,6 @@ runs:
                      "discarding invalid cached digest state; re-seeding."
               fi
             else
-              rm -f "${_clean_tmp}" "${_pdigest_file}"
               : > "${_pdigest_file}"
               echo "  WARNING: ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
                    "failed to sanitize cached digest state;" \
