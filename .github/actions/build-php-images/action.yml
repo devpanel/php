@@ -189,7 +189,7 @@ runs:
         PLATFORM: ${{ steps.platform.outputs.platform }}
       run: |
         printf 'FROM php:%s-apache\n' "${VERSION}" \
-          | docker buildx build --platform "${PLATFORM}" - || true
+          | docker buildx build --platform "${PLATFORM}" -f - . || true
 
     # Docker Hub login is required so that the bake steps below can push
     # images by digest.  The base image pull above runs before this login

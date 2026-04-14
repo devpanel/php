@@ -1347,6 +1347,7 @@ runs:
 
     - name: Save digests cache
       if: always() && steps.digests-cache-key.outputs.key != '' && steps.restore-cache.outputs.cache-matched-key != steps.digests-cache-key.outputs.key
+      continue-on-error: true
       uses: actions/cache/save@v5
       with:
         path: ${{ runner.temp }}/merge-manifests-digests
