@@ -254,16 +254,23 @@ runs:
           if [[ -s "${_pdigest_file}" ]]; then
             _clean_tmp="${_pdigest_file}.clean"
             grep -E $'^[^[:space:]]+\tsha256:[[:xdigit:]]{64}$' \
-              "${_pdigest_file}" > "${_clean_tmp}" || true
-            mv "${_clean_tmp}" "${_pdigest_file}"
-            _preseed_n=$(wc -l < "${_pdigest_file}")
-            if (( _preseed_n > 0 )); then
-              echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
-                   "pre-seeded from cache (${_preseed_n} platform(s))."
-              IMG_SEEDED[$key]="true"
+              "${_pdigest_file}" > "${_clean_tmp}"; _grep_status=$?
+            if [[ ${_grep_status} -eq 0 || ${_grep_status} -eq 1 ]]; then
+              mv "${_clean_tmp}" "${_pdigest_file}"
+              _preseed_n=$(wc -l < "${_pdigest_file}")
+              if (( _preseed_n > 0 )); then
+                echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
+                     "pre-seeded from cache (${_preseed_n} platform(s))."
+                IMG_SEEDED[$key]="true"
+              else
+                echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
+                     "discarding invalid cached digest state; re-seeding."
+              fi
             else
-              echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
-                   "discarding invalid cached digest state; re-seeding."
+              rm -f "${_clean_tmp}"
+              echo "  WARNING: ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
+                   "failed to sanitize cached digest state;" \
+                   "keeping original file unchanged."
             fi
           else
             echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
