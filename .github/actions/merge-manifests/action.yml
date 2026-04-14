@@ -42,8 +42,8 @@ description: >
   manifest inspection at startup first uses an anonymous Docker Hub Registry
   API token (100 unauthenticated pulls/6 h from the same IP).  If that fails
   (e.g. 429 rate-limit, network error), it falls back to docker buildx
-  imagetools inspect which uses the stored Docker Hub credentials.  If both
-  attempts fail for a reason other than "tag not found", the job does NOT fail;
+  imagetools inspect which uses the stored Docker Hub credentials.  If the
+  inspect fails for a reason other than "tag not found", the job does NOT fail;
   instead it falls back to the last known platform-digest state that was cached
   by the previous workflow run.
 
@@ -266,16 +266,6 @@ runs:
         # copy so they always see the latest token.
         ANON_TOKEN=""
         ANON_TOKEN_TIME=0
-        AUTH_TOKEN=""
-        AUTH_TOKEN_TIME=0
-
-        # Credentials file for manifest inspection (get_inspect_token; REPO:pull
-        # scope).  Stored inside WORK_DIR so it is cleaned up by the existing
-        # EXIT trap.  Quota probe calls (refresh_auth_quota_token) derive their
-        # own credentials from DOCKERHUB_USERNAME / DOCKERHUB_TOKEN env vars.
-        _auth_creds="${WORK_DIR}/dockerhub-creds"
-        ( umask 077; printf 'machine auth.docker.io login %s password %s\n' \
-            "${DOCKERHUB_USERNAME}" "${DOCKERHUB_TOKEN}" > "${_auth_creds}" )
 
         # Pull-quota accounting.
         QUOTA_MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
@@ -309,7 +299,7 @@ runs:
         # $1: Bearer token
         # $2: URL to fetch
         # $3: label for log messages (e.g. "unauthenticated")
-        # $4: fallback label for log messages (e.g. "trying authenticated Registry API")
+        # $4: fallback label for log messages (e.g. "trying imagetools inspect")
         # Sets MANIFEST_BODY to the raw response body (no subshell needed).
         # Returns 0 on HTTP 200, 1 on HTTP 404, 2 on all other errors
         # (error details are logged to stdout).
@@ -347,49 +337,36 @@ runs:
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
 
-        # Helper: refresh a REPO:pull-scoped Docker Hub token when it has expired.
-        # get_inspect_token VARNAME [creds_file]
-        # Without creds_file the token is anonymous; with it, authenticated.
-        # Updates VARNAME and ${VARNAME}_TIME globals directly (no subshell needed).
+        # Helper: refresh the anonymous REPO:pull-scoped Docker Hub token when
+        # it has expired.  Updates ANON_TOKEN and ANON_TOKEN_TIME globals
+        # directly (no subshell needed).
         # Returns 0 when a valid token is available, 1 when the fetch failed.
         get_inspect_token() {
-          local _varname="$1" _creds="${2:-}"
-          local _now _time_var
+          local _now
           _now="$(date +%s)"
-          _time_var="${_varname}_TIME"
-          if [[ -n "${!_varname}" ]] && (( _now - ${!_time_var:-0} < TOKEN_MAX_AGE )); then
+          if [[ -n "${ANON_TOKEN}" ]] && (( _now - ${ANON_TOKEN_TIME:-0} < TOKEN_MAX_AGE )); then
             return 0
           fi
-          local _curl_args=(-sf --connect-timeout 5 --max-time 15)
-          [[ -n "${_creds}" ]] && _curl_args+=(--netrc-file "${_creds}")
           local _json _new_token
-          _json="$(curl "${_curl_args[@]}" \
+          _json="$(curl -sf --connect-timeout 5 --max-time 15 \
             "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" \
             2>/dev/null)" || _json=""
           _new_token="$(printf '%s' "${_json}" | jq -r '.token // ""' 2>/dev/null)" \
             || _new_token=""
           if [[ -n "${_new_token}" ]]; then
-            printf -v "${_varname}" '%s' "${_new_token}"
-            printf -v "${_varname}_TIME" '%s' "$(date +%s)"
-            if [[ -n "${_creds}" ]]; then
-              echo "  Obtained authenticated Docker Hub token (for inspect fallback)."
-            else
-              echo "  Refreshed anonymous Docker Hub token (unauthenticated inspect)."
-            fi
+            ANON_TOKEN="${_new_token}"
+            ANON_TOKEN_TIME="$(date +%s)"
+            echo "  Refreshed anonymous Docker Hub token (unauthenticated inspect)."
             return 0
           else
-            if [[ -n "${_creds}" ]]; then
-              echo "  Could not obtain authenticated token; imagetools inspect will be used as fallback."
-            else
-              echo "  Could not refresh anonymous token; will use authenticated inspect."
-            fi
+            echo "  Could not refresh anonymous token; will fall back to imagetools inspect."
             return 1
           fi
         }
 
         # Warm up the anonymous inspect token so the first loop cycle can use it immediately.
         # Failure is non-fatal: the loop will retry via get_inspect_token when needed.
-        get_inspect_token ANON_TOKEN || true
+        get_inspect_token || true
 
         # Consecutive artifact-list API failure counter.  After this many
         # back-to-back failures the loop aborts so the job fails instead of
@@ -511,11 +488,10 @@ runs:
           #
           # Inspect order (to conserve the Docker Hub authenticated-pull quota):
           #   1. Unauthenticated via Docker Hub Registry API (anonymous token).
-          #   2. Authenticated via Docker Hub Registry API (get_inspect_token AUTH_TOKEN).
-          #   3. docker buildx imagetools inspect (last resort, network fallback).
+          #   2. docker buildx imagetools inspect (authenticated pull fallback).
           #
           # If the tag does not exist → empty state (first push).
-          # If all attempts fail → fall back to cached state from previous run.
+          # If both attempts fail → fall back to cached state from previous run.
           _unseeded=()
           for vs in "${VERSIONS_STAGES[@]}"; do
             key="${vs%%:*}:${vs##*:}"
@@ -550,7 +526,7 @@ runs:
             # authenticated quota drives the primary gate; anonymous quota
             # allows seeding to continue via the anonymous inspect path even
             # when authenticated quota is fully reserved for build jobs.
-            get_inspect_token ANON_TOKEN || true
+            get_inspect_token || true
             _anon_rem="$(anon_quota_remaining)"
             if [[ "${_anon_rem}" == "unlimited" ]]; then
               _anon_display="unlimited"
@@ -617,7 +593,7 @@ runs:
               manifest_tag="${version}-${stage}${TAG_SUFFIX}"
 
               # Back up any cached content (restored from a previous run) so we
-              # can fall back to it if both inspect attempts fail.
+              # can fall back to it if the inspect fails.
               cached_backup="${WORK_DIR}/cached-backup-${safe_key}.txt"
               cp "${IMG_PLATFORM_DIGESTS[$key]}" "${cached_backup}" 2>/dev/null || true
 
@@ -631,7 +607,7 @@ runs:
                 _anon_fetch_status=0
                 fetch_manifest "${ANON_TOKEN}" \
                   "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
-                  "unauthenticated" "trying authenticated Registry API" \
+                  "unauthenticated" "trying imagetools inspect" \
                   || _anon_fetch_status=$?
                 case "${_anon_fetch_status}" in
                   0)
@@ -639,8 +615,8 @@ runs:
                     # least one parseable platform entry.  A single-platform
                     # manifest (no "manifests" array) or one where every entry is
                     # filtered as unknown/attestation returns 0 platforms; in that
-                    # case fall through to the authenticated path which may return
-                    # a manifest-list format not given to anonymous callers.
+                    # case fall through to imagetools inspect which is more reliable
+                    # for non-manifest-list formats.
                     _anon_plat_count=$(printf '%s' "${MANIFEST_BODY}" | jq -r \
                       '.manifests[]? |
                        select((.platform.os // "") != "unknown" and
@@ -652,7 +628,7 @@ runs:
                            "${_anon_plat_count} platform(s))."
                     else
                       echo "  ${IMAGE_SEED}: unauthenticated manifest has 0 valid" \
-                           "platform(s); trying authenticated Registry API."
+                           "platform(s); trying imagetools inspect."
                       MANIFEST_BODY=""
                     fi
                     ;;
@@ -660,7 +636,7 @@ runs:
                 esac
               fi
 
-              # ── Defer auth-requiring images when no unreserved auth quota ──
+              # ── Defer imagetools-inspect when no unreserved auth quota ───────
               # _auth_avail is computed in step 7 above (auth_rem − auth_reserve).
               # If the anonymous path could not resolve this image and no
               # unreserved authenticated quota is available, skip it for this
@@ -672,28 +648,9 @@ runs:
                 continue
               fi
 
-              # ── Step 2: authenticated Registry API ───────────────────────
-              # get_inspect_token refreshes AUTH_TOKEN when it has expired.
-              if [[ -z "${_seed_status}" ]]; then
-                get_inspect_token AUTH_TOKEN "${_auth_creds}" || true
-                if [[ -n "${AUTH_TOKEN}" ]]; then
-                  _used_auth_path=true
-                  _auth_fetch_status=0
-                  fetch_manifest "${AUTH_TOKEN}" \
-                    "https://registry-1.docker.io/v2/${REPO}/manifests/${manifest_tag}" \
-                    "authenticated Registry API" "trying imagetools inspect" \
-                    || _auth_fetch_status=$?
-                  case "${_auth_fetch_status}" in
-                    0) _seed_status="ok"
-                       echo "  ${IMAGE_SEED}: fetched manifest (authenticated)." ;;
-                    1) _seed_status="not_found" ;;
-                  esac
-                fi
-              fi
-
-              # ── Step 3: imagetools inspect (last resort) ─────────────────
-              # Reached only when both Registry API fetches failed (e.g.
-              # network error or unexpected HTTP status).
+              # ── Step 2: imagetools inspect ───────────────────────────────────
+              # Reached when the anonymous Registry API fetch failed (e.g.
+              # network error, unexpected HTTP status, or 0 parseable platforms).
               if [[ -z "${_seed_status}" ]]; then
                 _used_auth_path=true
                 seed_stderr="$(mktemp)"
@@ -709,7 +666,7 @@ runs:
                     _seed_status="not_found"
                   else
                     seed_err="$(cat "${seed_stderr}" 2>/dev/null || true)"
-                    echo "::warning::${IMAGE_SEED}: authenticated inspect failed" \
+                    echo "::warning::${IMAGE_SEED}: imagetools inspect failed" \
                          "(${seed_err:-unknown error})."
                     _seed_status="error"
                   fi
@@ -830,7 +787,7 @@ runs:
                   echo "  ${IMAGE_SEED}: no existing manifest (first push)."
                   ;;
                 error)
-                  # Both inspect attempts failed; fall back to cached state.
+                  # Inspect failed; fall back to cached state.
                   if [[ -s "${cached_backup}" ]]; then
                     cp "${cached_backup}" "${IMG_PLATFORM_DIGESTS[$key]}"
                     n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
