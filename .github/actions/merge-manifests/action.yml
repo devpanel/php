@@ -872,13 +872,14 @@ runs:
                   echo "  ${IMAGE_SEED}: no existing manifest (first push)."
                   ;;
                 error)
-                  # Both inspect attempts failed; leave the image unseeded so
-                  # imagetools create is deferred until seeding succeeds (or the
-                  # image is pre-seeded from cache on the next run).  Setting
-                  # IMG_SEEDED=true here when there is no baseline would silently
-                  # drop previously-published platforms on a cold-cache run.
-                  # (Images with cached state were already pre-seeded in init
-                  # and never reach this path.)
+                  # All manifest inspection methods failed; leave the image
+                  # unseeded so imagetools create is deferred until seeding
+                  # succeeds (or the image is pre-seeded from cache on the
+                  # next run).  Setting IMG_SEEDED=true here when there is no
+                  # baseline would silently drop previously-published
+                  # platforms on a cold-cache run.  (Images with cached state
+                  # were already pre-seeded in init and never reach this
+                  # path.)
                   echo "::warning::${IMAGE_SEED}: inspect failed;" \
                        "image will remain unseeded this cycle."
                   _seeding_succeeded=false
