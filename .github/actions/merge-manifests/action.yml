@@ -49,11 +49,12 @@ description: >
   manifests completed in a previous run or attempt are re-encountered.
 
   To conserve the Docker Hub authenticated-pull quota (200/6 h per account),
-  manifest inspection at startup first uses an anonymous Docker Hub Registry
-  API token (100 unauthenticated pulls/6 h from the same IP).  If that fails
-  (e.g. 429 rate-limit, network error), it falls back to docker buildx
-  imagetools inspect which uses the stored Docker Hub credentials.  If both
-  attempts fail for a reason other than "tag not found", the job does NOT fail;
+  manifest inspection at startup tries three methods in order: first an
+  anonymous Docker Hub Registry API token (100 unauthenticated pulls/6 h from
+  the same IP); if that fails (e.g. 429 rate-limit, network error), an
+  authenticated Docker Hub Registry API fetch using stored credentials; and as
+  a last resort, docker buildx imagetools inspect.  If all three attempts fail
+  for a reason other than "tag not found", the job does NOT fail;
   instead the image remains unseeded and imagetools create stays deferred
   until the image is seeded by a successful inspect or a non-empty cached
   platform-digest state is available.
@@ -274,7 +275,7 @@ runs:
             fi
             if [[ ${_grep_status} -eq 0 || ${_grep_status} -eq 1 ]]; then
               mv "${_clean_tmp}" "${_pdigest_file}"
-              _preseed_n=$(wc -l < "${_pdigest_file}")
+              _preseed_n=$(wc -l < "${_pdigest_file}" | awk '{print $1}')
               if (( _preseed_n > 0 )); then
                 echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
                      "pre-seeded from cache (${_preseed_n} platform(s))."
