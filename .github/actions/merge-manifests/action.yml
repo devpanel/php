@@ -4,10 +4,13 @@ description: >
   for every image in the merge matrix.  Runs as a single job alongside every
   per-platform build job.
 
-  Before polling begins, each image's existing manifest is inspected once to
-  seed a per-image platform-digest state file.  This captures any platforms
-  already published (e.g. from a previous workflow run) so they are preserved
-  in every subsequent imagetools create call.
+  Images with a non-empty cached platform-digest state file (restored from
+  a previous run's Actions cache) are marked pre-seeded and require no
+  Docker Hub manifest inspection.  For images with no cached state (first
+  push or cold cache), the existing manifest is inspected lazily inside the
+  polling loop to seed the platform-digest state file.  This captures any
+  platforms already published so they are preserved in every subsequent
+  imagetools create call.
 
   On every polling cycle it fetches the full artifact list for the run once and
   uses it for all images:
@@ -32,6 +35,13 @@ description: >
   A single job (not a matrix) is used for all images so that concurrent Docker
   Hub API calls — which quickly exhaust the pull rate limit — are avoided.
 
+  When the platform-digest state files produce a new cache key, that state is
+  saved/updated in the Actions cache at the end of the run (including failed
+  runs), even if some restored files are still empty placeholders.  On the
+  next run, only images whose restored cache file is already non-empty are
+  considered pre-seeded and require no Docker Hub manifest inspection at all,
+  saving pull quota.
+
   After seeding, each digest artifact is compared against the seeded state.
   If the platform+digest is already live on Docker Hub (exact match), the
   artifact is marked processed and counted without calling imagetools create.
@@ -39,16 +49,16 @@ description: >
   manifests completed in a previous run or attempt are re-encountered.
 
   To conserve the Docker Hub authenticated-pull quota (200/6 h per account),
-  manifest inspection at startup first uses an anonymous Docker Hub Registry
-  API token (100 unauthenticated pulls/6 h from the same IP).  If that fails
-  (e.g. 429 rate-limit, network error), it falls back to docker buildx
-  imagetools inspect which uses the stored Docker Hub credentials.  If both
-  attempts fail for a reason other than "tag not found", the job does NOT fail;
-  instead it falls back to the last known platform-digest state that was cached
-  by the previous workflow run.
-
-  The platform-digest state is always saved to the Actions cache at the end of
-  each run (even if the run fails) so that the fallback is always available.
+  any image that still needs seeding is inspected only when the merge loop
+  attempts to seed it, using up to three methods in order: first an anonymous
+  Docker Hub Registry API token (100 unauthenticated pulls/6 h from the same
+  IP); if that fails (e.g. 429 rate-limit, network error), an authenticated
+  Docker Hub Registry API fetch using stored credentials; and as a last
+  resort, docker buildx imagetools inspect.  If all three attempts fail for a
+  reason other than "tag not found", the job does NOT fail; instead the image
+  remains unseeded and imagetools create stays deferred, potentially across
+  polling cycles, until the image is seeded by a successful inspect or a
+  non-empty cached platform-digest state is available.
 
 inputs:
   merge_matrix:
@@ -249,12 +259,52 @@ runs:
           # Only create the digests file if it wasn't pre-populated by the
           # cache restore step.
           [[ -f "${IMG_PLATFORM_DIGESTS[$key]}" ]] || touch "${IMG_PLATFORM_DIGESTS[$key]}"
+          # Sanitize the restored cache file: keep only well-formed
+          # "platform_key<TAB>sha256:..." lines so that any truncated,
+          # partially-written, or otherwise corrupted entries are stripped
+          # before they can reach imagetools create.  Duplicate entries for
+          # the same platform_key are collapsed to the last occurrence.
+          # The filtered content replaces the file in place; if no valid
+          # lines remain the file is left empty and the image falls back to
+          # manifest-inspection seeding.  If grep itself fails with an I/O
+          # error (exit code ≥2), the invalid file is cleared/recreated as
+          # an empty placeholder and the image is forced to re-seed.
+          _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
+          if [[ -s "${_pdigest_file}" ]]; then
+            _grep_status=0
+            _clean_content=$(grep -E $'^[^[:space:]]+\tsha256:[[:xdigit:]]{64}$' \
+              "${_pdigest_file}" \
+              | awk -F'\t' '{ lines[$1]=$0 } END { for (k in lines) print lines[k] }') \
+              || _grep_status=$?
+            if [[ ${_grep_status} -eq 0 || ${_grep_status} -eq 1 ]]; then
+              if [[ -n "${_clean_content}" ]]; then
+                printf '%s\n' "${_clean_content}" > "${_pdigest_file}"
+              else
+                : > "${_pdigest_file}"
+              fi
+              _preseed_n=$(wc -l < "${_pdigest_file}")
+              if (( _preseed_n > 0 )); then
+                echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
+                     "pre-seeded from cache (${_preseed_n} platform(s))."
+                IMG_SEEDED[$key]="true"
+              else
+                echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
+                     "discarding invalid cached digest state; re-seeding."
+              fi
+            else
+              : > "${_pdigest_file}"
+              echo "  WARNING: ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
+                   "failed to sanitize cached digest state;" \
+                   "cleared the cached baseline and forcing re-seeding."
+              echo "::warning::${REPO}:${version}-${stage}${TAG_SUFFIX}: failed to sanitize cached digest state; cleared the baseline so manifest creation stays deferred until re-seeding succeeds."
+            fi
+          else
+            echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
+          fi
 
           if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
             VER_BUILD_DONE[$version]=0
           fi
-
-          echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
         done
         echo "(${TOTAL_PLATFORMS} platform(s) expected per image)"
 
@@ -503,11 +553,9 @@ runs:
           done <<< "${ALL_ARTIFACTS}"
 
           # ── Seed unseeded images when pull quota allows ────────────────────
-          # Inspect each image's existing manifest once to seed the
-          # platform-digest state.  This is done lazily — on the first polling
-          # cycle where the pull quota is sufficient — rather than upfront, so
-          # that completed build jobs no longer counted as needing pulls are
-          # subtracted before deciding whether to begin.
+          # Images with a non-empty cached state file were already marked
+          # pre-seeded during init and will not appear here.  This block only
+          # handles images whose cache was empty (first push or cold cache).
           #
           # Inspect order (to conserve the Docker Hub authenticated-pull quota):
           #   1. Unauthenticated via Docker Hub Registry API (anonymous token).
@@ -515,7 +563,8 @@ runs:
           #   3. docker buildx imagetools inspect (last resort, network fallback).
           #
           # If the tag does not exist → empty state (first push).
-          # If all attempts fail → fall back to cached state from previous run.
+          # If all attempts fail → leave the image unseeded and defer
+          # imagetools create until seeding succeeds later.
           _unseeded=()
           for vs in "${VERSIONS_STAGES[@]}"; do
             key="${vs%%:*}:${vs##*:}"
@@ -612,14 +661,8 @@ runs:
               version="${vs%%:*}"
               stage="${vs##*:}"
               key="${version}:${stage}"
-              safe_key="${key//:/_}"
               IMAGE_SEED="${REPO}:${version}-${stage}${TAG_SUFFIX}"
               manifest_tag="${version}-${stage}${TAG_SUFFIX}"
-
-              # Back up any cached content (restored from a previous run) so we
-              # can fall back to it if both inspect attempts fail.
-              cached_backup="${WORK_DIR}/cached-backup-${safe_key}.txt"
-              cp "${IMG_PLATFORM_DIGESTS[$key]}" "${cached_backup}" 2>/dev/null || true
 
               _seed_status=""  # "ok" | "not_found" | "error"
               _used_auth_path=false
@@ -718,6 +761,7 @@ runs:
               fi
 
               # ── Handle inspect result ───────────────────────────────────
+              _seeding_succeeded=true
               case "${_seed_status}" in
                 ok)
                   # Fresh manifest obtained; rewrite state file from it.
@@ -830,21 +874,29 @@ runs:
                   echo "  ${IMAGE_SEED}: no existing manifest (first push)."
                   ;;
                 error)
-                  # Both inspect attempts failed; fall back to cached state.
-                  if [[ -s "${cached_backup}" ]]; then
-                    cp "${cached_backup}" "${IMG_PLATFORM_DIGESTS[$key]}"
-                    n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
-                    echo "::warning::${IMAGE_SEED}: inspect failed;" \
-                         "falling back to ${n} cached platform(s) from previous run."
-                  else
-                    > "${IMG_PLATFORM_DIGESTS[$key]}"
-                    echo "::warning::${IMAGE_SEED}: inspect failed and no cached state" \
-                         "available; starting with empty state."
-                  fi
+                  # All manifest inspection methods failed; leave the image
+                  # unseeded so imagetools create is deferred until seeding
+                  # succeeds (or the image is pre-seeded from cache on the
+                  # next run).  Setting IMG_SEEDED=true here when there is no
+                  # baseline would silently drop previously-published
+                  # platforms on a cold-cache run.  (Images with cached state
+                  # were already pre-seeded in init and never reach this
+                  # path.)
+                  echo "::warning::${IMAGE_SEED}: inspect failed;" \
+                       "image will remain unseeded this cycle."
+                  _seeding_succeeded=false
                   ;;
               esac
 
-              IMG_SEEDED[$key]="true"
+              if [[ "${_seed_status}" == "ok" ]] \
+                  && [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
+                echo "::error::${IMAGE_SEED}: manifest inspection succeeded but no baseline could be derived from the fetched manifest; refusing to continue because doing so could publish an incomplete manifest list and drop previously published platforms. Re-run later or investigate the Docker Hub manifest response."
+                exit 1
+              fi
+
+              if [[ "${_seeding_succeeded}" == "true" ]]; then
+                IMG_SEEDED[$key]="true"
+              fi
               # When authenticated quota is limited, track actual auth-path
               # usage and break the seeding loop as soon as the unreserved
               # quota is exhausted.  Remaining unseeded images are left for
