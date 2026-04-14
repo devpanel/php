@@ -188,10 +188,11 @@ runs:
         VERSION: ${{ inputs.version }}
         PLATFORM: ${{ steps.platform.outputs.platform }}
       run: |
+        set -euo pipefail
         _ctx="$(mktemp -d)"
+        trap 'rm -rf "${_ctx}"' EXIT
         printf 'FROM php:%s-apache\n' "${VERSION}" \
           | docker buildx build --platform "${PLATFORM}" -f - "${_ctx}" || true
-        rm -rf "${_ctx}"
 
     # Docker Hub login is required so that the bake steps below can push
     # images by digest.  The base image pull above runs before this login
