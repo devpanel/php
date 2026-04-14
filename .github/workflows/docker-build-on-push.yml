@@ -92,7 +92,7 @@ jobs:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
           RUN_PREFIX: "docker-build-${{ github.ref }}"
         run: |
-          subject=$(printf '%s' "${COMMIT_MSG}" | head -1)
+          subject="${COMMIT_MSG%%$'\n'*}"
           if [ "${#subject}" -gt 72 ]; then
             subject="${subject:0:71}…"
           fi
