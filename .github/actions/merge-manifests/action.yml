@@ -21,10 +21,14 @@ description: >
      a manifest list built from every entry in the state file — existing
      platforms plus every newly-built platform.
 
-  2. Build-done markers ("build-done-{VERSION}-{platform_key}"): uploaded by
-     every build job when it finishes (success or failure).  When the count of
-     these markers equals total_platforms all builds for that version are done
-     and the merge loop can exit for all stages of that version.
+  2. Build-done markers ("build-done-a{RUN_ATTEMPT}-{VERSION}-{platform_key}"):
+     uploaded by every build job when it finishes (success or failure).  The
+     encoded run_attempt is compared against GITHUB_RUN_ATTEMPT (which is the
+     same for every job in a workflow run) so that stale markers from a
+     previous failed attempt are not treated as completion signals when the job
+     is re-run.  When the count of verified markers equals total_platforms all
+     builds for that version are done and the merge loop can exit for all
+     stages of that version.
 
   Batching multiple completions into one create call per image avoids
   unnecessary intermediate manifest states and reduces Docker Hub API traffic.
@@ -38,9 +42,15 @@ description: >
   considered pre-seeded and require no Docker Hub manifest inspection at all,
   saving pull quota.
 
-  For images with no cached state (first push or cold cache), manifest
-  inspection first uses an anonymous Docker Hub Registry API token
-  (100 unauthenticated pulls/6 h from the same IP).  If that fails
+  After seeding, each digest artifact is compared against the seeded state.
+  If the platform+digest is already live on Docker Hub (exact match), the
+  artifact is marked processed and counted without calling imagetools create.
+  This prevents redundant pushes (and the associated pull-quota cost) when
+  manifests completed in a previous run or attempt are re-encountered.
+
+  To conserve the Docker Hub authenticated-pull quota (200/6 h per account),
+  manifest inspection at startup first uses an anonymous Docker Hub Registry
+  API token (100 unauthenticated pulls/6 h from the same IP).  If that fails
   (e.g. 429 rate-limit, network error), it falls back to docker buildx
   imagetools inspect which uses the stored Docker Hub credentials.  If both
   attempts fail for a reason other than "tag not found", the job does NOT fail;
@@ -205,15 +215,17 @@ runs:
         #   imagetools create.  Provides within-run preservation without
         #   relying on a per-cycle inspect.
 
-        # Per-version build-done state.  A single "build-done-{VERSION}-*"
+        # Per-version build-done state.  A single "build-done-a{N}-{VERSION}-*"
         # marker covers all stages (base/secure/advance) for that version,
         # so we track it per version, not per stage.
         declare -A VER_BUILD_DONE    # version → count of build-done markers seen
 
-        # File tracking all build-done artifact names we have already counted
-        # (shared across all versions to avoid double-counting on re-read).
-        BUILD_DONE_SEEN_FILE="${WORK_DIR}/build-done-seen.txt"
-        touch "${BUILD_DONE_SEEN_FILE}"
+        # In-memory set of build-done artifact names already counted this run.
+        # Prevents double-counting when the artifact list is re-read each cycle.
+        # Only current-attempt markers (name prefix "build-done-a${GITHUB_RUN_ATTEMPT}-")
+        # are ever added here; markers from other attempts are ignored by the
+        # prefix filter and never reach this set.
+        declare -A BUILD_DONE_SEEN   # artifact_name → 1
 
         # File tracking unique "VERSION:platform_key" job keys for which at
         # least one digest artifact has been seen.  A digest upload means that
@@ -304,15 +316,15 @@ runs:
         # Pull-quota accounting.
         QUOTA_MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
 
-        # Wall-clock job start time (seconds since epoch).  Derived from the
-        # run_started_at input (github.run_started_at from the calling
-        # workflow) so it reflects the actual workflow run start rather than
-        # the moment this step begins executing.  Used by both the seeding
-        # and imagetools create quota blocks to enforce QUOTA_MAX_WAIT against
-        # real elapsed time and guarantee the job exits before GitHub's hard
-        # job-timeout so cleanup steps always run.  Parse failures are fatal
-        # because substituting the current time would undercount elapsed
-        # runtime, defeating that safety check.
+        # Wall-clock workflow run start time (seconds since epoch).  Derived
+        # from the run_started_at input (github.run_started_at from the
+        # calling workflow) so it reflects the actual workflow run start
+        # rather than the moment this step begins executing.  Used by both
+        # the seeding and imagetools create quota blocks to enforce
+        # QUOTA_MAX_WAIT against real elapsed time and guarantee the job
+        # exits before GitHub's hard job-timeout so cleanup steps always
+        # run.  Parse failures are fatal because substituting the current
+        # time would undercount elapsed runtime, defeating that safety check.
         if ! started_at="$(date -d "${RUN_STARTED_AT}" +%s)"; then
           echo "::error::Failed to parse required run_started_at input: ${RUN_STARTED_AT}" >&2
           exit 1
@@ -464,15 +476,36 @@ runs:
           fi
 
           # ── Count new build-done markers (per version, shared across stages) ─
-          # Use shell glob matching rather than grep regex so that dots and
-          # other metacharacters in VERSION are treated as literals.
+          # Format: "build-done-a{ATTEMPT}-{VERSION}-{platform_key}"
+          # Only markers for the current run attempt are considered; the prefix
+          # filter "build-done-a${GITHUB_RUN_ATTEMPT}-" ensures markers from
+          # any other attempt are never even parsed.  GITHUB_RUN_ATTEMPT is a
+          # default GitHub Actions environment variable set automatically on
+          # every runner — no API call needed.
+          #
+          # On a partial re-run ("Re-run failed jobs"), successful jobs from the
+          # previous attempt are not re-run and therefore do not upload new
+          # current-attempt build-done markers.  In that case
+          # VER_BUILD_DONE[$version] will never reach TOTAL_PLATFORMS for the
+          # version; the merge still completes because the image's completion
+          # check has a second condition: digest_merged >= TOTAL_PLATFORMS.
+          # Non-re-run platforms match the already-live fast-path (their
+          # existing digest artifacts are matched against the seeded Docker Hub
+          # manifest) so they are counted as merged without a new imagetools
+          # create, and digest_merged reaches TOTAL_PLATFORMS normally.
           while IFS=$'\t' read -r aname _; do
             [[ -z "${aname}" ]] && continue
-            [[ "${aname}" == "build-done-"* ]] || continue
-            grep -qxF "${aname}" "${BUILD_DONE_SEEN_FILE}" 2>/dev/null && continue
+            [[ "${aname}" == "build-done-a${GITHUB_RUN_ATTEMPT}-"* ]] || continue
+            [[ -n "${BUILD_DONE_SEEN[$aname]+set}" ]] && continue
+
+            # Parse: build-done-a{attempt}-{version}-{platform_key}
+            # (attempt already validated by the prefix filter above)
+            _bd_verplat="${aname#"build-done-a${GITHUB_RUN_ATTEMPT}-"}"
+            [[ -n "${_bd_verplat}" && "${_bd_verplat}" == *"-"* ]] || continue
+
             for version in "${!VER_BUILD_DONE[@]}"; do
-              if [[ "${aname}" == "build-done-${version}-"* ]]; then
-                echo "${aname}" >> "${BUILD_DONE_SEEN_FILE}"
+              if [[ "${_bd_verplat}" == "${version}-"* ]]; then
+                BUILD_DONE_SEEN[$aname]=1
                 VER_BUILD_DONE[$version]=$(( VER_BUILD_DONE[$version] + 1 ))
                 echo "  Build-done marker: ${aname}" \
                      "(${VER_BUILD_DONE[$version]}/${TOTAL_PLATFORMS} for v${version})"
@@ -587,10 +620,10 @@ runs:
               fi
               if [[ "${_anon_can_seed}" == "false" ]]; then
                 _do_seed=false
-                _job_elapsed=$(( $(date +%s) - started_at ))
-                if (( _job_elapsed >= QUOTA_MAX_WAIT )); then
-                  echo "::error::Docker Hub pull quota: total job elapsed time" \
-                       "${_job_elapsed}s exceeds QUOTA_MAX_WAIT with no" \
+                _run_elapsed=$(( $(date +%s) - started_at ))
+                if (( _run_elapsed >= QUOTA_MAX_WAIT )); then
+                  echo "::error::Docker Hub pull quota: total workflow-run elapsed time" \
+                       "${_run_elapsed}s exceeds QUOTA_MAX_WAIT with no" \
                        "unreserved pulls available" \
                        "(${_anon_display} anonymous remaining;" \
                        "${_auth_rem:-unknown} authenticated remaining," \
@@ -602,7 +635,7 @@ runs:
                      "Docker Hub pulls (${_anon_display} anonymous remaining;" \
                      "${_auth_rem:-unknown} authenticated remaining," \
                      "${_remaining_builds} reserved for build jobs)." \
-                     "Total job elapsed: ${_job_elapsed}s."
+                     "Total workflow-run elapsed: ${_run_elapsed}s."
               fi
             fi
           fi
@@ -882,6 +915,16 @@ runs:
           # number of refs after each attempt so later images in the cycle
           # see the updated quota and avoid 429s.
           _cycle_create_auth_rem="$(auth_quota_remaining)"
+          # auth_quota_remaining prints '' on any non-2xx response (including
+          # 429 when quota is exhausted).  Treat an empty result as 0 so the
+          # create gate below defers all creates this cycle rather than
+          # bypassing the gate and attempting creates while rate-limited.
+          if [[ -z "${_cycle_create_auth_rem}" ]]; then
+            echo "::warning::Authenticated Docker Hub quota probe failed or was" \
+                 "rate-limited; treating remaining quota as exhausted for this" \
+                 "cycle and deferring imagetools create attempts."
+            _cycle_create_auth_rem=0
+          fi
 
           # Tracks whether any imagetools create was deferred or failed in
           # this cycle so the post-cycle elapsed-time check can warn and
@@ -890,6 +933,14 @@ runs:
           # Tracks whether any deferral was specifically due to insufficient
           # quota (as opposed to an imagetools create failure).
           _any_quota_deferred=false
+          # Tracks whether any deferral was specifically because seeding had
+          # not yet completed and there was no cached baseline.  Distinct from
+          # a create failure so the post-cycle message is accurate.
+          _any_seeding_deferred=false
+          # Tracks whether any imagetools create command exited non-zero this
+          # cycle.  Distinct from quota/seeding deferral so that a cycle with
+          # both a quota deferral and a create failure reports both causes.
+          _any_create_failed=false
 
           for vs in "${VERSIONS_STAGES[@]}"; do
             version="${vs%%:*}"
@@ -953,9 +1004,32 @@ runs:
                   DIGEST="$(jq -r \
                     --arg k "${DIGEST_KEY}" '.[$k] // ""' "${digest_file}")"
                   if [[ -n "${DIGEST}" ]]; then
-                    NEW_PKEYS+=("${platform_key}")
-                    NEW_PDIGESTS+=("${DIGEST}")
-                    NEW_ARTIFACT_IDS+=("${aid}")
+                    # If seeding is complete and this exact platform+digest is
+                    # already live on Docker Hub, count the platform as merged
+                    # without pushing again.  This avoids redundant imagetools
+                    # create calls (and the associated pull-quota cost) when a
+                    # manifest that was fully merged in a previous run or a
+                    # previous attempt is re-encountered on re-run.  The cached
+                    # state only ever contains digests that were either already
+                    # in Docker Hub at seed time or were written by a successful
+                    # imagetools create, so a cache-fallback seed is equally
+                    # reliable for this check.
+                    if [[ "${IMG_SEEDED[$key]}" == "true" ]] && \
+                       grep -qxF "${platform_key}"$'\t'"${DIGEST}" \
+                         "${IMG_PLATFORM_DIGESTS[$key]}" 2>/dev/null; then
+                      echo "  [${IMAGE}] ${platform_key//-/\/}: already live" \
+                           "(digest matches existing manifest); skipping."
+                      echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
+                      if ! grep -qxF "${platform_key}" \
+                             "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
+                        echo "${platform_key}" >> "${IMG_MERGED_PKEYS[$key]}"
+                        IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
+                      fi
+                    else
+                      NEW_PKEYS+=("${platform_key}")
+                      NEW_PDIGESTS+=("${DIGEST}")
+                      NEW_ARTIFACT_IDS+=("${aid}")
+                    fi
                   elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
                     echo "::warning::${aname}: key '${DIGEST_KEY}' empty;" \
                          "all builds complete, skipping."
@@ -1028,6 +1102,7 @@ runs:
                      "deferring imagetools create to avoid dropping existing platforms."
                 _img_create_deferred=true
                 _any_create_deferred=true
+                _any_seeding_deferred=true
                 continue
               fi
               echo "Merging ${#NEW_PKEYS[@]} new platform(s) into ${IMAGE}..."
@@ -1109,6 +1184,7 @@ runs:
                     rm -f "${_create_err_file}"
                     IMG_LAST_ERROR[$key]="${_create_err}"
                     _img_create_deferred=true
+                    _any_create_failed=true
                     if [[ -n "${_create_err}" ]]; then
                       echo "imagetools create failed for ${IMAGE}: ${_create_err}"
                     else
@@ -1160,10 +1236,12 @@ runs:
 
           # ── Track create quota wait ────────────────────────────────────────
           # When any pending image's imagetools create was deferred or failed
-          # in this cycle, check the quota signal and log an appropriate
-          # warning.  Fail the job when total job elapsed time since startup
-          # exceeds QUOTA_MAX_WAIT so there is always time for cleanup steps
-          # before GitHub's hard job-timeout.
+          # in this cycle, log a message per cause and fail the job when total
+          # workflow-run elapsed time since run start exceeds QUOTA_MAX_WAIT
+          # so there is always time for cleanup steps before GitHub's hard
+          # job-timeout.  All causes that occurred in the cycle are reported
+          # independently so operators have a complete picture when multiple
+          # causes happen in the same cycle.
           if [[ "${_any_create_deferred}" == "true" ]]; then
             _create_elapsed=$(( $(date +%s) - started_at ))
             _auth_rem_display="${_cycle_create_auth_rem:-unknown}"
@@ -1171,14 +1249,20 @@ runs:
               if [[ "${_any_quota_deferred}" == "true" ]]; then
                 echo "::error::Docker Hub pull quota: imagetools create deferred" \
                      "(${_auth_rem_display} authenticated pulls remaining);" \
-                     "total job elapsed time ${_create_elapsed}s exceeds" \
+                     "total workflow-run elapsed time ${_create_elapsed}s exceeds" \
                      "QUOTA_MAX_WAIT. Wait ~6 hours, then click" \
                      "'Re-run failed jobs' on this workflow run's summary page."
-              else
-                echo "::error::One or more imagetools create operations failed" \
-                     "or remained deferred; total job elapsed time" \
-                     "${_create_elapsed}s exceeds QUOTA_MAX_WAIT without a" \
-                     "confirmed Docker Hub quota signal" \
+              fi
+              if [[ "${_any_seeding_deferred}" == "true" ]]; then
+                echo "::error::imagetools create deferred (waiting for seeding" \
+                     "to complete); total workflow-run elapsed time ${_create_elapsed}s" \
+                     "exceeds QUOTA_MAX_WAIT. Seeding may be stalled or the" \
+                     "existing manifest could not be fetched - re-run the workflow."
+              fi
+              if [[ "${_any_create_failed}" == "true" ]]; then
+                echo "::error::One or more imagetools create operations failed;" \
+                     "total workflow-run elapsed time ${_create_elapsed}s exceeds" \
+                     "QUOTA_MAX_WAIT" \
                      "(${_auth_rem_display} authenticated pulls remaining)." \
                      "Check earlier imagetools create logs for the underlying" \
                      "failure before re-running this workflow."
@@ -1189,9 +1273,13 @@ runs:
               echo "::warning::imagetools create deferred due to Docker Hub pull" \
                    "quota (${_auth_rem_display} authenticated pulls remaining;" \
                    "${_create_elapsed}s elapsed)."
-            else
+            fi
+            if [[ "${_any_seeding_deferred}" == "true" ]]; then
+              echo "::warning::imagetools create deferred (waiting for seeding" \
+                   "to complete; ${_create_elapsed}s elapsed)."
+            fi
+            if [[ "${_any_create_failed}" == "true" ]]; then
               echo "::warning::One or more imagetools create operations failed" \
-                   "without a confirmed Docker Hub quota signal" \
                    "(${_auth_rem_display} authenticated pulls remaining;" \
                    "${_create_elapsed}s elapsed)." \
                    "Check earlier imagetools create logs for the underlying failure."
