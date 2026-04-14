@@ -285,9 +285,14 @@ runs:
               fi
             else
               rm -f "${_clean_tmp}"
+              _bad_pdigest_file="${_pdigest_file}.unsanitized"
+              rm -f "${_bad_pdigest_file}"
+              mv "${_pdigest_file}" "${_bad_pdigest_file}"
+              : > "${_pdigest_file}"
               echo "  WARNING: ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
                    "failed to sanitize cached digest state;" \
-                   "keeping original file unchanged."
+                   "moved original file aside and forcing re-seeding."
+              echo "::warning::${REPO}:${version}-${stage}${TAG_SUFFIX}: failed to sanitize cached digest state; moved ${_bad_pdigest_file} aside and cleared the baseline so manifest creation stays deferred until re-seeding succeeds."
             fi
           else
             echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
