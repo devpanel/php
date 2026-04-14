@@ -888,10 +888,7 @@ runs:
 
               if [[ "${_seed_status}" == "ok" ]] \
                   && [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
-                echo "::error::${IMAGE_SEED}: manifest inspection succeeded" \
-                     "but seeding produced no baseline; refusing to continue" \
-                     "with an unseeded image because manifest merging would" \
-                     "otherwise stall until timeout."
+                echo "::error::${IMAGE_SEED}: manifest inspection succeeded but seeding produced no baseline; refusing to continue with an unseeded image because manifest merging would otherwise stall until timeout."
                 exit 1
               fi
 
