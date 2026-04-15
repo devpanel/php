@@ -571,6 +571,10 @@ runs:
                  "rate-limited; treating remaining quota as exhausted for this cycle."
             _auth_rem=0
           fi
+          # Initialise auth-path seeding counter here (before the seeding block)
+          # so it is always defined under set -u; the seeding loop may reset and
+          # increment it, but if seeding is skipped the adjustment below reads 0.
+          _auth_used=0
 
           _do_seed=true
           _total_unseeded=${#_unseeded[@]}
@@ -646,7 +650,6 @@ runs:
 
           if [[ "${_do_seed}" == "true" && ${#_unseeded[@]} -gt 0 ]]; then
             echo "Seeding platform-digest state from existing manifests..."
-            _auth_used=0
             for vs in "${_unseeded[@]}"; do
               version="${vs%%:*}"
               stage="${vs##*:}"
@@ -886,6 +889,15 @@ runs:
             done
           fi
 
+          # ── Adjust auth quota snapshot after seeding ───────────────────────
+          # The seeding loop tracked authenticated imagetools-inspect calls in
+          # _auth_used.  Subtract that count from _auth_rem so the imagetools
+          # create gate below sees the quota actually remaining after seeding,
+          # not the pre-seeding value probed at the start of the cycle.
+          if [[ "${_auth_rem}" != "unlimited" ]] && (( _auth_used > 0 )); then
+            _auth_rem=$(( _auth_rem > _auth_used ? _auth_rem - _auth_used : 0 ))
+          fi
+
           # ── Process each pending image ─────────────────────────────────
           CYCLE_DIR="${WORK_DIR}/cycle"
           rm -rf "${CYCLE_DIR}"
@@ -1103,17 +1115,21 @@ runs:
                 # sync with Docker Hub's actual remaining count (e.g. another
                 # process consumed quota between the probe and this create);
                 # that is corrected by re-probing at the start of each cycle.
+                # When quota is insufficient, continue iterating so that later
+                # images with fewer refs can still be processed; only the first
+                # deferral emits a log line to avoid repetitive messages.
                 if [[ "${_auth_rem}" != "unlimited" ]] \
                    && (( _auth_rem < ${#REFS[@]} + _remaining_builds )); then
-                  echo "  [${IMAGE}] Deferring imagetools create: Docker Hub" \
-                       "pull quota insufficient (${_auth_rem} authenticated" \
-                       "pulls remaining, ${_remaining_builds} reserved for" \
-                       "build jobs, ${#REFS[@]} required)." \
-                       "Skipping remaining images this cycle."
+                  if [[ "${_any_quota_deferred}" != "true" ]]; then
+                    echo "  [${IMAGE}] Deferring imagetools create: Docker Hub" \
+                         "pull quota insufficient (${_auth_rem} authenticated" \
+                         "pulls remaining, ${_remaining_builds} reserved for" \
+                         "build jobs, ${#REFS[@]} required)."
+                  fi
                   _img_create_deferred=true
                   _any_create_deferred=true
                   _any_quota_deferred=true
-                  break
+                  continue
                 else
                   _create_err_file="$(mktemp)"
                   if docker buildx imagetools create \
