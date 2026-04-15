@@ -91,7 +91,7 @@ jobs:
       # Unix epoch seconds captured at the very start of this job.  Passed to
       # the merge job so merge-manifests can measure elapsed workflow time for
       # the QUOTA_MAX_WAIT safety cut-off without an extra GitHub API call.
-      run_started_at: ${{ steps.start_time.outputs.run_started_at }}
+      run_started_at: ${{ steps.start_time.outputs.detect_job_started_at }}
       # Total number of distinct platforms — used by each merge job to know
       # when all per-platform digest artifacts have been collected.
       total_platforms: ${{ steps.detect.outputs.total_platforms }}
@@ -114,10 +114,10 @@ jobs:
       # each job uses GHCR as primary (writable) or GHA as primary (not writable).
       ghcr_writable: ${{ steps.detect.outputs.ghcr_writable }}
     steps:
-      - name: Capture workflow start time
+      - name: Capture detect job start time
         id: start_time
         shell: bash
-        run: echo "run_started_at=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+        run: echo "detect_job_started_at=$(date -u +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
         uses: actions/checkout@v6

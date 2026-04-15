@@ -316,12 +316,12 @@ runs:
         # Pull-quota accounting.
         QUOTA_MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
 
-        # Wall-clock workflow run start time (seconds since epoch).  Captured
-        # at the start of the detect job and passed in via RUN_STARTED_AT so
-        # no GitHub API call is needed here.  Used by both the seeding and
-        # imagetools create quota blocks to enforce QUOTA_MAX_WAIT against
-        # real elapsed time and guarantee the job exits before GitHub's hard
-        # job-timeout so cleanup steps always run.
+        # Elapsed-time anchor (seconds since epoch) captured at the start of
+        # the detect job and passed in via RUN_STARTED_AT so no GitHub API
+        # call is needed here.  Used by both the seeding and imagetools
+        # create quota blocks to enforce QUOTA_MAX_WAIT against real elapsed
+        # time and guarantee the job exits before GitHub's hard job-timeout
+        # so cleanup steps always run.
         started_at="${RUN_STARTED_AT}"
         if [[ -z "${started_at}" || ! "${started_at}" =~ ^[0-9]+$ ]]; then
           echo "::error::run_started_at input is missing or not a Unix epoch integer: '${started_at}'" >&2
