@@ -800,8 +800,14 @@ runs:
                       printf '%s\t%s\n' "${_pf_pkey}" "${_pf_digest}" \
                         >> "${IMG_PLATFORM_DIGESTS[$key]}"
                     done < <(printf '%s' "${_inspect_out}" | awk '
-                        # Multi-platform: collect indented Platform + Digest pairs.
+                        # Multi-platform: collect indented Platform + Digest pairs
+                        # per sub-manifest.  Digest and Platform may appear in
+                        # either order, so each block checks whether the other
+                        # field is already set and emits the pair immediately when
+                        # both are available.  This avoids buffering all entries.
                         /^[[:space:]]+Name:[[:space:]]+/ {
+                          # Start of a new sub-manifest block; emit any pending
+                          # partial pair (should not normally occur) and reset.
                           if (entry_digest != "" && entry_platform != "") {
                             print entry_platform "\t" entry_digest
                           }
@@ -827,7 +833,10 @@ runs:
                           }
                           next
                         }
-                        # Single-platform: top-level Digest + Platform fields.
+                        # Single-platform: top-level (non-indented) Digest and
+                        # Platform fields.  These patterns are mutually exclusive
+                        # with the indented entry_* patterns above, so entry_* and
+                        # top_* can never both be non-empty at END.
                         /^Digest:[[:space:]]+/ { top_digest = $2; next }
                         /^Platform:[[:space:]]+/ { top_platform = $2; next }
                         END {
