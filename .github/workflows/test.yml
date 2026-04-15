@@ -1,5 +1,5 @@
 name: Test
-run-name: "${{ github.workflow }}-${{ github.ref }}: ${{ github.event.pull_request.title || github.sha }}"
+run-name: "${{ github.workflow }}-${{ github.ref }}: test"
 
 on:
   push:
