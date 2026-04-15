@@ -77,10 +77,10 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     permissions:
-      actions:  read
+      actions: read
       contents: read
     outputs:
-      before_sha:    ${{ steps.effective_sha.outputs.before_sha }}
+      before_sha: ${{ steps.effective_sha.outputs.before_sha }}
       needs_history: ${{ steps.effective_sha.outputs.needs_history }}
     steps:
       - uses: actions/checkout@v6
@@ -89,7 +89,9 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.all_versions != true
         uses: ./.github/actions/effective-before-sha
         with:
-          workflow_files: ci.yml test.yml
+          workflow_files: |
+            ci.yml
+            test.yml
           concurrency_group: ${{ github.workflow }}-${{ github.ref }}
           current_sha: ${{ github.sha }}
           ref_name: ${{ github.ref_name }}
@@ -123,9 +125,9 @@ jobs:
       contents: read
       actions: write
     outputs:
-      versions:     ${{ steps.versions.outputs.versions }}
+      versions: ${{ steps.versions.outputs.versions }}
       has_versions: ${{ steps.versions.outputs.has_versions }}
-      ghcr_repo:    ${{ steps.ghcr.outputs.repo }}
+      ghcr_repo: ${{ steps.ghcr.outputs.repo }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -238,11 +240,11 @@ jobs:
 
       - name: Build PHP images
         env:
-          CACHE_FROM_ENABLED:   ${{ inputs.no_cache != true && 'true' || 'false' }}
-          GHCR_REPO:            ${{ needs.detect.outputs.ghcr_repo }}
-          PLATFORMS:            linux/amd64
-          DOWNLOADS_DIR:        ${{ runner.temp }}/build-downloads
-          BAKE_OVERRIDES_FILE:  ${{ runner.temp }}/preseed-bake-overrides.json
+          CACHE_FROM_ENABLED: ${{ inputs.no_cache != true && 'true' || 'false' }}
+          GHCR_REPO: ${{ needs.detect.outputs.ghcr_repo }}
+          PLATFORMS: linux/amd64
+          DOWNLOADS_DIR: ${{ runner.temp }}/build-downloads
+          BAKE_OVERRIDES_FILE: ${{ runner.temp }}/preseed-bake-overrides.json
         run: bash tests/build-dockerfile.sh --version ${{ matrix.version }}
 
       - name: Run PHP functional tests
