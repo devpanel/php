@@ -550,16 +550,20 @@ runs:
           done
 
           # ── Probe auth quota once per cycle ────────────────────────────────
-          # Both the seeding gate and the imagetools create gate need the
-          # authenticated Docker Hub pull quota.  Probing here, once per cycle
-          # before either gate runs, avoids a duplicate API call later.
-          # The result (_auth_rem) is reused directly by the imagetools create gate.
+          # Both the seeding gate and the imagetools create gate share three
+          # quota variables whose meanings are fixed for the whole cycle:
+          #   _auth_rem   – raw pull quota returned by the Docker Hub probe.
+          #   _auth_avail – unreserved quota: _auth_rem minus _remaining_builds
+          #                 slots held back for in-progress build jobs.
+          #   _auth_used  – pulls consumed by this job since the probe; starts
+          #                 at 0 each cycle and is incremented (never the others).
+          # Every gate checks (_auth_avail - _auth_used) >= N; every pull
+          # operation increments _auth_used by the number of pulls consumed.
+          # _auth_rem and _remaining_builds are only used in log messages.
           #
-          # Compute the number of build jobs still in progress (no digest
-          # artifact yet) so both gates can reserve auth quota for them.  The
-          # merge job runs on its OWN runner whose anonymous (IP-based) quota
-          # is completely independent from each build job's runner, so there is
-          # no anonymous reserve to track here.
+          # The merge job runs on its OWN runner whose anonymous (IP-based)
+          # quota is completely independent from each build job's runner, so
+          # there is no anonymous reserve to track here.
           _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
                                   ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
           _auth_rem="$(auth_quota_remaining)"
@@ -571,6 +575,13 @@ runs:
                  "rate-limited; treating remaining quota as exhausted for this cycle."
             _auth_rem=0
           fi
+          if [[ "${_auth_rem}" == "unlimited" ]]; then
+            _auth_avail="unlimited"
+          else
+            _auth_avail=$(( _auth_rem > _remaining_builds \
+                              ? _auth_rem - _remaining_builds : 0 ))
+          fi
+          _auth_used=0
           _do_seed=true
           _total_unseeded=${#_unseeded[@]}
           if [[ ${_total_unseeded} -gt 0 ]]; then
@@ -591,21 +602,15 @@ runs:
             fi
 
             # ── 7. Gate seeding on available quota ────────────────────────────
-            # _auth_rem tracks how many authenticated Docker Hub pulls remain
-            # this cycle; it is decremented whenever the auth path is actually
-            # used (imagetools inspect during seeding, imagetools create during
-            # the push stage) so both stages share one consistent counter.
-            # _remaining_builds slots are reserved for in-progress build jobs
-            # and are never consumed by this merge job.  Seeding (and later
-            # creates) are deferred when _auth_rem <= _remaining_builds.
-            # When authenticated quota is available, seed normally.
-            # When only anonymous quota is available, seeding proceeds via the
+            # When the unreserved, unused quota (_auth_avail - _auth_used) is
+            # zero or negative, no auth pulls are available to this job.
+            # When only anonymous quota remains, seeding continues via the
             # anonymous inspect path; images that cannot be seeded anonymously
-            # are deferred to the next polling cycle (the inner loop skips them
-            # with a continue) so reserved auth slots are not consumed.
+            # are deferred to the next polling cycle so reserved auth slots are
+            # not consumed.
             # Defer the entire seeding cycle only when both are unavailable.
-            if [[ "${_auth_rem}" != "unlimited" ]] \
-                && (( _auth_rem <= _remaining_builds )); then
+            if [[ "${_auth_avail}" != "unlimited" ]] \
+                && (( _auth_avail - _auth_used <= 0 )); then
               _anon_can_seed=false
               if [[ "${_anon_rem}" == "unlimited" ]] \
                   || { [[ -n "${_anon_rem}" ]] && (( _anon_rem > 0 )); }; then
@@ -682,15 +687,15 @@ runs:
               fi
 
               # ── Defer imagetools-inspect when no unreserved auth quota ───────
-              # _auth_rem is probed once per cycle and decremented whenever
-              # the auth path is used.  _remaining_builds slots are reserved.
-              # If the anonymous path could not resolve this image and no
-              # unreserved authenticated quota is available, skip it for this
-              # cycle so reserved slots are not consumed.  Other images in the
-              # list that the anonymous path can resolve will still be seeded.
+              # _auth_avail is the quota available to this job (probed once per
+              # cycle); _auth_used tracks pulls consumed so far this cycle.
+              # If the anonymous path could not resolve this image and the
+              # unreserved, unused budget is exhausted, skip it for this cycle
+              # so reserved slots are not consumed.  Other images in the list
+              # that the anonymous path can resolve will still be seeded.
               if [[ -z "${_seed_status}" ]] \
-                  && [[ "${_auth_rem}" != "unlimited" ]] \
-                  && (( _auth_rem <= _remaining_builds )); then
+                  && [[ "${_auth_avail}" != "unlimited" ]] \
+                  && (( _auth_avail - _auth_used <= 0 )); then
                 echo "  ${IMAGE_SEED}: deferring to next cycle (anonymous" \
                      "inspect insufficient; no unreserved auth quota)."
                 continue
@@ -859,15 +864,15 @@ runs:
               if [[ "${_seeding_succeeded}" == "true" ]]; then
                 IMG_SEEDED[$key]="true"
               fi
-              # When authenticated quota is limited, decrement _auth_rem and
-              # break the seeding loop as soon as the unreserved quota is
+              # When authenticated quota is limited, increment _auth_used and
+              # break the seeding loop as soon as the unreserved budget is
               # exhausted.  Remaining unseeded images are left for the next
               # polling cycle so in-progress build jobs keep their reserved
               # fallback pull slots.
               if [[ "${_used_auth_path}" == "true" ]] \
-                  && [[ "${_auth_rem}" != "unlimited" ]]; then
-                _auth_rem=$(( _auth_rem - 1 ))
-                if (( _auth_rem <= _remaining_builds )); then
+                  && [[ "${_auth_avail}" != "unlimited" ]]; then
+                _auth_used=$(( _auth_used + 1 ))
+                if (( _auth_avail - _auth_used <= 0 )); then
                   echo "Unreserved authenticated Docker Hub quota used;" \
                        "ending seeding cycle."
                   break
@@ -1086,9 +1091,9 @@ runs:
               if [[ ${#REFS[@]} -gt 0 ]]; then
                 # ── Gate imagetools create on pull quota ──────────────────
                 # imagetools create fetches each referenced digest manifest,
-                # consuming pull quota.  Defer when the cycle-level snapshot
-                # has fewer than ${#REFS[@]} + _remaining_builds pulls left:
-                # this ensures quota reserved for in-progress build jobs is
+                # consuming pull quota.  Defer when the unreserved, unused
+                # budget (_auth_avail - _auth_used) has fewer than ${#REFS[@]}
+                # pulls left so quota reserved for in-progress build jobs is
                 # never consumed by creates.  The snapshot may fall out of
                 # sync with Docker Hub's actual remaining count (e.g. another
                 # process consumed quota between the probe and this create);
@@ -1096,13 +1101,14 @@ runs:
                 # When quota is insufficient, continue iterating so that later
                 # images with fewer refs can still be processed; only the first
                 # deferral emits a log line to avoid repetitive messages.
-                if [[ "${_auth_rem}" != "unlimited" ]] \
-                   && (( _auth_rem < ${#REFS[@]} + _remaining_builds )); then
+                if [[ "${_auth_avail}" != "unlimited" ]] \
+                   && (( _auth_avail - _auth_used < ${#REFS[@]} )); then
                   if [[ "${_any_quota_deferred}" != "true" ]]; then
                     echo "  [${IMAGE}] Deferring imagetools create: Docker Hub" \
                          "pull quota insufficient (${_auth_rem} authenticated" \
-                         "pulls remaining, ${_remaining_builds} reserved for" \
-                         "build jobs, ${#REFS[@]} required)."
+                         "remaining, ${_remaining_builds} reserved for build jobs," \
+                         "$(( _auth_avail - _auth_used )) available to this job," \
+                         "${#REFS[@]} required)."
                   fi
                   _img_create_deferred=true
                   _any_create_deferred=true
@@ -1154,19 +1160,18 @@ runs:
                     # map is discarded.  New artifacts remain unprocessed so they
                     # will be retried on the next cycle.
                   fi
-                  # Decrement the cycle-level quota snapshot by the number of
+                  # Increment the cycle-level usage counter by the number of
                   # refs consumed so that subsequent images in this cycle see
-                  # the updated remaining count.  The snapshot never goes
-                  # negative because we only reach this point when
-                  # _auth_rem >= ${#REFS[@]} + _remaining_builds (the gate
-                  # above defers when the snapshot is insufficient), so
-                  # _auth_rem - ${#REFS[@]} >= _remaining_builds >= 0.  The
-                  # snapshot may fall out of sync with Docker Hub's actual
+                  # the updated available budget.  The counter never makes
+                  # _auth_avail - _auth_used negative because we only reach
+                  # this point when _auth_avail - _auth_used >= ${#REFS[@]}
+                  # (the gate above defers when the budget is insufficient).
+                  # The snapshot may fall out of sync with Docker Hub's actual
                   # remaining count if another process consumed quota between
                   # the probe and this create, but that is corrected by
                   # re-probing at the start of each cycle.
-                  if [[ "${_auth_rem}" != "unlimited" ]]; then
-                    _auth_rem=$(( _auth_rem - ${#REFS[@]} ))
+                  if [[ "${_auth_avail}" != "unlimited" ]]; then
+                    _auth_used=$(( _auth_used + ${#REFS[@]} ))
                   fi
                 fi
               fi
@@ -1206,7 +1211,9 @@ runs:
             if (( _create_elapsed >= QUOTA_MAX_WAIT )); then
               if [[ "${_any_quota_deferred}" == "true" ]]; then
                 echo "::error::Docker Hub pull quota: imagetools create deferred" \
-                     "(${_auth_rem} authenticated pulls remaining);" \
+                     "(${_auth_rem} authenticated remaining," \
+                     "${_remaining_builds} reserved for build jobs," \
+                     "${_auth_used} used by this job);" \
                      "total workflow-run elapsed time ${_create_elapsed}s exceeds" \
                      "QUOTA_MAX_WAIT. Wait ~6 hours, then click" \
                      "'Re-run failed jobs' on this workflow run's summary page."
@@ -1221,7 +1228,9 @@ runs:
                 echo "::error::One or more imagetools create operations failed;" \
                      "total workflow-run elapsed time ${_create_elapsed}s exceeds" \
                      "QUOTA_MAX_WAIT" \
-                     "(${_auth_rem} authenticated pulls remaining)." \
+                     "(${_auth_rem} authenticated remaining," \
+                     "${_remaining_builds} reserved for build jobs," \
+                     "${_auth_used} used by this job)." \
                      "Check earlier imagetools create logs for the underlying" \
                      "failure before re-running this workflow."
               fi
@@ -1229,8 +1238,9 @@ runs:
             fi
             if [[ "${_any_quota_deferred}" == "true" ]]; then
               echo "::warning::imagetools create deferred due to Docker Hub pull" \
-                   "quota (${_auth_rem} authenticated pulls remaining;" \
-                   "${_create_elapsed}s elapsed)."
+                   "quota (${_auth_rem} authenticated remaining," \
+                   "${_remaining_builds} reserved for build jobs," \
+                   "${_auth_used} used by this job; ${_create_elapsed}s elapsed)."
             fi
             if [[ "${_any_seeding_deferred}" == "true" ]]; then
               echo "::warning::imagetools create deferred (waiting for seeding" \
@@ -1238,8 +1248,9 @@ runs:
             fi
             if [[ "${_any_create_failed}" == "true" ]]; then
               echo "::warning::One or more imagetools create operations failed" \
-                   "(${_auth_rem} authenticated pulls remaining;" \
-                   "${_create_elapsed}s elapsed)." \
+                   "(${_auth_rem} authenticated remaining," \
+                   "${_remaining_builds} reserved for build jobs," \
+                   "${_auth_used} used by this job; ${_create_elapsed}s elapsed)." \
                    "Check earlier imagetools create logs for the underlying failure."
             fi
           fi
