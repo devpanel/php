@@ -656,6 +656,7 @@ runs:
               _seed_status=""  # "ok" | "not_found" | "error"
               _used_auth_path=false
               MANIFEST_BODY=""
+              _inspect_out=""
 
               # ── Step 1: unauthenticated (anonymous token) ──────────────────
               # ANON_TOKEN was refreshed by get_inspect_token earlier in this cycle.
@@ -710,16 +711,19 @@ runs:
               # ── Step 2: imagetools inspect ───────────────────────────────────
               # Reached when the anonymous Registry API fetch failed (e.g.
               # network error, unexpected HTTP status, or 0 parseable platforms).
+              # A single non-raw imagetools inspect handles both multi-platform
+              # manifests (sub-entries with Platform and Digest fields) and
+              # single-platform manifests (top-level Platform and Digest fields).
               if [[ -z "${_seed_status}" ]]; then
                 _used_auth_path=true
                 [[ "${_auth_avail}" == "unlimited" ]] || _auth_used=$(( _auth_used + 1 ))
                 seed_stderr="$(mktemp)"
-                if MANIFEST_BODY="$(docker buildx imagetools inspect \
-                                      "${IMAGE_SEED}" --raw 2>"${seed_stderr}")"; then
+                if _inspect_out="$(docker buildx imagetools inspect \
+                                     "${IMAGE_SEED}" 2>"${seed_stderr}")"; then
                   _seed_status="ok"
                   echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
                 else
-                  MANIFEST_BODY=""
+                  _inspect_out=""
                   if grep -qi \
                        "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
                        "${seed_stderr}"; then
@@ -740,116 +744,108 @@ runs:
                 ok)
                   # Fresh manifest obtained; rewrite state file from it.
                   > "${IMG_PLATFORM_DIGESTS[$key]}"
-                  # Parse each manifest entry as a JSON object (one per line)
-                  # to avoid the bash IFS=$'\t' whitespace-collapsing issue
-                  # that incorrectly merges consecutive tab delimiters (empty
-                  # variant field) and shifts digest into the variant variable.
-                  while IFS= read -r _entry; do
-                    p_os="$(    printf '%s' "${_entry}" | jq -r '.os')"
-                    p_arch="$(  printf '%s' "${_entry}" | jq -r '.arch')"
-                    p_var="$(   printf '%s' "${_entry}" | jq -r '.var')"
-                    p_digest="$(printf '%s' "${_entry}" | jq -r '.digest')"
-                    # Skip attestation / unknown-platform entries.
-                    [[ "${p_os}" == "unknown" || "${p_arch}" == "unknown" ]] && continue
-                    # Skip entries with empty digest, os, or architecture.
-                    [[ -n "${p_digest}" && -n "${p_os}" && -n "${p_arch}" ]] || continue
-                    # Normalize platform key: strip default variants (arm64/v8,
-                    # amd64/v1) so keys match build-job artifact names.
-                    _normalized_plat="${p_os}/${p_arch}"
-                    if [[ -n "${p_var}" ]] && \
-                       ! [[ "${p_arch}" == "arm64" && "${p_var}" == "v8" ]] && \
-                       ! [[ "${p_arch}" == "amd64" && "${p_var}" == "v1" ]]; then
-                      _normalized_plat="${p_os}/${p_arch}/${p_var}"
-                    fi
-                    pkey="${_normalized_plat//\//-}"
-                    printf '%s\t%s\n' "${pkey}" "${p_digest}" \
-                      >> "${IMG_PLATFORM_DIGESTS[$key]}"
-                  done < <(printf '%s' "${MANIFEST_BODY}" | jq -c \
-                    '.manifests[]? |
-                     {os:     (.platform.os           // ""),
-                      arch:   (.platform.architecture // ""),
-                      var:    (.platform.variant      // ""),
-                      digest: (.digest                // "")}')
+                  if [[ -n "${MANIFEST_BODY}" ]]; then
+                    # Unauthenticated Registry API path: parse raw JSON with jq.
+                    # Parse each manifest entry as a JSON object (one per line)
+                    # to avoid the bash IFS=$'\t' whitespace-collapsing issue
+                    # that incorrectly merges consecutive tab delimiters (empty
+                    # variant field) and shifts digest into the variant variable.
+                    while IFS= read -r _entry; do
+                      p_os="$(    printf '%s' "${_entry}" | jq -r '.os')"
+                      p_arch="$(  printf '%s' "${_entry}" | jq -r '.arch')"
+                      p_var="$(   printf '%s' "${_entry}" | jq -r '.var')"
+                      p_digest="$(printf '%s' "${_entry}" | jq -r '.digest')"
+                      # Skip attestation / unknown-platform entries.
+                      [[ "${p_os}" == "unknown" || "${p_arch}" == "unknown" ]] && continue
+                      # Skip entries with empty digest, os, or architecture.
+                      [[ -n "${p_digest}" && -n "${p_os}" && -n "${p_arch}" ]] || continue
+                      # Normalize platform key: strip default variants (arm64/v8,
+                      # amd64/v1) so keys match build-job artifact names.
+                      _normalized_plat="${p_os}/${p_arch}"
+                      if [[ -n "${p_var}" ]] && \
+                         ! [[ "${p_arch}" == "arm64" && "${p_var}" == "v8" ]] && \
+                         ! [[ "${p_arch}" == "amd64" && "${p_var}" == "v1" ]]; then
+                        _normalized_plat="${p_os}/${p_arch}/${p_var}"
+                      fi
+                      pkey="${_normalized_plat//\//-}"
+                      printf '%s\t%s\n' "${pkey}" "${p_digest}" \
+                        >> "${IMG_PLATFORM_DIGESTS[$key]}"
+                    done < <(printf '%s' "${MANIFEST_BODY}" | jq -c \
+                      '.manifests[]? |
+                       {os:     (.platform.os           // ""),
+                        arch:   (.platform.architecture // ""),
+                        var:    (.platform.variant      // ""),
+                        digest: (.digest                // "")}')
+                  else
+                    # Authenticated imagetools inspect path: parse non-raw text
+                    # with awk.  A single non-raw inspect provides Platform and
+                    # Digest fields for both multi-platform manifests (as indented
+                    # sub-manifest entries) and single-platform manifests (as
+                    # top-level fields) — no second inspect call required.
+                    while IFS=$'\t' read -r _pf_plat _pf_digest; do
+                      IFS='/' read -r _p_os _p_arch _p_var <<< "${_pf_plat}"
+                      # Skip attestation / unknown-platform entries.
+                      [[ "${_p_os}" == "unknown" || "${_p_arch}" == "unknown" ]] && continue
+                      # Skip entries with empty digest, os, or architecture.
+                      [[ -n "${_pf_digest}" && -n "${_p_os}" && -n "${_p_arch}" ]] || continue
+                      # Normalize platform key: strip default variants (arm64/v8,
+                      # amd64/v1) so keys match build-job artifact names.
+                      _normalized_plat="${_p_os}/${_p_arch}"
+                      if [[ -n "${_p_var:-}" ]] && \
+                         ! [[ "${_p_arch}" == "arm64" && "${_p_var}" == "v8" ]] && \
+                         ! [[ "${_p_arch}" == "amd64" && "${_p_var}" == "v1" ]]; then
+                        _normalized_plat="${_p_os}/${_p_arch}/${_p_var}"
+                      fi
+                      _pf_pkey="${_normalized_plat//\//-}"
+                      printf '%s\t%s\n' "${_pf_pkey}" "${_pf_digest}" \
+                        >> "${IMG_PLATFORM_DIGESTS[$key]}"
+                    done < <(printf '%s' "${_inspect_out}" | awk '
+                        # Multi-platform: collect indented Platform + Digest pairs.
+                        /^[[:space:]]+Name:[[:space:]]+/ {
+                          if (entry_digest != "" && entry_platform != "") {
+                            print entry_platform "\t" entry_digest
+                          }
+                          entry_digest = ""
+                          entry_platform = ""
+                          next
+                        }
+                        /^[[:space:]]+Digest:[[:space:]]+/ {
+                          entry_digest = $2
+                          if (entry_platform != "") {
+                            print entry_platform "\t" entry_digest
+                            entry_digest = ""
+                            entry_platform = ""
+                          }
+                          next
+                        }
+                        /^[[:space:]]+Platform:[[:space:]]+/ {
+                          entry_platform = $2
+                          if (entry_digest != "") {
+                            print entry_platform "\t" entry_digest
+                            entry_digest = ""
+                            entry_platform = ""
+                          }
+                          next
+                        }
+                        # Single-platform: top-level Digest + Platform fields.
+                        /^Digest:[[:space:]]+/ { top_digest = $2; next }
+                        /^Platform:[[:space:]]+/ { top_platform = $2; next }
+                        END {
+                          if (entry_digest != "" && entry_platform != "") {
+                            print entry_platform "\t" entry_digest
+                          }
+                          if (top_digest != "" && top_platform != "") {
+                            print top_platform "\t" top_digest
+                          }
+                        }
+                      ')
+                  fi
                   n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
                   if [[ "${n}" -gt 0 ]]; then
                     echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
                   else
-                    # No .manifests[] entries: single-platform or all-unknown.
-                    # Try imagetools inspect (non-raw) which can report platform
-                    # info even for schema2 single-platform manifests.
-                    # This is a second authenticated pull; only spend budget if
-                    # quota remains, otherwise defer this image to a later cycle.
-                    echo "  ${IMAGE_SEED}: 0 manifest-list entries; checking for" \
-                         "single-platform manifest via imagetools inspect..."
-                    if [[ "${_auth_avail}" == "unlimited" ]] || \
-                       (( _auth_used < _auth_avail )); then
-                      [[ "${_auth_avail}" == "unlimited" ]] || _auth_used=$(( _auth_used + 1 ))
-                      _si_out="$(docker buildx imagetools inspect "${IMAGE_SEED}" \
-                                   2>/dev/null)" || _si_out=""
-                    else
-                      echo "  ${IMAGE_SEED}: auth pull budget exhausted; deferring" \
-                           "single-platform manifest check to a later cycle."
-                      _si_out=""
-                    fi
-                    _si_pair="$(printf '%s' "${_si_out}" \
-                      | awk '
-                          /^[[:space:]]*Digest:[[:space:]]+/ {
-                            value = $2
-                            if ($0 ~ /^[[:space:]]+/) {
-                              entry_digest = value
-                              if (entry_platform != "") {
-                                print entry_digest "\t" entry_platform
-                                exit
-                              }
-                            } else {
-                              top_digest = value
-                            }
-                            next
-                          }
-                          /^[[:space:]]*Platform:[[:space:]]+/ {
-                            value = $2
-                            if ($0 ~ /^[[:space:]]+/) {
-                              entry_platform = value
-                              if (entry_digest != "") {
-                                print entry_digest "\t" entry_platform
-                                exit
-                              }
-                            } else {
-                              top_platform = value
-                            }
-                            next
-                          }
-                          END {
-                            if (top_digest != "" && top_platform != "") {
-                              print top_digest "\t" top_platform
-                            }
-                          }
-                        ')" || _si_pair=""
-                    IFS=$'\t' read -r _si_digest _si_platform <<< "${_si_pair}"
-                    if [[ -n "${_si_digest}" && -n "${_si_platform}" ]]; then
-                      IFS='/' read -r _si_os _si_arch _si_var <<< "${_si_platform}"
-                      if [[ -n "${_si_os}" && -n "${_si_arch}" ]] && \
-                         [[ "${_si_os}" != "unknown" ]] && \
-                         [[ "${_si_arch}" != "unknown" ]]; then
-                        _si_norm="${_si_os}/${_si_arch}"
-                        if [[ -n "${_si_var:-}" ]] && \
-                           ! [[ "${_si_arch}" == "arm64" && "${_si_var}" == "v8" ]] && \
-                           ! [[ "${_si_arch}" == "amd64" && "${_si_var}" == "v1" ]]; then
-                          _si_norm="${_si_os}/${_si_arch}/${_si_var}"
-                        fi
-                        _si_pkey="${_si_norm//\//-}"
-                        printf '%s\t%s\n' "${_si_pkey}" "${_si_digest}" \
-                          >> "${IMG_PLATFORM_DIGESTS[$key]}"
-                        echo "  ${IMAGE_SEED}: seeded 1 platform from single-platform" \
-                             "manifest (${_si_platform}, ${_si_digest})."
-                      else
-                        echo "::warning::${IMAGE_SEED}: ignoring invalid single-platform" \
-                             "platform '${_si_platform}'; starting with empty state."
-                      fi
-                    else
-                      echo "::warning::${IMAGE_SEED}: could not extract platform/digest" \
-                           "from single-platform manifest; starting with empty state."
-                    fi
+                    echo "::warning::${IMAGE_SEED}: could not extract platform/digest" \
+                         "from manifest; starting with empty state."
                   fi
                   ;;
                 not_found)
