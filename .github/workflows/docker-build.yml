@@ -1,7 +1,9 @@
 name: Build Docker images
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Test"]
+    types: [completed]
     branches:
       - main
       - develop
@@ -33,6 +35,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── Gate: ensure tests passed before building ───────────────────────────────
+  # For workflow_run events (triggered by a completed "Test" run on main or
+  # develop), only proceed when the Test workflow concluded with "success".
+  # Manual workflow_dispatch runs always pass the gate so that operators can
+  # force a rebuild when needed.
+  gate:
+    name: Gate (tests passed)
+    runs-on: ubuntu-latest
+    permissions: {}
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Tests passed — proceed with build
+        run: echo "Gate passed"
+
   # ── Find the effective before SHA ───────────────────────────────────────────
   # For a push event, or a manual dispatch with all_versions disabled, find the
   # head SHA of the last *successful* build run on this branch so that commits
@@ -42,6 +58,7 @@ jobs:
   # the job is skipped entirely; the empty before_sha output causes the detect
   # job to build every version rather than diff against a previous commit.
   prepare:
+    needs: gate
     runs-on: ubuntu-latest
     if: github.event_name != 'workflow_dispatch' || inputs.all_versions != true
     permissions:
@@ -52,16 +69,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Compute effective before_sha
         id: effective_sha
         uses: ./.github/actions/effective-before-sha
         with:
-          workflow_files: |
-            docker-build-on-push.yml
-            docker-build-all.yml
-            docker-build.yml
-          current_sha: ${{ github.sha }}
+          workflow_files: docker-build.yml
+          current_sha: ${{ github.event.workflow_run.head_sha || github.sha }}
           ref_name: ${{ github.ref_name }}
           repository: ${{ github.repository }}
           github_token: ${{ github.token }}
@@ -74,8 +90,8 @@ jobs:
   # When before_sha is empty (all_versions build or brand-new branch), the
   # detect-versions action builds every version in the repository.
   detect:
-    needs: prepare
-    if: always() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
+    needs: [gate, prepare]
+    if: always() && needs.gate.result == 'success' && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -122,6 +138,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
 
       - name: Detect versions
@@ -129,7 +146,7 @@ jobs:
         uses: ./.github/actions/detect-versions
         with:
           before_sha: ${{ needs.prepare.outputs.before_sha }}
-          after_sha: ${{ github.sha }}
+          after_sha: ${{ github.event.workflow_run.head_sha || github.sha }}
           platforms_filter: ${{ inputs.platforms || vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ghcr_token: ${{ secrets.GHCR_TOKEN }}
@@ -205,7 +222,7 @@ jobs:
   # wait-pull-quota (one slot per build job via build_matrix_length).
   #
   # Caching:
-  #   - Push events always use GHCR layer cache (cache_from_enabled: true).
+  #   - workflow_run events always use GHCR layer cache (cache_from_enabled: true).
   #   - workflow_dispatch with no_cache=true disables the cache so every layer
   #     is rebuilt from scratch, matching the former "build all" behaviour.
   #   - workflow_dispatch with no_cache=false uses the cache as normal.
@@ -225,6 +242,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       # Download the pre-seeded code-server .deb and Copilot Chat VSIX files
       # that the detect job assembled and uploaded.  Using a workflow artifact
@@ -247,7 +266,7 @@ jobs:
       - name: Build PHP images
         uses: ./.github/actions/build-php-images
         with:
-          cache_from_enabled: ${{ (github.event_name == 'push' || inputs.no_cache != true) && 'true' || 'false' }}
+          cache_from_enabled: ${{ (github.event_name == 'workflow_run' || inputs.no_cache != true) && 'true' || 'false' }}
           version: ${{ matrix.version }}
           versions_base: ${{ matrix.versions_base }}
           versions_secure: ${{ matrix.versions_secure }}
@@ -286,6 +305,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
