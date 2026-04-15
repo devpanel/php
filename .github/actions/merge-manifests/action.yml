@@ -655,11 +655,6 @@ runs:
 
               _seed_status=""  # "ok" | "not_found" | "error"
               _used_auth_path=false
-              # Counts authenticated imagetools calls made for this image so
-              # that _auth_used is incremented by the exact number of auth
-              # pulls consumed (the --raw call plus the non-raw single-platform
-              # fallback when raw yielded 0 entries).
-              _auth_pulls_this_image=0
               MANIFEST_BODY=""
 
               # ── Step 1: unauthenticated (anonymous token) ──────────────────
@@ -717,7 +712,7 @@ runs:
               # network error, unexpected HTTP status, or 0 parseable platforms).
               if [[ -z "${_seed_status}" ]]; then
                 _used_auth_path=true
-                (( _auth_pulls_this_image++ )) || true
+                [[ "${_auth_avail}" == "unlimited" ]] || _auth_used=$(( _auth_used + 1 ))
                 seed_stderr="$(mktemp)"
                 if MANIFEST_BODY="$(docker buildx imagetools inspect \
                                       "${IMAGE_SEED}" --raw 2>"${seed_stderr}")"; then
@@ -785,7 +780,7 @@ runs:
                     # This is a second authenticated pull; track it.
                     echo "  ${IMAGE_SEED}: 0 manifest-list entries; checking for" \
                          "single-platform manifest via imagetools inspect..."
-                    (( _auth_pulls_this_image++ )) || true
+                    [[ "${_auth_avail}" == "unlimited" ]] || _auth_used=$(( _auth_used + 1 ))
                     _si_out="$(docker buildx imagetools inspect "${IMAGE_SEED}" \
                                  2>/dev/null)" || _si_out=""
                     _si_pair="$(printf '%s' "${_si_out}" \
@@ -878,17 +873,14 @@ runs:
               if [[ "${_seeding_succeeded}" == "true" ]]; then
                 IMG_SEEDED[$key]="true"
               fi
-              # When authenticated quota is limited, add the number of auth
-              # pulls consumed by this image to _auth_used and break the
-              # seeding loop as soon as the unreserved budget is exhausted.
+              # When authenticated quota is limited, break the seeding loop as
+              # soon as the unreserved budget is exhausted.  _auth_used is
+              # incremented directly at each authenticated imagetools call site
+              # (with an unlimited guard), so it reflects total consumption.
               # Remaining unseeded images are left for the next polling cycle
-              # so in-progress build jobs keep their reserved fallback pull
-              # slots.  _auth_pulls_this_image counts each imagetools call
-              # made (--raw plus the non-raw single-platform fallback when
-              # needed), so _auth_used accurately reflects total consumption.
+              # so in-progress build jobs keep their reserved fallback pull slots.
               if [[ "${_used_auth_path}" == "true" ]] \
                   && [[ "${_auth_avail}" != "unlimited" ]]; then
-                _auth_used=$(( _auth_used + _auth_pulls_this_image ))
                 if (( _auth_avail - _auth_used <= 0 )); then
                   echo "Unreserved authenticated Docker Hub quota used;" \
                        "ending seeding cycle."
