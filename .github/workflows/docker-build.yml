@@ -1,5 +1,4 @@
 name: Build Docker images
-run-name: "docker-build-${{ github.ref }}: on-push build"
 
 on:
   push:
@@ -61,7 +60,6 @@ jobs:
             docker-build-on-push.yml
             docker-build-all.yml
             docker-build.yml
-          concurrency_group: docker-build-${{ github.ref }}
           current_sha: ${{ github.sha }}
           ref_name: ${{ github.ref_name }}
           repository: ${{ github.repository }}

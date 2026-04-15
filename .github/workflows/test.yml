@@ -1,5 +1,4 @@
 name: Test
-run-name: "${{ github.workflow }}-${{ github.ref }}: test"
 
 on:
   push:
@@ -92,7 +91,6 @@ jobs:
           workflow_files: |
             ci.yml
             test.yml
-          concurrency_group: ${{ github.workflow }}-${{ github.ref }}
           current_sha: ${{ github.sha }}
           ref_name: ${{ github.ref_name }}
           repository: ${{ github.repository }}
