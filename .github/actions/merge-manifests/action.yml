@@ -329,7 +329,7 @@ runs:
         # exits before GitHub's hard job-timeout so cleanup steps always
         # run.  Parse failures are fatal because substituting the current
         # time would undercount elapsed runtime, defeating that safety check.
-        if ! started_at="$(date -d "${RUN_STARTED_AT}" +%s)"; then
+        if [[ -z "${RUN_STARTED_AT}" ]] || ! started_at="$(date -d "${RUN_STARTED_AT}" +%s)"; then
           echo "::error::Failed to parse required run_started_at input: ${RUN_STARTED_AT}" >&2
           exit 1
         fi
