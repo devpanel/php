@@ -175,7 +175,7 @@ runs:
         DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
         BUILD_MATRIX_LENGTH: ${{ inputs.build_matrix_length }}
-        RUN_STARTED_AT:        ${{ inputs.run_started_at }}
+        RUN_STARTED_AT: ${{ inputs.run_started_at }}
       run: |
         set -euo pipefail
 
