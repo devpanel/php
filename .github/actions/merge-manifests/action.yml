@@ -1209,11 +1209,10 @@ runs:
           # causes happen in the same cycle.
           if [[ "${_any_create_deferred}" == "true" ]]; then
             _create_elapsed=$(( $(date +%s) - started_at ))
-            _auth_rem_display="${_auth_rem}"
             if (( _create_elapsed >= QUOTA_MAX_WAIT )); then
               if [[ "${_any_quota_deferred}" == "true" ]]; then
                 echo "::error::Docker Hub pull quota: imagetools create deferred" \
-                     "(${_auth_rem_display} authenticated pulls remaining);" \
+                     "(${_auth_rem} authenticated pulls remaining);" \
                      "total workflow-run elapsed time ${_create_elapsed}s exceeds" \
                      "QUOTA_MAX_WAIT. Wait ~6 hours, then click" \
                      "'Re-run failed jobs' on this workflow run's summary page."
@@ -1228,7 +1227,7 @@ runs:
                 echo "::error::One or more imagetools create operations failed;" \
                      "total workflow-run elapsed time ${_create_elapsed}s exceeds" \
                      "QUOTA_MAX_WAIT" \
-                     "(${_auth_rem_display} authenticated pulls remaining)." \
+                     "(${_auth_rem} authenticated pulls remaining)." \
                      "Check earlier imagetools create logs for the underlying" \
                      "failure before re-running this workflow."
               fi
@@ -1236,7 +1235,7 @@ runs:
             fi
             if [[ "${_any_quota_deferred}" == "true" ]]; then
               echo "::warning::imagetools create deferred due to Docker Hub pull" \
-                   "quota (${_auth_rem_display} authenticated pulls remaining;" \
+                   "quota (${_auth_rem} authenticated pulls remaining;" \
                    "${_create_elapsed}s elapsed)."
             fi
             if [[ "${_any_seeding_deferred}" == "true" ]]; then
@@ -1245,7 +1244,7 @@ runs:
             fi
             if [[ "${_any_create_failed}" == "true" ]]; then
               echo "::warning::One or more imagetools create operations failed" \
-                   "(${_auth_rem_display} authenticated pulls remaining;" \
+                   "(${_auth_rem} authenticated pulls remaining;" \
                    "${_create_elapsed}s elapsed)." \
                    "Check earlier imagetools create logs for the underlying failure."
             fi
