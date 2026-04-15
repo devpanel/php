@@ -897,6 +897,31 @@ runs:
                  "cycle and deferring imagetools create attempts."
             _cycle_create_auth_rem=0
           fi
+          # Apply the same build-job auth reservation used in the seeding
+          # gate so that imagetools create cannot consume quota that is held
+          # back for in-progress build jobs.  All jobs share the same
+          # authenticated (account-based) Docker Hub quota bucket; a build
+          # job that has not yet uploaded its first digest artifact may still
+          # need an authenticated pull for its base PHP image.  As each
+          # job's first digest artifact arrives (DIGEST_JOBS_SEEN
+          # increments), its reserved slot is freed and more quota becomes
+          # available for creates.  Without this adjustment the merge job
+          # can consume reserved slots, causing build jobs to hit 429s on
+          # their base-image pull and fail.
+          # When _cycle_create_auth_rem is "unlimited" (Pro/Team/Business
+          # plan), no reservation is needed because there is no pull limit.
+          if [[ "${_cycle_create_auth_rem}" != "unlimited" ]]; then
+            _create_reserved=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
+                                   ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
+            if (( _create_reserved > 0 )); then
+              _cycle_create_auth_rem=$(( _cycle_create_auth_rem > _create_reserved \
+                                          ? _cycle_create_auth_rem - _create_reserved : 0 ))
+              echo "  Create quota: ${_cycle_create_auth_rem} unreserved authenticated" \
+                   "pull(s) available (${_create_reserved} reserved for" \
+                   "${_build_matrix_length} build job(s), ${DIGEST_JOBS_SEEN}" \
+                   "already uploaded a digest)."
+            fi
+          fi
 
           # Tracks whether any imagetools create was deferred or failed in
           # this cycle so the post-cycle elapsed-time check can warn and
@@ -1112,12 +1137,15 @@ runs:
                 # process consumed quota between the probe and this create),
                 # meaning our snapshot may show more quota than Docker Hub has;
                 # that is corrected by re-probing at the start of each cycle.
+                # _cycle_create_auth_rem already has the build-job reservation
+                # subtracted (see the probe block above), so this comparison
+                # is against truly unreserved quota only.
                 if [[ "${_cycle_create_auth_rem}" != "unlimited" ]] \
                    && [[ -n "${_cycle_create_auth_rem}" ]] \
                    && (( _cycle_create_auth_rem < ${#REFS[@]} )); then
                   echo "  [${IMAGE}] Deferring imagetools create: Docker Hub" \
                        "pull quota insufficient (${_cycle_create_auth_rem}" \
-                       "authenticated pulls remaining, ${#REFS[@]} required)." \
+                       "unreserved authenticated pulls remaining, ${#REFS[@]} required)." \
                        "Will retry next cycle."
                   _img_create_deferred=true
                   _any_quota_deferred=true
