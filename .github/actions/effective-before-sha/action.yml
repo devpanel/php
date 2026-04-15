@@ -92,7 +92,8 @@ runs:
         # workflow_files.
         CANDIDATES=""
         if [[ -n "${WORKFLOW_FILES:-}" ]]; then
-          read -ra WF_ARRAY <<< "${WORKFLOW_FILES}"
+          NORMALIZED_WORKFLOW_FILES=$(printf '%s' "${WORKFLOW_FILES}" | tr '\r\n' '  ')
+          read -r -a WF_ARRAY <<< "${NORMALIZED_WORKFLOW_FILES}"
           for wf in "${WF_ARRAY[@]}"; do
             CANDIDATES=$(printf '%s\n%s' "$CANDIDATES" "$(
               gh api \
