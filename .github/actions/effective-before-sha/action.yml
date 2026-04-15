@@ -10,10 +10,9 @@ description: >
   found, returns an empty string (callers should treat that as "build
   everything").
 
-  Workflow discovery (push events only): first fetches recent successful
-  runs whose display_title starts with the concurrency_group prefix (so
-  only runs from the same concurrency slot are matched), then optionally
-  supplements those candidates with runs found via workflow_files.
+  Workflow discovery (push events only): fetches recent successful
+  runs via workflow_files (bare filenames or numeric workflow IDs) and
+  picks the closest reachable ancestor of the current commit.
 
   Required GITHUB_TOKEN permissions on the calling job:
     actions:  read   (list workflow runs)
@@ -27,17 +26,6 @@ inputs:
       not supported; pass only bare filenames or numeric workflow IDs.
     required: false
     default: ''
-  concurrency_group:
-    description: >
-      The concurrency group expression used in the calling workflow's
-      top-level concurrency.group field, embedded into run-name as a
-      prefix (e.g. "docker-build-refs/heads/main").  Workflow runs
-      whose display_title starts with this value followed by ": " are
-      collected as candidates first, so only runs from the same
-      concurrency slot are matched.  Set this to the same expression
-      used in the workflow's top-level concurrency.group key and
-      embed that value into run-name as the prefix.
-    required: true
   current_sha:
     description: The current commit SHA (github.sha).
     required: true
@@ -82,7 +70,6 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         WORKFLOW_FILES: ${{ inputs.workflow_files }}
-        CONCURRENCY_GROUP: ${{ inputs.concurrency_group }}
         CURRENT_SHA: ${{ inputs.current_sha }}
         REF_NAME: ${{ inputs.ref_name }}
         REPOSITORY: ${{ inputs.repository }}
@@ -101,23 +88,12 @@ runs:
           exit 0
         fi
 
-        # For push events, collect head SHAs of prior successful runs that
-        # competed for the same concurrency slot as this workflow.
-
-        # Step 1: Search by concurrency group embedded in run-name.
-        CANDIDATES=$(
-          gh api \
-            "repos/${REPOSITORY}/actions/runs?branch=${REF_NAME}&status=success&per_page=100" \
-            | jq -r --arg rn "${CONCURRENCY_GROUP}" \
-              '.workflow_runs[] | select(.display_title | startswith($rn + ": ")) | .head_sha // empty' \
-            || true
-        )
-
-        # Step 2: Supplement with workflow_files (catches older runs that
-        # pre-date the concurrency group being embedded in run-name).
-        # TODO: see TODO.md — remove workflow_files once no longer needed.
+        # For push events, collect head SHAs of prior successful runs via
+        # workflow_files.
+        CANDIDATES=""
         if [[ -n "${WORKFLOW_FILES:-}" ]]; then
-          read -ra WF_ARRAY <<< "${WORKFLOW_FILES}"
+          NORMALIZED_WORKFLOW_FILES=$(printf '%s' "${WORKFLOW_FILES}" | tr '\r\n' '  ')
+          read -r -a WF_ARRAY <<< "${NORMALIZED_WORKFLOW_FILES}"
           for wf in "${WF_ARRAY[@]}"; do
             CANDIDATES=$(printf '%s\n%s' "$CANDIDATES" "$(
               gh api \
@@ -127,9 +103,7 @@ runs:
           done
         fi
 
-        # Deduplicate and remove empty lines.  sort -u also ensures that SHAs
-        # appearing in both the run-name search and the workflow-file search
-        # above are counted only once.
+        # Deduplicate and remove empty lines.
         CANDIDATES=$(printf '%s' "$CANDIDATES" | sort -u | grep . || true)
 
         # Among all candidates, pick the closest reachable ancestor of the

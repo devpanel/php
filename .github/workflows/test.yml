@@ -1,5 +1,4 @@
 name: Test
-run-name: "${{ github.workflow }}-${{ github.ref }}: test"
 
 on:
   push:
@@ -7,6 +6,20 @@ on:
       - main
       - develop
   pull_request:
+  workflow_dispatch:
+    inputs:
+      all_versions:
+        description: >
+          Test all PHP versions regardless of what changed.
+          When false, only versions affected by recent commits are tested.
+        type: boolean
+        default: false
+      no_cache:
+        description: >
+          Disable Docker layer cache for build tests.
+          When false, the cache is used as normal.
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -56,28 +69,34 @@ jobs:
   # For pull_request events the PR base is always the right anchor.  For push
   # events, use the head SHA of the last *successful* test run on this branch
   # so that commits covered by cancelled runs are not silently skipped.
+  #
+  # When all_versions is requested via workflow_dispatch the step is skipped;
+  # the empty before_sha output causes the detect job to test every version
+  # rather than diff against a previous commit.
   prepare:
     runs-on: ubuntu-latest
     permissions:
-      actions:  read
+      actions: read
       contents: read
     outputs:
-      before_sha:    ${{ steps.effective_sha.outputs.before_sha }}
+      before_sha: ${{ steps.effective_sha.outputs.before_sha }}
       needs_history: ${{ steps.effective_sha.outputs.needs_history }}
     steps:
       - uses: actions/checkout@v6
       - name: Compute effective before_sha
         id: effective_sha
+        if: github.event_name != 'workflow_dispatch' || inputs.all_versions != true
         uses: ./.github/actions/effective-before-sha
         with:
-          workflow_files: test.yml
-          concurrency_group: ${{ github.workflow }}-${{ github.ref }}
-          current_sha:    ${{ github.sha }}
-          ref_name:       ${{ github.ref_name }}
-          repository:     ${{ github.repository }}
-          github_token:   ${{ github.token }}
-          event_name:     ${{ github.event_name }}
-          pr_base_sha:    ${{ github.event.pull_request.base.sha }}
+          workflow_files: |
+            ci.yml
+            test.yml
+          current_sha: ${{ github.sha }}
+          ref_name: ${{ github.ref_name }}
+          repository: ${{ github.repository }}
+          github_token: ${{ github.token }}
+          event_name: ${{ github.event_name }}
+          pr_base_sha: ${{ github.event.pull_request.base.sha }}
 
   # Detect PHP versions to test, compute the lowercase GHCR repo name, and
   # pre-seed build downloads for ALL detected versions at once.  Running
@@ -104,9 +123,9 @@ jobs:
       contents: read
       actions: write
     outputs:
-      versions:     ${{ steps.versions.outputs.versions }}
+      versions: ${{ steps.versions.outputs.versions }}
       has_versions: ${{ steps.versions.outputs.has_versions }}
-      ghcr_repo:    ${{ steps.ghcr.outputs.repo }}
+      ghcr_repo: ${{ steps.ghcr.outputs.repo }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -219,11 +238,11 @@ jobs:
 
       - name: Build PHP images
         env:
-          CACHE_FROM_ENABLED:   true
-          GHCR_REPO:            ${{ needs.detect.outputs.ghcr_repo }}
-          PLATFORMS:            linux/amd64
-          DOWNLOADS_DIR:        ${{ runner.temp }}/build-downloads
-          BAKE_OVERRIDES_FILE:  ${{ runner.temp }}/preseed-bake-overrides.json
+          CACHE_FROM_ENABLED: ${{ inputs.no_cache != true && 'true' || 'false' }}
+          GHCR_REPO: ${{ needs.detect.outputs.ghcr_repo }}
+          PLATFORMS: linux/amd64
+          DOWNLOADS_DIR: ${{ runner.temp }}/build-downloads
+          BAKE_OVERRIDES_FILE: ${{ runner.temp }}/preseed-bake-overrides.json
         run: bash tests/build-dockerfile.sh --version ${{ matrix.version }}
 
       - name: Run PHP functional tests
