@@ -549,18 +549,26 @@ runs:
             [[ "${IMG_SEEDED[$key]}" == "false" ]] && _unseeded+=("${vs}")
           done
 
+          # ── Probe auth quota once per cycle ────────────────────────────────
+          # Both the seeding gate and the imagetools create gate need the
+          # authenticated Docker Hub pull quota.  Probing here, once per cycle
+          # before either gate runs, avoids a duplicate API call later.
+          # The result is reused as-is for the create gate (_cycle_create_auth_rem).
+          #
+          # Compute the number of build jobs still in progress (no digest
+          # artifact yet) so both gates can reserve auth quota for them.  The
+          # merge job runs on its OWN runner whose anonymous (IP-based) quota
+          # is completely independent from each build job's runner, so there is
+          # no anonymous reserve to track here.
+          _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
+                                  ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
+          _auth_rem="$(auth_quota_remaining)"
+
           _do_seed=true
           _total_unseeded=${#_unseeded[@]}
           if [[ ${_total_unseeded} -gt 0 ]]; then
 
-            # ── 4. Compute remaining build jobs ───────────────────────────────
-            # The merge job runs on its OWN runner whose anonymous (IP-based)
-            # quota is completely independent from each build job's runner, so
-            # there is no anonymous reserve to track here.
-            _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
-                                    ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
-
-            # ── 5. Calculate the number of authenticated pulls to reserve ──────
+            # ── Calculate the number of authenticated pulls to reserve ─────────
             # All jobs (this merge job and all build jobs) share the same
             # authenticated (account-based, 200/6 h) Docker Hub quota.
             # Each build job may fall back to an authenticated pull when its
@@ -571,12 +579,11 @@ runs:
             # potential fallback has been accounted for.
             _auth_reserve=${_remaining_builds}
 
-            # ── 6. Probe both quotas ───────────────────────────────────────────
+            # ── Probe anonymous quota; compute available auth quota ────────────
             # Refresh the anonymous inspect token so ANON_TOKEN is current for
-            # fetch_manifest later in the same cycle.  Both quotas are probed:
-            # authenticated quota drives the primary gate; anonymous quota
-            # allows seeding to continue via the anonymous inspect path even
-            # when authenticated quota is fully reserved for build jobs.
+            # fetch_manifest later in the same cycle.  Anonymous quota allows
+            # seeding to continue via the anonymous inspect path even when
+            # authenticated quota is fully reserved for build jobs.
             get_inspect_token || true
             _anon_rem="$(anon_quota_remaining)"
             if [[ "${_anon_rem}" == "unlimited" ]]; then
@@ -587,7 +594,6 @@ runs:
               _anon_display="unknown"
             fi
 
-            _auth_rem="$(auth_quota_remaining)"
             if [[ "${_auth_rem}" == "unlimited" ]]; then
               _auth_avail=${_total_unseeded}
             elif [[ -n "${_auth_rem}" ]]; then
@@ -879,18 +885,15 @@ runs:
           rm -rf "${CYCLE_DIR}"
           mkdir -p "${CYCLE_DIR}"
 
-          # ── Probe auth quota once per cycle for imagetools create ─────
-          # imagetools create fetches the manifest for every referenced
-          # digest, consuming authenticated Docker Hub pull quota (200/6 h
-          # per account).  Probing once here lets every image in the loop
-          # share the same snapshot; the snapshot is decremented by the
-          # number of refs after each attempt so later images in the cycle
-          # see the updated quota and avoid 429s.
-          _cycle_create_auth_rem="$(auth_quota_remaining)"
+          # ── Set up the per-cycle create quota snapshot ──────────────────
+          # Reuse the auth quota value already probed once this cycle above
+          # (_auth_rem).  Calling auth_quota_remaining() again here would waste
+          # a HEAD request on the same quota bucket with no meaningful benefit.
           # auth_quota_remaining prints '' on any non-2xx response (including
           # 429 when quota is exhausted).  Treat an empty result as 0 so the
           # create gate below defers all creates this cycle rather than
           # bypassing the gate and attempting creates while rate-limited.
+          _cycle_create_auth_rem="${_auth_rem}"
           if [[ -z "${_cycle_create_auth_rem}" ]]; then
             echo "::warning::Authenticated Docker Hub quota probe failed or was" \
                  "rate-limited; treating remaining quota as exhausted for this" \
@@ -911,8 +914,7 @@ runs:
           # When _cycle_create_auth_rem is "unlimited" (Pro/Team/Business
           # plan), no reservation is needed because there is no pull limit.
           if [[ "${_cycle_create_auth_rem}" != "unlimited" ]]; then
-            _create_reserved=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
-                                   ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
+            _create_reserved="${_remaining_builds}"
             if (( _create_reserved > 0 )); then
               _cycle_create_auth_rem=$(( _cycle_create_auth_rem > _create_reserved \
                                           ? _cycle_create_auth_rem - _create_reserved : 0 ))
@@ -1146,9 +1148,11 @@ runs:
                   echo "  [${IMAGE}] Deferring imagetools create: Docker Hub" \
                        "pull quota insufficient (${_cycle_create_auth_rem}" \
                        "unreserved authenticated pulls remaining, ${#REFS[@]} required)." \
-                       "Will retry next cycle."
+                       "Skipping remaining images this cycle."
                   _img_create_deferred=true
+                  _any_create_deferred=true
                   _any_quota_deferred=true
+                  break
                 else
                   _create_err_file="$(mktemp)"
                   if docker buildx imagetools create \
