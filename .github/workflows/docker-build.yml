@@ -88,6 +88,10 @@ jobs:
       latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
       tag_suffix: ${{ steps.detect.outputs.tag_suffix }}
       before_sha: ${{ needs.prepare.outputs.before_sha }}
+      # Unix epoch seconds captured at the very start of this job.  Passed to
+      # the merge job so merge-manifests can measure elapsed workflow time for
+      # the QUOTA_MAX_WAIT safety cut-off without an extra GitHub API call.
+      run_started_at: ${{ steps.start_time.outputs.run_started_at }}
       # Total number of distinct platforms — used by each merge job to know
       # when all per-platform digest artifacts have been collected.
       total_platforms: ${{ steps.detect.outputs.total_platforms }}
@@ -110,6 +114,11 @@ jobs:
       # each job uses GHCR as primary (writable) or GHA as primary (not writable).
       ghcr_writable: ${{ steps.detect.outputs.ghcr_writable }}
     steps:
+      - name: Capture workflow start time
+        id: start_time
+        shell: bash
+        run: echo "run_started_at=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
@@ -291,6 +300,7 @@ jobs:
           build_matrix_length: ${{ needs.detect.outputs.build_matrix_length }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           run_id: ${{ github.run_id }}
+          run_started_at: ${{ needs.detect.outputs.run_started_at }}
           repository: ${{ github.repository }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}

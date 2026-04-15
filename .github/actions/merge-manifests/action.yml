@@ -118,6 +118,13 @@ inputs:
       reserved count decrements, allowing seeding to proceed sooner.
       Defaults to 0 (no build-job quota reserved).
     default: '0'
+  run_started_at:
+    description: >
+      Unix epoch seconds captured at the start of the calling workflow's
+      detect job.  Used to measure elapsed run time when enforcing
+      QUOTA_MAX_WAIT.  Pass needs.detect.outputs.run_started_at from the
+      calling workflow.
+    required: true
 
 runs:
   using: composite
@@ -168,6 +175,7 @@ runs:
         DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
         BUILD_MATRIX_LENGTH: ${{ inputs.build_matrix_length }}
+        RUN_STARTED_AT:        ${{ inputs.run_started_at }}
       run: |
         set -euo pipefail
 
@@ -308,23 +316,15 @@ runs:
         # Pull-quota accounting.
         QUOTA_MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
 
-        # Wall-clock workflow run start time (seconds since epoch).  Queried
-        # from the GitHub API using the run_id so it reflects the actual
-        # workflow run start rather than the moment this step begins
-        # executing.  Used by both the seeding and imagetools create quota
-        # blocks to enforce QUOTA_MAX_WAIT against real elapsed time and
-        # guarantee the job exits before GitHub's hard job-timeout so
-        # cleanup steps always run.  Failures are fatal because substituting
-        # the current time would undercount elapsed runtime, defeating the
-        # safety check.
-        if ! _run_started_at_iso="$(gh api \
-            "repos/${GITHUB_REPO}/actions/runs/${RUN_ID}" \
-            --jq '.run_started_at')"; then
-          echo "::error::Failed to query workflow run start time from GitHub API" >&2
-          exit 1
-        fi
-        if ! started_at="$(date -d "${_run_started_at_iso}" +%s)"; then
-          echo "::error::Failed to parse run_started_at from GitHub API: ${_run_started_at_iso}" >&2
+        # Wall-clock workflow run start time (seconds since epoch).  Captured
+        # at the start of the detect job and passed in via RUN_STARTED_AT so
+        # no GitHub API call is needed here.  Used by both the seeding and
+        # imagetools create quota blocks to enforce QUOTA_MAX_WAIT against
+        # real elapsed time and guarantee the job exits before GitHub's hard
+        # job-timeout so cleanup steps always run.
+        started_at="${RUN_STARTED_AT}"
+        if [[ -z "${started_at}" || ! "${started_at}" =~ ^[0-9]+$ ]]; then
+          echo "::error::run_started_at input is missing or not a Unix epoch integer: '${started_at}'" >&2
           exit 1
         fi
 
