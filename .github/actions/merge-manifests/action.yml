@@ -559,7 +559,9 @@ runs:
           #                 at 0 each cycle and is incremented (never the others).
           # Every gate checks (_auth_avail - _auth_used) >= N; every pull
           # operation increments _auth_used by the number of pulls consumed.
-          # _auth_rem and _remaining_builds are only used in log messages.
+          # _auth_rem and _remaining_builds are used primarily to compute
+          # _auth_avail (and for log messages); once _auth_avail is computed,
+          # the gates consult only _auth_avail and _auth_used.
           #
           # The merge job runs on its OWN runner whose anonymous (IP-based)
           # quota is completely independent from each build job's runner, so
