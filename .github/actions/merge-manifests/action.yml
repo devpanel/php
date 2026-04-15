@@ -563,6 +563,14 @@ runs:
           _remaining_builds=$(( _build_matrix_length > DIGEST_JOBS_SEEN \
                                   ? _build_matrix_length - DIGEST_JOBS_SEEN : 0 ))
           _auth_rem="$(auth_quota_remaining)"
+          # Treat a failed auth quota probe (empty string) as exhausted so both
+          # the seeding gate and the imagetools create gate defer rather than
+          # bypassing the gate while rate-limited.
+          if [[ -z "${_auth_rem}" ]]; then
+            echo "::warning::Authenticated Docker Hub quota probe failed or was" \
+                 "rate-limited; treating remaining quota as exhausted for this cycle."
+            _auth_rem=0
+          fi
 
           _do_seed=true
           _total_unseeded=${#_unseeded[@]}
@@ -596,11 +604,9 @@ runs:
 
             if [[ "${_auth_rem}" == "unlimited" ]]; then
               _auth_avail=${_total_unseeded}
-            elif [[ -n "${_auth_rem}" ]]; then
+            else
               _auth_avail=$(( _auth_rem > _auth_reserve \
                                 ? _auth_rem - _auth_reserve : 0 ))
-            else
-              _auth_avail=0
             fi
 
             # ── 7. Gate seeding on available quota ────────────────────────────
@@ -624,14 +630,14 @@ runs:
                        "${_run_elapsed}s exceeds QUOTA_MAX_WAIT with no" \
                        "unreserved pulls available" \
                        "(${_anon_display} anonymous remaining;" \
-                       "${_auth_rem:-unknown} authenticated remaining," \
+                       "${_auth_rem} authenticated remaining," \
                        "${_remaining_builds} reserved for build jobs)." \
                        "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
                   exit 1
                 fi
                 echo "::warning::Deferring manifest seeding: no unreserved" \
                      "Docker Hub pulls (${_anon_display} anonymous remaining;" \
-                     "${_auth_rem:-unknown} authenticated remaining," \
+                     "${_auth_rem} authenticated remaining," \
                      "${_remaining_builds} reserved for build jobs)." \
                      "Total workflow-run elapsed: ${_run_elapsed}s."
               fi
@@ -884,15 +890,6 @@ runs:
           CYCLE_DIR="${WORK_DIR}/cycle"
           rm -rf "${CYCLE_DIR}"
           mkdir -p "${CYCLE_DIR}"
-
-          # Treat a failed auth quota probe (empty string) as exhausted so the
-          # create gate below defers all creates rather than bypassing the gate.
-          if [[ -z "${_auth_rem}" ]]; then
-            echo "::warning::Authenticated Docker Hub quota probe failed or was" \
-                 "rate-limited; treating remaining quota as exhausted for this" \
-                 "cycle and deferring imagetools create attempts."
-            _auth_rem=0
-          fi
 
           # Tracks whether any imagetools create was deferred or failed in
           # this cycle so the post-cycle elapsed-time check can warn and
@@ -1212,7 +1209,7 @@ runs:
           # causes happen in the same cycle.
           if [[ "${_any_create_deferred}" == "true" ]]; then
             _create_elapsed=$(( $(date +%s) - started_at ))
-            _auth_rem_display="${_auth_rem:-unknown}"
+            _auth_rem_display="${_auth_rem}"
             if (( _create_elapsed >= QUOTA_MAX_WAIT )); then
               if [[ "${_any_quota_deferred}" == "true" ]]; then
                 echo "::error::Docker Hub pull quota: imagetools create deferred" \
