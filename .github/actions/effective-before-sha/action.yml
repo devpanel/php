@@ -55,11 +55,6 @@ outputs:
       when no prior successful run is found; callers should treat that
       as "build everything".
     value: ${{ steps.compute.outputs.before_sha }}
-  needs_history:
-    description: >
-      "true" if the checkout step should fetch full git history
-      (fetch-depth: 0), "false" if a shallow clone (depth: 1) suffices.
-    value: ${{ steps.compute.outputs.needs_history }}
 
 runs:
   using: composite
@@ -84,7 +79,6 @@ runs:
             exit 1
           fi
           echo "before_sha=${PR_BASE_SHA}" >> "$GITHUB_OUTPUT"
-          echo "needs_history=true" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
@@ -129,8 +123,6 @@ runs:
 
         if [[ -n "$LAST_SUCCESS_SHA" ]]; then
           echo "before_sha=${LAST_SUCCESS_SHA}" >> "$GITHUB_OUTPUT"
-          echo "needs_history=true" >> "$GITHUB_OUTPUT"
         else
           echo "before_sha=" >> "$GITHUB_OUTPUT"
-          echo "needs_history=false" >> "$GITHUB_OUTPUT"
         fi

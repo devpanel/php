@@ -81,7 +81,6 @@ jobs:
       contents: read
     outputs:
       before_sha: ${{ steps.effective_sha.outputs.before_sha }}
-      needs_history: ${{ steps.effective_sha.outputs.needs_history }}
     steps:
       - uses: actions/checkout@v6
       - name: Compute effective before_sha
@@ -130,7 +129,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: ${{ needs.prepare.outputs.needs_history == 'true' && '0' || '1' }}
+          fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
 
       - name: Compute GHCR repository (lowercase)
         id: ghcr
