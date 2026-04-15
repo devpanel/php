@@ -571,27 +571,11 @@ runs:
                  "rate-limited; treating remaining quota as exhausted for this cycle."
             _auth_rem=0
           fi
-          # Initialise auth-path seeding counter here (before the seeding block)
-          # so it is always defined under set -u; the seeding loop may reset and
-          # increment it, but if seeding is skipped the adjustment below reads 0.
-          _auth_used=0
-
           _do_seed=true
           _total_unseeded=${#_unseeded[@]}
           if [[ ${_total_unseeded} -gt 0 ]]; then
 
-            # ── Calculate the number of authenticated pulls to reserve ─────────
-            # All jobs (this merge job and all build jobs) share the same
-            # authenticated (account-based, 200/6 h) Docker Hub quota.
-            # Each build job may fall back to an authenticated pull when its
-            # anonymous pre-pull fails (e.g. its runner shares an IP with
-            # another runner that already exhausted that IP's anonymous bucket).
-            # Reserve one authenticated slot per build job still in progress so
-            # the auth bucket is not considered available until each job's
-            # potential fallback has been accounted for.
-            _auth_reserve=${_remaining_builds}
-
-            # ── Probe anonymous quota; compute available auth quota ────────────
+            # ── Probe anonymous quota ──────────────────────────────────────────
             # Refresh the anonymous inspect token so ANON_TOKEN is current for
             # fetch_manifest later in the same cycle.  Anonymous quota allows
             # seeding to continue via the anonymous inspect path even when
@@ -606,21 +590,22 @@ runs:
               _anon_display="unknown"
             fi
 
-            if [[ "${_auth_rem}" == "unlimited" ]]; then
-              _auth_avail=${_total_unseeded}
-            else
-              _auth_avail=$(( _auth_rem > _auth_reserve \
-                                ? _auth_rem - _auth_reserve : 0 ))
-            fi
-
             # ── 7. Gate seeding on available quota ────────────────────────────
+            # _auth_rem tracks how many authenticated Docker Hub pulls remain
+            # this cycle; it is decremented whenever the auth path is actually
+            # used (imagetools inspect during seeding, imagetools create during
+            # the push stage) so both stages share one consistent counter.
+            # _remaining_builds slots are reserved for in-progress build jobs
+            # and are never consumed by this merge job.  Seeding (and later
+            # creates) are deferred when _auth_rem <= _remaining_builds.
             # When authenticated quota is available, seed normally.
             # When only anonymous quota is available, seeding proceeds via the
             # anonymous inspect path; images that cannot be seeded anonymously
             # are deferred to the next polling cycle (the inner loop skips them
             # with a continue) so reserved auth slots are not consumed.
             # Defer the entire seeding cycle only when both are unavailable.
-            if (( _auth_avail == 0 )); then
+            if [[ "${_auth_rem}" != "unlimited" ]] \
+                && (( _auth_rem <= _remaining_builds )); then
               _anon_can_seed=false
               if [[ "${_anon_rem}" == "unlimited" ]] \
                   || { [[ -n "${_anon_rem}" ]] && (( _anon_rem > 0 )); }; then
@@ -697,12 +682,15 @@ runs:
               fi
 
               # ── Defer imagetools-inspect when no unreserved auth quota ───────
-              # _auth_avail is computed in step 7 above (auth_rem − auth_reserve).
+              # _auth_rem is probed once per cycle and decremented whenever
+              # the auth path is used.  _remaining_builds slots are reserved.
               # If the anonymous path could not resolve this image and no
               # unreserved authenticated quota is available, skip it for this
               # cycle so reserved slots are not consumed.  Other images in the
               # list that the anonymous path can resolve will still be seeded.
-              if [[ -z "${_seed_status}" ]] && (( _auth_avail == 0 )); then
+              if [[ -z "${_seed_status}" ]] \
+                  && [[ "${_auth_rem}" != "unlimited" ]] \
+                  && (( _auth_rem <= _remaining_builds )); then
                 echo "  ${IMAGE_SEED}: deferring to next cycle (anonymous" \
                      "inspect insufficient; no unreserved auth quota)."
                 continue
@@ -871,31 +859,21 @@ runs:
               if [[ "${_seeding_succeeded}" == "true" ]]; then
                 IMG_SEEDED[$key]="true"
               fi
-              # When authenticated quota is limited, track actual auth-path
-              # usage and break the seeding loop as soon as the unreserved
-              # quota is exhausted.  Remaining unseeded images are left for
-              # the next polling cycle so in-progress build jobs keep their
-              # reserved fallback pull slots.
+              # When authenticated quota is limited, decrement _auth_rem and
+              # break the seeding loop as soon as the unreserved quota is
+              # exhausted.  Remaining unseeded images are left for the next
+              # polling cycle so in-progress build jobs keep their reserved
+              # fallback pull slots.
               if [[ "${_used_auth_path}" == "true" ]] \
                   && [[ "${_auth_rem}" != "unlimited" ]]; then
-                _auth_used=$(( _auth_used + 1 ))
-                if (( _auth_used >= _auth_avail )); then
-                  echo "Unreserved authenticated Docker Hub quota used" \
-                       "(${_auth_used}/${_auth_avail} slot(s));" \
+                _auth_rem=$(( _auth_rem - 1 ))
+                if (( _auth_rem <= _remaining_builds )); then
+                  echo "Unreserved authenticated Docker Hub quota used;" \
                        "ending seeding cycle."
                   break
                 fi
               fi
             done
-          fi
-
-          # ── Adjust auth quota snapshot after seeding ───────────────────────
-          # The seeding loop tracked authenticated imagetools-inspect calls in
-          # _auth_used.  Subtract that count from _auth_rem so the imagetools
-          # create gate below sees the quota actually remaining after seeding,
-          # not the pre-seeding value probed at the start of the cycle.
-          if [[ "${_auth_rem}" != "unlimited" ]] && (( _auth_used > 0 )); then
-            _auth_rem=$(( _auth_rem > _auth_used ? _auth_rem - _auth_used : 0 ))
           fi
 
           # ── Process each pending image ─────────────────────────────────
