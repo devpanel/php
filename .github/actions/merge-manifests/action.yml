@@ -777,12 +777,20 @@ runs:
                     # No .manifests[] entries: single-platform or all-unknown.
                     # Try imagetools inspect (non-raw) which can report platform
                     # info even for schema2 single-platform manifests.
-                    # This is a second authenticated pull; track it.
+                    # This is a second authenticated pull; only spend budget if
+                    # quota remains, otherwise defer this image to a later cycle.
                     echo "  ${IMAGE_SEED}: 0 manifest-list entries; checking for" \
                          "single-platform manifest via imagetools inspect..."
-                    [[ "${_auth_avail}" == "unlimited" ]] || _auth_used=$(( _auth_used + 1 ))
-                    _si_out="$(docker buildx imagetools inspect "${IMAGE_SEED}" \
-                                 2>/dev/null)" || _si_out=""
+                    if [[ "${_auth_avail}" == "unlimited" ]] || \
+                       (( _auth_used < _auth_avail )); then
+                      [[ "${_auth_avail}" == "unlimited" ]] || _auth_used=$(( _auth_used + 1 ))
+                      _si_out="$(docker buildx imagetools inspect "${IMAGE_SEED}" \
+                                   2>/dev/null)" || _si_out=""
+                    else
+                      echo "  ${IMAGE_SEED}: auth pull budget exhausted; deferring" \
+                           "single-platform manifest check to a later cycle."
+                      _si_out=""
+                    fi
                     _si_pair="$(printf '%s' "${_si_out}" \
                       | awk '
                           /^[[:space:]]*Digest:[[:space:]]+/ {
