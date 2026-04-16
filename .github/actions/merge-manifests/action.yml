@@ -340,6 +340,27 @@ runs:
           else
             echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
           fi
+          # Prune the GHCR probe cache to only entries whose digest still
+          # appears in the (now-sanitized) platform-digest file.  Without
+          # this, stale entries appended by previous imagetools-create cycles
+          # accumulate in the cached file without bound.  The awk pass reads
+          # the digest file first (NR==FNR) to build a set of known digests
+          # (column 2), then filters the probe file keeping only lines whose
+          # digest (column 1) is in the set.
+          if [[ -s "${IMG_GHCR_PROBE_FILE[$key]}" ]]; then
+            if [[ -s "${_pdigest_file}" ]]; then
+              _pruned_probe=$(awk -F'\t' \
+                'NR==FNR{known[$2]=1;next} ($1 in known)' \
+                "${_pdigest_file}" "${IMG_GHCR_PROBE_FILE[$key]}")
+              if [[ -n "${_pruned_probe}" ]]; then
+                printf '%s\n' "${_pruned_probe}" > "${IMG_GHCR_PROBE_FILE[$key]}"
+              else
+                : > "${IMG_GHCR_PROBE_FILE[$key]}"
+              fi
+            else
+              : > "${IMG_GHCR_PROBE_FILE[$key]}"
+            fi
+          fi
 
           if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
             VER_BUILD_DONE[$version]=0
