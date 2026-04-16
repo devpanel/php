@@ -8,20 +8,20 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 ### Steps
 - [x] Add `GHCR_TOKEN` env var to the `Poll and merge manifests` step
 - [x] Update `ghcr_repo` and `ghcr_writable` input descriptions
-- [x] Add `IMG_GHCR_DIGESTS_FILE` / `IMG_GHCR_PROBED_FILE` to `declare -A` block
-- [x] Initialize both files per image in the init loop
+- [x] Add the per-image `ghcr-probe-{image}.txt` cache file to the `declare -A` block
+- [x] Initialize the single GHCR probe cache file per image in the init loop
 - [x] Add `_ghcr_path` global, `GHCR_BEARER`/`GHCR_BEARER_TIME` globals, and `get_ghcr_inspect_token()` helper
 - [x] Add per-cycle GHCR probe block (after seeding, before "Process each pending image")
-- [x] Extend REFS construction to use GHCR for confirmed-present seeded digests
+- [x] Extend REFS construction to use GHCR for seeded digests recorded as `found` in the probe cache
 
 ### Definition of Done
 - After seeding, each platform digest is probed against GHCR via an authenticated HEAD request.
-- A HTTP 200 result writes the digest to `ghcr-confirmed-{image}.txt` (sourced from GHCR in subsequent `imagetools create` calls) and to `ghcr-probed-{image}.txt` (skip re-probing).
-- A HTTP 404 result writes to `ghcr-probed-{image}.txt` only (avoid re-probing but do not source from GHCR).
+- A HTTP 200 result writes `digest<TAB>found` to `ghcr-probe-{image}.txt`.
+- A HTTP 404 result writes `digest<TAB>missing` to `ghcr-probe-{image}.txt`.
 - Transient probe errors leave the digest unrecorded so the probe retries on the next cycle.
-- Both cache files are stored in `DIGESTS_CACHE_DIR` and included in the existing Actions cache save.
-- REFS construction uses `GHCR_REPO@digest` for newly-built platforms AND for seeded platforms confirmed present on GHCR.
-- Confirmed digests are NOT written to `ghcr-probed`; skip check tests both files, avoiding a redundant double-entry.
-- After a successful `imagetools create`, newly-pushed GHCR digests (NEW_PKEYS) are written to `ghcr-confirmed` so they are never re-probed.
+- The probe cache file is stored in `DIGESTS_CACHE_DIR` and included in the existing Actions cache save.
+- The probe cache is cleared (like `IMG_PLATFORM_DIGESTS`) on seeding `ok`/`not_found` and on init corruption to prevent unbounded growth.
+- REFS construction uses `GHCR_REPO@digest` for newly-built platforms AND for seeded platforms recorded as `found` in the probe cache.
+- Probe cache entries prevent redundant re-probing while preserving retry behavior for transient failures.
 - Linting passes (shell, yaml, dockerfile).
 

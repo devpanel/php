@@ -193,7 +193,7 @@ runs:
       uses: docker/login-action@v4
       with:
         registry: ghcr.io
-        username: ${{ github.actor }}
+        username: ${{ github.repository_owner }}
         password: ${{ inputs.ghcr_token || inputs.github_token }}
 
     - name: Poll and merge manifests
@@ -470,18 +470,22 @@ runs:
 
         # Helper: refresh the GHCR Bearer token used for per-digest HEAD probes.
         # Obtains a pull-scoped token from the GHCR token endpoint using
-        # GITHUB_ACTOR and the GHCR_TOKEN environment variable.
+        # GITHUB_REPOSITORY_OWNER and the GHCR_TOKEN environment variable.
+        # Using GITHUB_REPOSITORY_OWNER (not GITHUB_ACTOR) ensures PAT-based
+        # auth works correctly on scheduled/bot runs where GITHUB_ACTOR may be
+        # "github-actions[bot]" rather than the token owner.
         # Returns 0 when a valid token is available, 1 when the fetch failed.
         get_ghcr_inspect_token() {
-          local _now
+          local _now _ghcr_username
           _now="$(date +%s)"
           if [[ -n "${GHCR_BEARER}" ]] \
               && (( _now - ${GHCR_BEARER_TIME:-0} < TOKEN_MAX_AGE )); then
             return 0
           fi
+          _ghcr_username="${GITHUB_REPOSITORY_OWNER:-${GITHUB_ACTOR}}"
           local _json _new_token
           _json="$(curl -sf --connect-timeout 5 --max-time 15 \
-            -u "${GITHUB_ACTOR}:${GHCR_TOKEN}" \
+            -u "${_ghcr_username}:${GHCR_TOKEN}" \
             "https://ghcr.io/token?service=ghcr.io&scope=repository:${_ghcr_path}:pull" \
             2>/dev/null)" || _json=""
           _new_token="$(printf '%s' "${_json}" | jq -r '.token // ""' 2>/dev/null)" \
@@ -1026,7 +1030,7 @@ runs:
                        "skipping GHCR probe for ${_pkey//-/\/}."
                   continue
                 fi
-                _ghcr_http_code="$(curl -s --connect-timeout 10 --max-time 30 \
+                _ghcr_http_code="$(curl -sI --connect-timeout 10 --max-time 30 \
                   -H "Authorization: Bearer ${GHCR_BEARER}" \
                   -H "Accept: ${_ghcr_accept}" \
                   -o /dev/null -w "%{http_code}" \
