@@ -166,24 +166,36 @@ runs:
               rm -f "${_head_tmp}"
             fi
             _DOCKERHUB_LOGGED_IN=false
-            echo "Pulling ${image} to detect Debian codename (unauthenticated)..." >&2
-            if ! docker pull --quiet "$image" >/dev/null 2>&1; then
-              if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
-                echo "  Unauthenticated pull failed; retrying with Docker Hub credentials..." >&2
-                if echo "${DOCKERHUB_TOKEN}" \
-                  | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin >&2; then
-                  _DOCKERHUB_LOGGED_IN=true
-                  # Install a trap so docker logout always runs on EXIT (including
-                  # on set -e early exit from the pull or docker run below).
-                  trap 'docker logout >&2 2>/dev/null || true' EXIT
-                  docker pull --quiet "$image" >&2
+            # Try the GHCR mirror first to avoid Docker Hub pull quota.
+            # The mirror is populated by the daily mirror-php-images workflow.
+            # On a cache miss (mirror not yet warm or GHCR not accessible) the
+            # pull fails silently and the existing Docker Hub path is used as a
+            # fallback, preserving the existing behaviour exactly.
+            _GHCR_MIRROR="ghcr.io/$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')/php-base-mirror"
+            _GHCR_MIRROR_IMAGE="${_GHCR_MIRROR}:${ver}-apache"
+            if docker pull --quiet "${_GHCR_MIRROR_IMAGE}" >/dev/null 2>&1; then
+              echo "  Pulled from GHCR mirror (${_GHCR_MIRROR_IMAGE}); skipping Docker Hub pull." >&2
+              image="${_GHCR_MIRROR_IMAGE}"
+            else
+              echo "Pulling ${image} to detect Debian codename (unauthenticated)..." >&2
+              if ! docker pull --quiet "$image" >/dev/null 2>&1; then
+                if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+                  echo "  Unauthenticated pull failed; retrying with Docker Hub credentials..." >&2
+                  if echo "${DOCKERHUB_TOKEN}" \
+                    | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin >&2; then
+                    _DOCKERHUB_LOGGED_IN=true
+                    # Install a trap so docker logout always runs on EXIT (including
+                    # on set -e early exit from the pull or docker run below).
+                    trap 'docker logout >&2 2>/dev/null || true' EXIT
+                    docker pull --quiet "$image" >&2
+                  else
+                    echo "  Docker Hub login failed; cannot retry authenticated pull for ${image}." >&2
+                    exit 1
+                  fi
                 else
-                  echo "  Docker Hub login failed; cannot retry authenticated pull for ${image}." >&2
-                  exit 1
+                  # Re-run without redirection so the error is visible in the log.
+                  docker pull --quiet "$image" >&2
                 fi
-              else
-                # Re-run without redirection so the error is visible in the log.
-                docker pull --quiet "$image" >&2
               fi
             fi
             codename=$(docker run --rm "$image" sh -c \

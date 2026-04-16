@@ -125,6 +125,27 @@ inputs:
       QUOTA_MAX_WAIT.  Pass needs.detect.outputs.run_started_at from the
       calling workflow.
     required: true
+  ghcr_repo:
+    description: >
+      GHCR repository for pulling per-platform images pushed by digest (e.g.
+      "ghcr.io/devpanel/php").  When ghcr_writable is "true", refs for
+      newly-built platforms are sourced from GHCR instead of Docker Hub in
+      the imagetools create call, avoiding authenticated Docker Hub pull
+      quota consumption.  Has no effect when ghcr_writable is "false".
+    default: ''
+  ghcr_token:
+    description: >
+      Token used to authenticate with GHCR before imagetools create when
+      ghcr_writable is "true".  Falls back to github_token when not set.
+    default: ''
+  ghcr_writable:
+    description: >
+      Whether GHCR was used as a push target for the per-platform digest
+      images ("true"/"false").  When "true", refs for newly-built platforms
+      use the GHCR digest path; refs for seeded/existing platforms always
+      use Docker Hub (they may not yet be on GHCR).  Defaults to "false"
+      (Docker Hub only, preserving existing behaviour as a fallback).
+    default: 'false'
 
 runs:
   using: composite
@@ -160,6 +181,18 @@ runs:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
 
+    # Login to GHCR so imagetools create can pull per-platform digest refs
+    # from GHCR (avoiding Docker Hub authenticated pull quota).  Only needed
+    # when ghcr_writable is true; skipped otherwise so no unnecessary
+    # registry credentials are requested.
+    - name: Login to GitHub Container Registry
+      if: inputs.ghcr_writable == 'true'
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.ghcr_token || inputs.github_token }}
+
     - name: Poll and merge manifests
       shell: bash
       env:
@@ -176,6 +209,8 @@ runs:
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
         BUILD_MATRIX_LENGTH: ${{ inputs.build_matrix_length }}
         RUN_STARTED_AT: ${{ inputs.run_started_at }}
+        GHCR_REPO: ${{ inputs.ghcr_repo }}
+        GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
       run: |
         set -euo pipefail
 
@@ -1097,12 +1132,29 @@ runs:
                 echo "  [${IMAGE}] ${pkey//-/\/}: ${pdigest}"
               done
 
-              # Collect REFS from every entry in the temp map
+              # Collect REFS from every entry in the temp map.
+              # - Newly-built platforms (in NEW_PKEYS): use GHCR_REPO when
+              #   ghcr_writable is true — those digests were pushed to GHCR by
+              #   the build job, so imagetools create can pull them from GHCR
+              #   instead of Docker Hub, avoiding authenticated pull quota.
+              # - Seeded/existing platforms: always use REPO (Docker Hub) since
+              #   they may not exist on GHCR (built in a prior run before GHCR
+              #   dual-push was introduced, or GHCR was not writable then).
+              declare -A _new_pkeys_for_refs=()
+              for _npk in "${NEW_PKEYS[@]+"${NEW_PKEYS[@]}"}"; do
+                _new_pkeys_for_refs["${_npk}"]=1
+              done
               REFS=()
               while IFS=$'\t' read -r pkey pdigest; do
                 [[ -n "${pkey}" && -n "${pdigest}" ]] || continue
-                REFS+=("${REPO}@${pdigest}")
+                if [[ "${GHCR_WRITABLE}" == "true" && -n "${GHCR_REPO}" ]] \
+                   && [[ -v "_new_pkeys_for_refs[${pkey}]" ]]; then
+                  REFS+=("${GHCR_REPO}@${pdigest}")
+                else
+                  REFS+=("${REPO}@${pdigest}")
+                fi
               done < "${REFS_MAP}"
+              unset _new_pkeys_for_refs
 
               if [[ ${#REFS[@]} -gt 0 ]]; then
                 # ── Gate imagetools create on pull quota ──────────────────

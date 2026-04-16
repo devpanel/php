@@ -1,0 +1,84 @@
+name: Mirror PHP base images to GHCR
+
+# Copies the official php:<version>-apache multi-platform manifest and all
+# referenced blobs from Docker Hub into GHCR so that:
+#   - build jobs can pull the base image from the GHCR mirror (no Docker Hub
+#     pull quota consumed when the mirror is warm).
+#   - preseed-downloads can pull the base image from GHCR for Debian codename
+#     detection instead of going to Docker Hub.
+#
+# The mirror is stored under ghcr.io/<owner>/php-base-mirror:<version>-apache.
+# BuildKit is configured (in build-php-images/action.yml) to use this GHCR
+# repository as a pull-through mirror for docker.io, so it transparently
+# resolves php:<version>-apache via GHCR when the mirror is warm.
+#
+# If the mirror is absent or stale the build falls back to Docker Hub
+# automatically — this workflow is a best-effort quota-reduction measure only.
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # daily at 04:00 UTC
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Compute GHCR mirror repository (lowercase)
+        id: mirror
+        shell: bash
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          owner_lc="$(echo "${REPO_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "repo=ghcr.io/${owner_lc}/php-base-mirror" >> "$GITHUB_OUTPUT"
+
+      - name: Mirror PHP base images
+        shell: bash
+        env:
+          MIRROR_REPO: ${{ steps.mirror.outputs.repo }}
+          # Keep this list in sync with VERSIONS in docker-bake.hcl.
+          VERSIONS: '7.4 8.0 8.1 8.2 8.3'
+        run: |
+          set -euo pipefail
+          echo "Mirroring PHP base images to ${MIRROR_REPO}..."
+          failed=0
+          for ver in ${VERSIONS}; do
+            src="docker.io/library/php:${ver}-apache"
+            # BuildKit resolves docker.io/library/php:<ver>-apache through the
+            # mirror as <mirror>/library/php:<ver>-apache.  We therefore store
+            # the image at that path so the BuildKit mirror lookup succeeds.
+            # The preseed-downloads action pulls the simpler tag
+            # <mirror>:<ver>-apache directly for codename detection.
+            mirror_path="${MIRROR_REPO}/library/php:${ver}-apache"
+            mirror_tag="${MIRROR_REPO}:${ver}-apache"
+            echo "  ${src} → ${mirror_path} (and ${mirror_tag})"
+            # Push under the nested path for BuildKit mirror resolution.
+            if docker buildx imagetools create --tag "${mirror_path}" "${src}"; then
+              # Also push a simple :<ver>-apache tag for preseed use.
+              docker buildx imagetools create --tag "${mirror_tag}" "${src}" || true
+            else
+              echo "::warning::Failed to mirror ${src}; skipping."
+              failed=$(( failed + 1 ))
+            fi
+          done
+          if [[ "${failed}" -gt 0 ]]; then
+            echo "::warning::${failed} image(s) could not be mirrored." \
+                 "Builds will fall back to Docker Hub for those versions."
+          else
+            echo "All PHP base images mirrored successfully."
+          fi
