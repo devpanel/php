@@ -35,13 +35,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ── Find the effective before SHA ───────────────────────────────────────────
-  # For a push event, or a manual dispatch with all_versions disabled, find the
-  # head SHA of the last *successful* build run on this branch so that commits
-  # covered by cancelled runs are not silently skipped.
+  # ── Find the effective per-platform before SHAs ────────────────────────────
+  # For a push event, or a manual dispatch with all_versions disabled, find
+  # the per-platform closest ancestor of the last *successful* build run on
+  # this branch so that commits covered by cancelled runs are not skipped.
   #
   # When all_versions is requested (workflow_dispatch with all_versions=true)
-  # the job is skipped entirely; the empty before_sha output causes the detect
+  # the job is skipped entirely; the empty before_shas ({}) causes the detect
   # job to build every version rather than diff against a previous commit.
   prepare:
     runs-on: ubuntu-latest
@@ -50,10 +50,34 @@ jobs:
       actions: read
       contents: read
     outputs:
-      before_sha: ${{ steps.effective_sha.outputs.before_sha }}
+      before_shas: ${{ steps.effective_sha.outputs.before_shas }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Normalize platform keys for per-platform before_shas
+        id: plat-keys
+        shell: bash
+        env:
+          RAW_PLATFORMS: ${{ inputs.platforms || vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
+        run: |
+          set -euo pipefail
+          # Convert "linux/amd64,linux/arm64" (or with default variant suffixes)
+          # to space-separated platform keys matching build-done artifact names:
+          #   linux/amd64,linux/arm64        → "linux-amd64 linux-arm64"
+          #   linux/arm64/v8,linux/amd64/v1  → "linux-arm64 linux-amd64"
+          result=""
+          IFS=',' read -ra plats <<< "${RAW_PLATFORMS}"
+          for p in "${plats[@]}"; do
+            p="${p// /}"   # trim any surrounding whitespace
+            case "${p}" in
+              */arm64/v8) p="${p%/v8}" ;;
+              */amd64/v1) p="${p%/v1}" ;;
+            esac
+            k="${p//\//-}"
+            result="${result:+${result} }${k}"
+          done
+          echo "platform_keys=${result}" >> "$GITHUB_OUTPUT"
 
       - name: Compute effective before_sha
         id: effective_sha
@@ -68,12 +92,13 @@ jobs:
           repository: ${{ github.repository }}
           github_token: ${{ github.token }}
           event_name: ${{ github.event_name }}
+          platforms: ${{ steps.plat-keys.outputs.platform_keys }}
 
   # ── Detect which versions changed and which platforms to target ─────────────
-  # Runs after prepare so that before_sha is available, and its outputs drive
+  # Runs after prepare so that before_shas is available, and its outputs drive
   # both the per-platform build matrix and the merge job.
   #
-  # When before_sha is empty (all_versions build or brand-new branch), the
+  # When before_shas is empty {} (all_versions build or brand-new branch), the
   # detect-versions action builds every version in the repository.
   detect:
     needs: prepare
@@ -89,7 +114,6 @@ jobs:
       versions_secure: ${{ steps.detect.outputs.versions_secure }}
       latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
       tag_suffix: ${{ steps.detect.outputs.tag_suffix }}
-      before_sha: ${{ needs.prepare.outputs.before_sha }}
       # Unix epoch seconds captured at the very start of this job.  Passed to
       # the merge job so merge-manifests can measure elapsed workflow time for
       # the QUOTA_MAX_WAIT safety cut-off without an extra GitHub API call.
@@ -124,13 +148,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
+          fetch-depth: ${{ needs.prepare.outputs.before_shas != '{}' && '0' || '1' }}
 
       - name: Detect versions
         id: detect
         uses: ./.github/actions/detect-versions
         with:
-          before_sha: ${{ needs.prepare.outputs.before_sha }}
+          before_shas: ${{ needs.prepare.outputs.before_shas || '{}' }}
           after_sha: ${{ github.sha }}
           platforms_filter: ${{ inputs.platforms || vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -285,9 +309,17 @@ jobs:
     permissions:
       contents: read
       actions: write
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Compute GHCR repository (lowercase)
+        id: ghcr
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+        run: echo "repo=ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -306,3 +338,6 @@ jobs:
           repository: ${{ github.repository }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          ghcr_repo: ${{ steps.ghcr.outputs.repo }}
+          ghcr_token: ${{ secrets.GHCR_TOKEN }}
+          ghcr_writable: ${{ needs.detect.outputs.ghcr_writable }}

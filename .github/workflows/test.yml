@@ -65,13 +65,13 @@ jobs:
       - name: Run Dockerfile lint
         run: bash tests/lint-dockerfile.sh
 
-  # ── Find the effective before SHA ───────────────────────────────────────────
+  # ── Find the effective before SHAs ──────────────────────────────────────────
   # For pull_request events the PR base is always the right anchor.  For push
   # events, use the head SHA of the last *successful* test run on this branch
   # so that commits covered by cancelled runs are not silently skipped.
   #
   # When all_versions is requested via workflow_dispatch the job is skipped
-  # entirely; the empty before_sha output causes the detect job to test every
+  # entirely; the empty before_shas output causes the detect job to test every
   # version rather than diff against a previous commit.
   prepare:
     runs-on: ubuntu-latest
@@ -80,10 +80,10 @@ jobs:
       actions: read
       contents: read
     outputs:
-      before_sha: ${{ steps.effective_sha.outputs.before_sha }}
+      before_shas: ${{ steps.effective_sha.outputs.before_shas }}
     steps:
       - uses: actions/checkout@v6
-      - name: Compute effective before_sha
+      - name: Compute effective before_shas
         id: effective_sha
         uses: ./.github/actions/effective-before-sha
         with:
@@ -96,6 +96,7 @@ jobs:
           github_token: ${{ github.token }}
           event_name: ${{ github.event_name }}
           pr_base_sha: ${{ github.event.pull_request.base.sha }}
+          platforms: linux-amd64
 
   # Detect PHP versions to test, compute the lowercase GHCR repo name, and
   # pre-seed build downloads for ALL detected versions at once.  Running
@@ -129,7 +130,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
+          fetch-depth: ${{ needs.prepare.outputs.before_shas != '{}' && '0' || '1' }}
 
       - name: Compute GHCR repository (lowercase)
         id: ghcr
@@ -139,8 +140,11 @@ jobs:
 
       - name: Detect PHP versions for build test
         id: versions
+        env:
+          BEFORE_SHAS: ${{ needs.prepare.outputs.before_shas || '{}' }}
         run: |
-          before_sha="${{ needs.prepare.outputs.before_sha }}"
+          before_sha="$(printf '%s' "${BEFORE_SHAS}" \
+            | jq -r '.["linux-amd64"] // ""' 2>/dev/null || echo '')"
           if [[ -n "$before_sha" ]]; then
             versions_str=$(bash tests/detect-versions.sh --before "$before_sha" --after "${{ github.sha }}" | sort -V | tr '\n' ' ' | sed 's/ $//')
           else

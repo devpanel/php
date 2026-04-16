@@ -1,18 +1,22 @@
 name: Compute effective before SHA
 description: >
-  Finds the effective "before" SHA for a push or pull_request event.
+  Finds the effective per-platform "before" SHAs for a push or
+  pull_request event, emitted as a JSON map (before_shas).
 
-  For pull_request events, returns the PR base SHA immediately.
+  For pull_request events, all platforms map to the PR base SHA.
 
-  For push events, queries workflow runs for the most recent successful
-  run on this branch whose head commit is an ancestor of the current
-  commit (smallest ahead_by distance).  When no prior successful run is
-  found, returns an empty string (callers should treat that as "build
-  everything").
+  For push events, queries workflow runs for each requested platform and
+  finds the closest reachable ancestor run that actually built that
+  platform (verified by checking for a "build-done-a*-*-{platform_key}"
+  artifact).  Each platform gets its own independent closest ancestor.
+  Platforms with no prior successful run are absent from the map,
+  triggering a full rebuild for that platform.
+
+  When `platforms` is empty, before_shas is emitted as {} (no filtering,
+  caller should treat that as "build everything").
 
   Workflow discovery (push events only): fetches recent successful
-  runs via workflow_files (bare filenames or numeric workflow IDs) and
-  picks the closest reachable ancestor of the current commit.
+  runs via workflow_files (bare filenames or numeric workflow IDs).
 
   Required GITHUB_TOKEN permissions on the calling job:
     actions:  read   (list workflow runs)
@@ -47,14 +51,26 @@ inputs:
       Required when event_name is "pull_request".
     required: false
     default: ''
+  platforms:
+    description: >
+      Space-separated platform keys to use for per-platform before_shas
+      filtering (e.g. "linux-amd64 linux-arm64").  When set, only runs
+      that built a given platform (verified by "build-done-a*-*-{pkey}"
+      artifact) are eligible as anchors for that platform.  When empty,
+      before_shas is {} (no filtering, full rebuild).
+    required: false
+    default: ''
 
 outputs:
-  before_sha:
+  before_shas:
     description: >
-      The effective before SHA to use as the diff anchor.  Empty string
-      when no prior successful run is found; callers should treat that
-      as "build everything".
-    value: ${{ steps.compute.outputs.before_sha }}
+      JSON map of platform-key to the closest reachable ancestor SHA for
+      that platform, e.g. {"linux-amd64":"abc123","linux-arm64":"def456"}.
+      Each entry is the closest (smallest ahead_by) ancestor for that
+      specific platform.  A platform absent from the map has no prior
+      successful run and should trigger a full rebuild for that platform.
+      Emitted as {} when `platforms` is empty or no candidates are found.
+    value: ${{ steps.compute.outputs.before_shas }}
 
 runs:
   using: composite
@@ -70,6 +86,7 @@ runs:
         REPOSITORY: ${{ inputs.repository }}
         EVENT_NAME: ${{ inputs.event_name }}
         PR_BASE_SHA: ${{ inputs.pr_base_sha }}
+        PLATFORMS: ${{ inputs.platforms }}
       run: |
         set -euo pipefail
 
@@ -78,51 +95,137 @@ runs:
             echo "::error::Input 'pr_base_sha' is required when event_name is 'pull_request'."
             exit 1
           fi
-          echo "before_sha=${PR_BASE_SHA}" >> "$GITHUB_OUTPUT"
+          # For pull_request events, all platforms share the same base SHA.
+          # Build a before_shas map with each platform key pointing to it.
+          if [[ -n "${PLATFORMS:-}" ]]; then
+            read -r -a _pr_pkeys <<< "${PLATFORMS}"
+            _pr_shas_json="{}"
+            for _k in "${_pr_pkeys[@]}"; do
+              _pr_shas_json="$(printf '%s' "${_pr_shas_json}" \
+                | jq --arg k "${_k}" --arg v "${PR_BASE_SHA}" '. + {($k): $v}')"
+            done
+            echo "before_shas=${_pr_shas_json}" >> "$GITHUB_OUTPUT"
+          else
+            echo "before_shas={}" >> "$GITHUB_OUTPUT"
+          fi
           exit 0
         fi
 
-        # For push events, collect head SHAs of prior successful runs via
-        # workflow_files.
-        CANDIDATES=""
+        # For push events, collect (sha<TAB>run_id) pairs from prior successful
+        # runs via workflow_files.  run_id is needed for the per-platform
+        # artifact check.
+        RAW_CANDIDATE_PAIRS=""
         if [[ -n "${WORKFLOW_FILES:-}" ]]; then
           NORMALIZED_WORKFLOW_FILES=$(printf '%s' "${WORKFLOW_FILES}" | tr '\r\n' '  ')
           read -r -a WF_ARRAY <<< "${NORMALIZED_WORKFLOW_FILES}"
           for wf in "${WF_ARRAY[@]}"; do
-            CANDIDATES=$(printf '%s\n%s' "$CANDIDATES" "$(
+            RAW_CANDIDATE_PAIRS=$(printf '%s\n%s' "${RAW_CANDIDATE_PAIRS}" "$(
               gh api \
                 "repos/${REPOSITORY}/actions/workflows/${wf}/runs?branch=${REF_NAME}&status=success&per_page=10" \
-                --jq '.workflow_runs[] | .head_sha // empty' || true
+                --jq '.workflow_runs[] | (.head_sha // empty) + "\t" + (.id | tostring)' || true
             )")
           done
         fi
 
-        # Deduplicate and remove empty lines.
-        CANDIDATES=$(printf '%s' "$CANDIDATES" | sort -u | grep . || true)
+        # Deduplicate (sha<TAB>run_id) pairs; discard malformed lines.
+        readarray -t CANDIDATE_PAIRS < <(
+          printf '%s' "${RAW_CANDIDATE_PAIRS}" \
+            | sort -u \
+            | grep -E $'^[0-9a-f]{40}\t[0-9]+$' \
+            || true
+        )
 
-        # Among all candidates, pick the closest reachable ancestor of the
-        # current commit — the one with the smallest ahead_by distance.
-        # This is more correct than using timestamps because it is based on
-        # the actual git ancestry of the branch rather than wall-clock time.
-        LAST_SUCCESS_SHA=""
-        BEST_AHEAD=""
-        while IFS= read -r SHA; do
-          [[ -z "$SHA" || "$SHA" == "${CURRENT_SHA}" ]] && continue
-          COMPARE=$(gh api \
-            "repos/${REPOSITORY}/compare/${SHA}...${CURRENT_SHA}" \
-            --jq '{status: .status, ahead_by: .ahead_by}' 2>/dev/null || true)
-          STATUS=$(printf '%s' "$COMPARE" | jq -r '.status // ""')
-          AHEAD=$(printf '%s' "$COMPARE" | jq -r '.ahead_by // empty')
-          if [[ "$STATUS" == "ahead" || "$STATUS" == "identical" ]] && [[ "$AHEAD" =~ ^[0-9]+$ ]]; then
-            if [[ -z "$BEST_AHEAD" || "$AHEAD" -lt "$BEST_AHEAD" ]]; then
-              BEST_AHEAD="$AHEAD"
-              LAST_SUCCESS_SHA="$SHA"
-            fi
+        # Cache for SHA → ahead_by or "unreachable".
+        # Avoids redundant compare API calls when multiple runs share the
+        # same head SHA (e.g. rerun of the same commit).
+        declare -A SHA_AHEAD_CACHE
+
+        # compare_sha <sha>
+        # Sets COMPARE_AHEAD to the numeric ahead_by value, or "" when the
+        # SHA is not a reachable ancestor of CURRENT_SHA.
+        compare_sha() {
+          local _sha="$1"
+          if [[ -v "SHA_AHEAD_CACHE[${_sha}]" ]]; then
+            COMPARE_AHEAD="${SHA_AHEAD_CACHE[${_sha}]}"
+            [[ "${COMPARE_AHEAD}" == "unreachable" ]] && COMPARE_AHEAD=""
+            return
           fi
-        done <<< "$CANDIDATES"
+          local _compare _status _ahead
+          _compare=$(gh api \
+            "repos/${REPOSITORY}/compare/${_sha}...${CURRENT_SHA}" \
+            --jq '{status: .status, ahead_by: .ahead_by}' 2>/dev/null || true)
+          _status=$(printf '%s' "${_compare}" | jq -r '.status // ""')
+          _ahead=$(printf '%s' "${_compare}" | jq -r '.ahead_by // empty')
+          if [[ "${_status}" == "ahead" || "${_status}" == "identical" ]] \
+             && [[ "${_ahead}" =~ ^[0-9]+$ ]]; then
+            SHA_AHEAD_CACHE["${_sha}"]="${_ahead}"
+            COMPARE_AHEAD="${_ahead}"
+          else
+            SHA_AHEAD_CACHE["${_sha}"]="unreachable"
+            COMPARE_AHEAD=""
+          fi
+        }
 
-        if [[ -n "$LAST_SUCCESS_SHA" ]]; then
-          echo "before_sha=${LAST_SUCCESS_SHA}" >> "$GITHUB_OUTPUT"
+        if [[ -z "${PLATFORMS:-}" ]]; then
+          # No platforms specified — no per-platform filtering possible.
+          echo "before_shas={}" >> "$GITHUB_OUTPUT"
         else
-          echo "before_sha=" >> "$GITHUB_OUTPUT"
+          # ── Per-platform logic ─────────────────────────────────────────────
+          # For each requested platform key, find the closest ancestor run
+          # that actually built that platform (has a build-done artifact for
+          # it).  Each platform gets its own independent closest ancestor.
+          # Platforms with no eligible run are absent from the output map.
+          read -r -a PLATFORM_KEYS <<< "${PLATFORMS}"
+
+          declare -A BEST_SHA_PER_PLAT    # pkey → sha of closest ancestor
+          declare -A BEST_AHEAD_PER_PLAT  # pkey → ahead_by for that sha
+
+          for pair in "${CANDIDATE_PAIRS[@]+"${CANDIDATE_PAIRS[@]}"}"; do
+            IFS=$'\t' read -r SHA RUN_ID <<< "${pair}"
+            [[ -z "${SHA}" || "${SHA}" == "${CURRENT_SHA}" ]] && continue
+
+            compare_sha "${SHA}"
+            [[ -z "${COMPARE_AHEAD}" ]] && continue
+            AHEAD="${COMPARE_AHEAD}"
+
+            # Fetch artifact names for this run to determine which platforms
+            # were actually built.  A single page of 100 is sufficient for
+            # typical run artifact counts (~60 artifacts max per full build).
+            ARTIFACT_NAMES="$(gh api \
+              "repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+              --jq '[.artifacts[].name]' 2>/dev/null || echo '[]')"
+
+            for pkey in "${PLATFORM_KEYS[@]}"; do
+              # build-done artifact names follow the pattern:
+              #   build-done-a{ATTEMPT}-{VERSION}-{PLATFORM_KEY}
+              # e.g. build-done-a1-8.3-linux-amd64
+              # Match by prefix ("build-done-a") and suffix ("-{pkey}") to
+              # avoid hard-coding the VERSION component.
+              has_platform="$(printf '%s' "${ARTIFACT_NAMES}" \
+                | jq --arg suffix "-${pkey}" \
+                  'any(.[]; startswith("build-done-a") and endswith($suffix))' \
+                2>/dev/null || echo 'false')"
+
+              if [[ "${has_platform}" == "true" ]]; then
+                # Keep the closest (smallest ahead_by) ancestor per platform.
+                if [[ ! -v "BEST_AHEAD_PER_PLAT[${pkey}]" ]] \
+                   || [[ "${AHEAD}" -lt "${BEST_AHEAD_PER_PLAT[${pkey}]}" ]]; then
+                  BEST_SHA_PER_PLAT["${pkey}"]="${SHA}"
+                  BEST_AHEAD_PER_PLAT["${pkey}"]="${AHEAD}"
+                fi
+              fi
+            done
+          done
+
+          # Build before_shas: independent per-platform map.
+          # Platforms with no eligible run are absent from the map.
+          BEFORE_SHAS_JSON="{}"
+          for pkey in "${PLATFORM_KEYS[@]}"; do
+            if [[ -v "BEST_SHA_PER_PLAT[${pkey}]" ]]; then
+              sha="${BEST_SHA_PER_PLAT[${pkey}]}"
+              BEFORE_SHAS_JSON="$(printf '%s' "${BEFORE_SHAS_JSON}" \
+                | jq --arg k "${pkey}" --arg v "${sha}" '. + {($k): $v}')"
+            fi
+          done
+          echo "before_shas=${BEFORE_SHAS_JSON}" >> "$GITHUB_OUTPUT"
         fi
