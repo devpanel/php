@@ -102,7 +102,7 @@ runs:
             _pr_shas_json="{}"
             for _k in "${_pr_pkeys[@]}"; do
               _pr_shas_json="$(printf '%s' "${_pr_shas_json}" \
-                | jq --arg k "${_k}" --arg v "${PR_BASE_SHA}" '. + {($k): $v}')"
+                | jq -c --arg k "${_k}" --arg v "${PR_BASE_SHA}" '. + {($k): $v}')"
             done
             echo "before_shas=${_pr_shas_json}" >> "$GITHUB_OUTPUT"
           else
@@ -224,7 +224,7 @@ runs:
             if [[ -v "BEST_SHA_PER_PLAT[${pkey}]" ]]; then
               sha="${BEST_SHA_PER_PLAT[${pkey}]}"
               BEFORE_SHAS_JSON="$(printf '%s' "${BEFORE_SHAS_JSON}" \
-                | jq --arg k "${pkey}" --arg v "${sha}" '. + {($k): $v}')"
+                | jq -c --arg k "${pkey}" --arg v "${sha}" '. + {($k): $v}')"
             fi
           done
           echo "before_shas=${BEFORE_SHAS_JSON}" >> "$GITHUB_OUTPUT"
