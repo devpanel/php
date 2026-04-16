@@ -2,15 +2,12 @@ name: Mirror PHP base images to GHCR
 
 # Copies the official php:<version>-apache multi-platform manifest and all
 # referenced blobs from Docker Hub into GHCR so that:
-#   - build jobs can pull the base image from the GHCR mirror (no Docker Hub
-#     pull quota consumed when the mirror is warm).
 #   - preseed-downloads can pull the base image from GHCR for Debian codename
 #     detection instead of going to Docker Hub.
+#   - future builds can reference the GHCR mirror image explicitly to avoid
+#     Docker Hub pull quota on base-image fetches.
 #
 # The mirror is stored under ghcr.io/<owner>/php-base-mirror:<version>-apache.
-# BuildKit is configured (in build-php-images/action.yml) to use this GHCR
-# repository as a pull-through mirror for docker.io, so it transparently
-# resolves php:<version>-apache via GHCR when the mirror is warm.
 #
 # If the mirror is absent or stale the build falls back to Docker Hub
 # automatically — this workflow is a best-effort quota-reduction measure only.
@@ -32,7 +29,7 @@ jobs:
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
