@@ -21,5 +21,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - Transient probe errors leave the digest unrecorded so the probe retries on the next cycle.
 - Both cache files are stored in `DIGESTS_CACHE_DIR` and included in the existing Actions cache save.
 - REFS construction uses `GHCR_REPO@digest` for newly-built platforms AND for seeded platforms confirmed present on GHCR.
+- Confirmed digests are NOT written to `ghcr-probed`; skip check tests both files, avoiding a redundant double-entry.
+- After a successful `imagetools create`, newly-pushed GHCR digests (NEW_PKEYS) are written to `ghcr-confirmed` so they are never re-probed.
 - Linting passes (shell, yaml, dockerfile).
 
