@@ -97,7 +97,7 @@ jobs:
           set -euo pipefail
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             echo "before_shas={\"linux-amd64\":\"${PR_BASE_SHA}\"}" >> "$GITHUB_OUTPUT"
-          elif [[ -n "${BEFORE_SHA:-}" && ! "${BEFORE_SHA}" =~ ^0+$ ]]; then
+          elif [[ -n "${BEFORE_SHA:-}" && ! "${BEFORE_SHA}" =~ ^0{40}$ ]]; then
             echo "before_shas={\"linux-amd64\":\"${BEFORE_SHA}\"}" >> "$GITHUB_OUTPUT"
           else
             echo "before_shas={}" >> "$GITHUB_OUTPUT"
