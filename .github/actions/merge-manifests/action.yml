@@ -994,6 +994,9 @@ runs:
           # unrecorded so the probe retries automatically.
           # Only runs when ghcr_writable is "true" and GHCR_REPO is set.
           if [[ "${GHCR_WRITABLE}" == "true" && -n "${_ghcr_path}" ]]; then
+            # Accept header for GHCR manifest HEAD requests: covers OCI and
+            # Docker manifest list types so multi-arch digests are recognised.
+            _ghcr_accept="application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
             for vs in "${VERSIONS_STAGES[@]}"; do
               version="${vs%%:*}"
               stage="${vs##*:}"
@@ -1014,7 +1017,7 @@ runs:
                 fi
                 _ghcr_http_code="$(curl -s --connect-timeout 10 --max-time 30 \
                   -H "Authorization: Bearer ${GHCR_BEARER}" \
-                  -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+                  -H "Accept: ${_ghcr_accept}" \
                   -o /dev/null -w "%{http_code}" \
                   "https://ghcr.io/v2/${_ghcr_path}/manifests/${_pdigest}" \
                   2>/dev/null)" || true
