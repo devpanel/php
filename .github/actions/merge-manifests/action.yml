@@ -331,6 +331,7 @@ runs:
               fi
             else
               : > "${_pdigest_file}"
+              : > "${IMG_GHCR_PROBE_FILE[$key]}"
               echo "  WARNING: ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
                    "failed to sanitize cached digest state;" \
                    "cleared the cached baseline and forcing re-seeding."
@@ -338,25 +339,6 @@ runs:
             fi
           else
             echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
-          fi
-
-          # Prune GHCR probe cache to contain only entries whose digest appears
-          # in the current platform-digest state file.  Entries for digests that
-          # are no longer part of the manifest (e.g. a platform was rebuilt
-          # between runs, replacing its digest) are removed so the cache never
-          # carries stale data.
-          if [[ -s "${IMG_GHCR_PROBE_FILE[$key]}" ]]; then
-            if [[ -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
-              awk -F'\t' 'NR==FNR{keep[$1]=1;next} ($1 in keep){print}' \
-                <(awk -F'\t' '{print $2}' "${IMG_PLATFORM_DIGESTS[$key]}") \
-                "${IMG_GHCR_PROBE_FILE[$key]}" \
-                > "${IMG_GHCR_PROBE_FILE[$key]}.tmp" \
-                && mv "${IMG_GHCR_PROBE_FILE[$key]}.tmp" \
-                     "${IMG_GHCR_PROBE_FILE[$key]}" \
-                || rm -f "${IMG_GHCR_PROBE_FILE[$key]}.tmp"
-            else
-              : > "${IMG_GHCR_PROBE_FILE[$key]}"
-            fi
           fi
 
           if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
@@ -951,21 +933,10 @@ runs:
                     echo "::warning::${IMAGE_SEED}: could not extract platform/digest" \
                          "from manifest; starting with empty state."
                   fi
-                  # Prune probe cache: remove entries for digests no longer in
-                  # the manifest (manifest was just rewritten from live state).
-                  if [[ -s "${IMG_GHCR_PROBE_FILE[$key]}" ]]; then
-                    if [[ -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
-                      awk -F'\t' 'NR==FNR{keep[$1]=1;next} ($1 in keep){print}' \
-                        <(awk -F'\t' '{print $2}' "${IMG_PLATFORM_DIGESTS[$key]}") \
-                        "${IMG_GHCR_PROBE_FILE[$key]}" \
-                        > "${IMG_GHCR_PROBE_FILE[$key]}.tmp" \
-                        && mv "${IMG_GHCR_PROBE_FILE[$key]}.tmp" \
-                             "${IMG_GHCR_PROBE_FILE[$key]}" \
-                        || rm -f "${IMG_GHCR_PROBE_FILE[$key]}.tmp"
-                    else
-                      : > "${IMG_GHCR_PROBE_FILE[$key]}"
-                    fi
-                  fi
+                  # Clear the probe cache so it is rebuilt fresh for the current
+                  # manifest digests in this cycle's GHCR probe loop.  This
+                  # mirrors how IMG_PLATFORM_DIGESTS is rewritten on every seed.
+                  > "${IMG_GHCR_PROBE_FILE[$key]}"
                   ;;
                 not_found)
                   # Tag doesn't exist yet — start fresh.
