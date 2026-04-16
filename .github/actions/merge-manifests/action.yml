@@ -985,13 +985,17 @@ runs:
           # ── Probe GHCR for seeded platform digests ─────────────────────────────
           # For every image that is now seeded (pre-seeded from cache or newly
           # seeded this cycle), issue an authenticated HEAD to the GHCR Registry
-          # API for each platform digest not yet recorded in the GHCR-probed cache
-          # file.  A HTTP 200 result also writes the digest to the GHCR-confirmed
-          # cache file, which REFS construction uses to source that platform ref
-          # from GHCR instead of Docker Hub, saving authenticated pull quota.
-          # HTTP 404 records the digest as probed-but-absent so the same digest is
-          # not re-probed on the next cycle.  Transient errors leave the digest
-          # unrecorded so the probe retries automatically.
+          # API for each platform digest not yet definitively probed.
+          # A digest is considered already probed when it appears in either the
+          # GHCR-confirmed file (HTTP 200 from a prior probe, or written directly
+          # after a successful GHCR push) or the GHCR-probed file (HTTP 404 from
+          # a prior probe).  Checking both avoids re-probing confirmed digests
+          # and avoids re-probing confirmed-absent digests.
+          # HTTP 200: writes to the GHCR-confirmed file.  REFS construction uses
+          #   this to source the platform ref from GHCR instead of Docker Hub.
+          # HTTP 404: writes to the GHCR-probed file so the digest is not
+          #   re-probed on the next cycle.
+          # Transient errors: leave the digest unrecorded so the probe retries.
           # Only runs when ghcr_writable is "true" and GHCR_REPO is set.
           if [[ "${GHCR_WRITABLE}" == "true" && -n "${_ghcr_path}" ]]; then
             # Accept header for GHCR manifest HEAD requests: covers OCI and
@@ -1006,9 +1010,15 @@ runs:
               _ghcr_probe_img="${REPO}:${version}-${stage}${TAG_SUFFIX}"
               while IFS=$'\t' read -r _pkey _pdigest; do
                 [[ -n "${_pkey}" && -n "${_pdigest}" ]] || continue
-                # Skip digests already probed (present or absent).
-                grep -qxF "${_pdigest}" "${IMG_GHCR_PROBED_FILE[$key]}" \
-                  2>/dev/null && continue
+                # Skip digests already confirmed present (in ghcr-confirmed)
+                # or confirmed absent (in ghcr-probed).  Confirmed digests are
+                # written directly here (on 200) or by the imagetools create
+                # success block (newly-pushed GHCR digests), so they must not
+                # be written to ghcr-probed to avoid a redundant double-entry.
+                { grep -qxF "${_pdigest}" "${IMG_GHCR_DIGESTS_FILE[$key]}" \
+                    2>/dev/null || \
+                  grep -qxF "${_pdigest}" "${IMG_GHCR_PROBED_FILE[$key]}" \
+                    2>/dev/null; } && continue
                 # Refresh the GHCR Bearer token when expired.
                 if ! get_ghcr_inspect_token; then
                   echo "  ${_ghcr_probe_img}: GHCR token unavailable;" \
@@ -1024,7 +1034,6 @@ runs:
                 case "${_ghcr_http_code:-000}" in
                   200)
                     echo "${_pdigest}" >> "${IMG_GHCR_DIGESTS_FILE[$key]}"
-                    echo "${_pdigest}" >> "${IMG_GHCR_PROBED_FILE[$key]}"
                     echo "  ${_ghcr_probe_img}: ${_pkey//-/\/} confirmed on GHCR."
                     ;;
                   404)
@@ -1322,6 +1331,19 @@ runs:
                         IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
                       fi
                     done
+                    # Record newly-pushed GHCR digests as confirmed so they
+                    # are not re-probed on the next run.  The build job pushed
+                    # them to GHCR, so we know they are present there; a probe
+                    # would only confirm what we already know.
+                    if [[ "${GHCR_WRITABLE}" == "true" && -n "${GHCR_REPO}" ]]; then
+                      for i in "${!NEW_PKEYS[@]}"; do
+                        _np_digest="${NEW_PDIGESTS[$i]}"
+                        if ! grep -qxF "${_np_digest}" \
+                             "${IMG_GHCR_DIGESTS_FILE[$key]}" 2>/dev/null; then
+                          echo "${_np_digest}" >> "${IMG_GHCR_DIGESTS_FILE[$key]}"
+                        fi
+                      done
+                    fi
                   else
                     _create_err="$(cat "${_create_err_file}" 2>/dev/null || true)"
                     rm -f "${_create_err_file}"
