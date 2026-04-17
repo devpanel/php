@@ -6,10 +6,12 @@ description: >
   For pull_request events, all platforms map to the PR base SHA.
 
   For push events, queries workflow runs for the specified workflow(s)
-  and finds the closest reachable ancestor run's head SHA.  All
-  requested platforms share that single SHA — a successful run is
-  assumed to have built all platforms.  When no prior successful run
-  is found, before_shas is emitted as {} triggering a full rebuild.
+  and finds the closest reachable ancestor run's head SHA.  Only runs
+  that included all requested platforms (verified via the
+  platforms_filter annotation emitted by the detect-versions action)
+  are considered.  Runs lacking the annotation are trusted
+  unconditionally for backward compatibility.  When no qualifying prior
+  run is found, before_shas is emitted as {} triggering a full rebuild.
 
   When `platforms` is empty, before_shas is emitted as {} (no
   filtering, caller should treat that as "build everything").
@@ -18,7 +20,7 @@ description: >
   runs via workflow_files (bare filenames or numeric workflow IDs).
 
   Required GITHUB_TOKEN permissions on the calling job:
-    actions:  read   (list workflow runs)
+    actions:  read   (list workflow runs, jobs, and check-run annotations)
     contents: read   (compare commits via the Repos API)
 
 inputs:
@@ -112,27 +114,32 @@ runs:
           exit 0
         fi
 
-        # For push events, collect head SHAs from prior successful runs via
-        # workflow_files.  A successful run is assumed to have built all
-        # platforms — no per-platform artifact check is needed.
-        RAW_CANDIDATE_SHAS=""
+        # For push events, collect (run_id, head_sha) pairs from prior successful
+        # runs.  We record the run_id so we can later check which platforms each
+        # run targeted (via the platforms_filter annotation emitted by the
+        # detect-versions action), ensuring we only anchor against runs that
+        # included all the platforms we are building now.
+        declare -A SHA_TO_RUN_ID   # head_sha → run_id (last seen per SHA)
+
         if [[ -n "${WORKFLOW_FILES:-}" ]]; then
           NORMALIZED_WORKFLOW_FILES=$(printf '%s' "${WORKFLOW_FILES}" | tr '\r\n' '  ')
           read -r -a WF_ARRAY <<< "${NORMALIZED_WORKFLOW_FILES}"
           for wf in "${WF_ARRAY[@]}"; do
-            RAW_CANDIDATE_SHAS=$(printf '%s\n%s' "${RAW_CANDIDATE_SHAS}" "$(
-              gh api \
-                "repos/${REPOSITORY}/actions/workflows/${wf}/runs?branch=${REF_NAME}&status=success&per_page=10" \
-                --jq '.workflow_runs[] | .head_sha // empty' || true
-            )")
+            while IFS=$'\t' read -r _rsha _rid; do
+              [[ -n "${_rsha}" && -n "${_rid}" ]] \
+                && SHA_TO_RUN_ID["${_rsha}"]="${_rid}"
+            done < <(gh api \
+              "repos/${REPOSITORY}/actions/workflows/${wf}/runs?branch=${REF_NAME}&status=success&per_page=10" \
+              --jq '.workflow_runs[] | [.head_sha // "", (.id | tostring)] | join("\t")' \
+              || true)
           done
         fi
 
-        # Deduplicate; discard malformed entries.
+        # Deduplicate candidate SHAs; discard malformed entries.
         readarray -t CANDIDATE_SHAS < <(
-          printf '%s' "${RAW_CANDIDATE_SHAS}" \
-            | sort -u \
+          printf '%s\n' "${!SHA_TO_RUN_ID[@]}" \
             | grep -E '^[0-9a-f]{40}$' \
+            | sort -u \
             || true
         )
 
@@ -165,7 +172,62 @@ runs:
           fi
         }
 
-        # Find the closest reachable ancestor run.
+        # Cache for run_id → platforms_used (comma-separated platform paths,
+        # e.g. "linux/amd64,linux/arm64"), or "" when the annotation is absent.
+        declare -A RUN_PLATFORMS_CACHE
+
+        # get_run_detect_platforms <run_id>
+        # Sets RUN_DETECT_PLATFORMS to the comma-separated platform list from
+        # the platforms_filter annotation emitted by the detect job in that run,
+        # or "" when the annotation is absent (old run predating the annotation).
+        # On absence the caller should trust the run (backward compatibility).
+        get_run_detect_platforms() {
+          local _run_id="$1"
+          if [[ -v "RUN_PLATFORMS_CACHE[${_run_id}]" ]]; then
+            RUN_DETECT_PLATFORMS="${RUN_PLATFORMS_CACHE[${_run_id}]}"
+            return
+          fi
+          # Find the detect/Detect job for this run.
+          local _job_id
+          _job_id="$(gh api \
+            "repos/${REPOSITORY}/actions/runs/${_run_id}/jobs?filter=all" \
+            --jq '[.jobs[] | select(.name | ascii_downcase | contains("detect")) | .id][0] // ""' \
+            2>/dev/null || echo "")"
+          if [[ -z "${_job_id}" ]]; then
+            RUN_PLATFORMS_CACHE["${_run_id}"]=""
+            RUN_DETECT_PLATFORMS=""
+            return
+          fi
+          local _plats
+          _plats="$(gh api \
+            "repos/${REPOSITORY}/check-runs/${_job_id}/annotations" \
+            --jq '[.[] | select(.title == "platforms_filter") | .message][0] // ""' \
+            2>/dev/null || echo "")"
+          RUN_PLATFORMS_CACHE["${_run_id}"]="${_plats}"
+          RUN_DETECT_PLATFORMS="${_plats}"
+        }
+
+        # run_covers_all_platforms <platforms_csv> <platform_keys_space_sep>
+        # Returns 0 when every platform key in the space-separated list maps
+        # to a platform path present in the comma-separated CSV.
+        run_covers_all_platforms() {
+          local _csv="$1" _pkeys="$2"
+          local _pkey _plat
+          for _pkey in ${_pkeys}; do
+            _plat="${_pkey//-/\/}"
+            if ! printf '%s' "${_csv}" | tr ',' '\n' | grep -qxF "${_plat}"; then
+              return 1
+            fi
+          done
+          return 0
+        }
+
+        read -r -a PLATFORM_KEYS <<< "${PLATFORMS}"
+
+        # Find the closest reachable ancestor run that included ALL requested
+        # platforms.  Runs that lack the platforms_filter annotation (old runs
+        # predating the annotation) are trusted unconditionally for backward
+        # compatibility.
         BEST_SHA=""
         BEST_AHEAD=999999999
 
@@ -174,6 +236,15 @@ runs:
           compare_sha "${sha}"
           [[ -z "${COMPARE_AHEAD}" ]] && continue
           if [[ "${COMPARE_AHEAD}" -lt "${BEST_AHEAD}" ]]; then
+            # Check whether this run targeted all our platforms.
+            local_run_id="${SHA_TO_RUN_ID[${sha}]:-}"
+            if [[ -n "${local_run_id}" && -n "${PLATFORMS}" ]]; then
+              get_run_detect_platforms "${local_run_id}"
+              if [[ -n "${RUN_DETECT_PLATFORMS}" ]]; then
+                run_covers_all_platforms "${RUN_DETECT_PLATFORMS}" "${PLATFORMS}" \
+                  || continue
+              fi
+            fi
             BEST_SHA="${sha}"
             BEST_AHEAD="${COMPARE_AHEAD}"
           fi
@@ -182,7 +253,6 @@ runs:
         # Build before_shas: all platforms share the closest ancestor SHA.
         BEFORE_SHAS_JSON="{}"
         if [[ -n "${BEST_SHA}" ]]; then
-          read -r -a PLATFORM_KEYS <<< "${PLATFORMS}"
           for pkey in "${PLATFORM_KEYS[@]}"; do
             BEFORE_SHAS_JSON="$(printf '%s' "${BEFORE_SHAS_JSON}" \
               | jq -c --arg k "${pkey}" --arg v "${BEST_SHA}" '. + {($k): $v}')"
