@@ -168,7 +168,7 @@ runs:
         GH_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' && inputs.ghcr_token || inputs.github_token }}
         USING_GHCR_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' }}
         REPO: ${{ github.repository }}
-        ACTOR: ${{ github.actor }}
+        ACTOR: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' && vars.GHCR_USER || github.actor }}
       run: |
         set -uo pipefail
         REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
@@ -180,6 +180,10 @@ runs:
         if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
           AUTH_CRED_NAME="GHCR_TOKEN"
           GHCR_CRED_SOURCE="ghcr_token"
+          if [[ -z "${ACTOR}" ]]; then
+            echo "::error::GHCR_TOKEN is configured but vars.GHCR_USER is not set. Set GHCR_USER to the username of the GHCR_TOKEN owner."
+            exit 1
+          fi
         else
           AUTH_CRED_NAME="GITHUB_TOKEN"
           GHCR_CRED_SOURCE="github_token"
