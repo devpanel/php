@@ -168,23 +168,29 @@ runs:
         GH_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' && inputs.ghcr_token || inputs.github_token }}
         USING_GHCR_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' }}
         REPO: ${{ github.repository }}
-        ACTOR: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' && vars.GHCR_USER || github.actor }}
+        GHCR_USER: ${{ vars.GHCR_USER }}
+        GH_ACTOR: ${{ github.actor }}
       run: |
         set -uo pipefail
         REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
         ORG=$(echo "${REPO}" | cut -d'/' -f1)
 
-        # Determine which credential is in use for accurate diagnostics.
+        # Determine ACTOR and credential name.  When using a PAT (USING_GHCR_TOKEN=true),
+        # GHCR_USER must be explicitly set; there is no fallback so that a missing/empty
+        # GHCR_USER is caught here rather than silently querying the token endpoint with
+        # the wrong username.
         # GHA expressions produce the string 'true'/'false', not bash booleans,
-        # so a string comparison is required here.
+        # so string comparisons are required here.
         if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
-          AUTH_CRED_NAME="GHCR_TOKEN"
-          GHCR_CRED_SOURCE="ghcr_token"
-          if [[ -z "${ACTOR}" ]]; then
+          if [[ -z "${GHCR_USER}" ]]; then
             echo "::error::GHCR_TOKEN is configured but vars.GHCR_USER is not set. Set GHCR_USER to the username of the GHCR_TOKEN owner."
             exit 1
           fi
+          ACTOR="${GHCR_USER}"
+          AUTH_CRED_NAME="GHCR_TOKEN"
+          GHCR_CRED_SOURCE="ghcr_token"
         else
+          ACTOR="${GH_ACTOR}"
           AUTH_CRED_NAME="GITHUB_TOKEN"
           GHCR_CRED_SOURCE="github_token"
         fi
