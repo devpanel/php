@@ -172,7 +172,7 @@ runs:
             # pull fails silently and the existing Docker Hub path is used as a
             # fallback, preserving the existing behaviour exactly.
             _GHCR_MIRROR="ghcr.io/$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')/php-base-mirror"
-            _GHCR_MIRROR_IMAGE="${_GHCR_MIRROR}:${ver}-apache"
+            _GHCR_MIRROR_IMAGE="${_GHCR_MIRROR}/library/php:${ver}-apache"
             if docker pull --quiet "${_GHCR_MIRROR_IMAGE}" >/dev/null 2>&1; then
               echo "  Pulled from GHCR mirror (${_GHCR_MIRROR_IMAGE}); skipping Docker Hub pull." >&2
               image="${_GHCR_MIRROR_IMAGE}"
