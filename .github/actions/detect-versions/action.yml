@@ -87,6 +87,13 @@ outputs:
       otherwise.  Consumed by build jobs to select whether GHCR is primary
       (when writable) or GHA is primary (when not writable) for layer caches.
     value: ${{ steps.check-ghcr.outputs.writable }}
+  ghcr_cred_source:
+    description: >
+      Which GHCR credential was used: "github_token" when GITHUB_TOKEN has
+      write access, "ghcr_token" when the GHCR_TOKEN PAT fallback was used.
+      Empty when ghcr_writable is "false".  Consumed by the calling workflow
+      to determine which single credential to pass to build and merge jobs.
+    value: ${{ steps.check-ghcr.outputs.ghcr_cred_source }}
   all_versions:
     description: >
       Space-separated list of ALL PHP versions present in the repository,
@@ -124,12 +131,42 @@ outputs:
 runs:
   using: composite
   steps:
+    # Determine which GHCR credential to use: try github_token (GITHUB_TOKEN)
+    # first since it should have write access when the job declares
+    # packages:write.  Fall back to ghcr_token (GHCR_TOKEN PAT) only when the
+    # quick token-endpoint probe shows github_token cannot obtain a push-scoped
+    # bearer token.
+    - name: Resolve GHCR credential
+      id: resolve-ghcr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        GHCR_TOKEN_SET: ${{ inputs.ghcr_token != '' }}
+        REPO: ${{ github.repository }}
+        ACTOR: ${{ github.actor }}
+      run: |
+        set -uo pipefail
+        REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
+        NETRC=$(umask 0177 && mktemp)
+        trap 'rm -f "${NETRC}"' EXIT
+        printf 'machine ghcr.io login %s password %s\n' "${ACTOR}" "${GH_TOKEN}" > "${NETRC}"
+        TOKEN_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --netrc-file "${NETRC}" \
+          "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:push" \
+          2>/dev/null || echo "000")
+        if [[ "${TOKEN_HTTP}" == "200" ]]; then
+          echo "using_ghcr_token=false" >> "$GITHUB_OUTPUT"
+        elif [[ "${GHCR_TOKEN_SET}" == "true" ]]; then
+          echo "using_ghcr_token=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "using_ghcr_token=false" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Check GHCR write access
       id: check-ghcr
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.ghcr_token || inputs.github_token }}
-        USING_GHCR_TOKEN: ${{ inputs.ghcr_token != '' }}
+        GH_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' && inputs.ghcr_token || inputs.github_token }}
+        USING_GHCR_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' }}
         REPO: ${{ github.repository }}
         ACTOR: ${{ github.actor }}
       run: |
@@ -142,8 +179,10 @@ runs:
         # so a string comparison is required here.
         if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
           AUTH_CRED_NAME="GHCR_TOKEN"
+          GHCR_CRED_SOURCE="ghcr_token"
         else
           AUTH_CRED_NAME="GITHUB_TOKEN"
+          GHCR_CRED_SOURCE="github_token"
         fi
 
         NOTE="When GHCR is not writable, build jobs will use GHA as the primary layer cache instead."
@@ -287,6 +326,7 @@ runs:
         if [[ "${HTTP_STATUS}" == "202" || "${HTTP_STATUS}" == "201" ]]; then
           echo "GHCR write access confirmed for ghcr.io/${REPO_LC}."
           echo "writable=true" >> "$GITHUB_OUTPUT"
+          echo "ghcr_cred_source=${GHCR_CRED_SOURCE}" >> "$GITHUB_OUTPUT"
           echo "✅ **GHCR cache write pre-check:** passed — layer caches will be written to ghcr.io/${REPO_LC} (GHCR is primary)." >> "$GITHUB_STEP_SUMMARY"
         else
           case "${HTTP_STATUS}" in
@@ -411,12 +451,6 @@ runs:
           echo "::error::No platforms configured. Provide at least one platform (e.g. linux/amd64,linux/arm64)."
           exit 1
         fi
-
-        # Log the platforms being targeted so effective-before-sha can verify
-        # that a prior successful run included all the platforms we need before
-        # using its head SHA as a change anchor.
-        PLATFORMS_USED="$(IFS=','; printf '%s' "${PLATFORM_LIST[*]}")"
-        echo "::notice title=platforms_filter::${PLATFORMS_USED}"
 
         # Determine whether a non-empty before_shas map was provided.
         # A non-empty map means per-platform version detection should be used.

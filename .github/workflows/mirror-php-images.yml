@@ -25,12 +25,43 @@ jobs:
       contents: read
 
     steps:
+      # Test whether github.token (GITHUB_TOKEN) can write to the GHCR mirror
+      # repository.  The job declares packages:write so this should succeed in
+      # most cases.  If it fails (e.g. the package doesn't yet exist or the
+      # organisation policy blocks it), fall back to GHCR_TOKEN if configured.
+      - name: Check github.token GHCR write access
+        id: ghcr-check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_TOKEN_SET: ${{ secrets.GHCR_TOKEN != '' }}
+          ACTOR: ${{ github.actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -uo pipefail
+          owner_lc="$(echo "${REPO_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          mirror_repo="${owner_lc}/php-base-mirror"
+          NETRC=$(umask 0177 && mktemp)
+          trap 'rm -f "${NETRC}"' EXIT
+          printf 'machine ghcr.io login %s password %s\n' "${ACTOR}" "${GH_TOKEN}" > "${NETRC}"
+          TOKEN_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --netrc-file "${NETRC}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${mirror_repo}:push" \
+            2>/dev/null || echo "000")
+          if [[ "${TOKEN_HTTP}" == "200" ]]; then
+            echo "use_pat=false" >> "$GITHUB_OUTPUT"
+          elif [[ "${GHCR_TOKEN_SET}" == "true" ]]; then
+            echo "use_pat=true" >> "$GITHUB_OUTPUT"
+          else
+            # No PAT available; fall back to github.token (best effort).
+            echo "use_pat=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ secrets.GHCR_TOKEN && vars.GHCR_USER || github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || github.token }}
+          username: ${{ steps.ghcr-check.outputs.use_pat == 'true' && vars.GHCR_USER || github.actor }}
+          password: ${{ steps.ghcr-check.outputs.use_pat == 'true' && secrets.GHCR_TOKEN || github.token }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
