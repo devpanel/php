@@ -89,6 +89,17 @@ runs:
         repo_lc="$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')"
         echo "repo=ghcr.io/${repo_lc}" >> "$GITHUB_OUTPUT"
 
+    - name: Validate GHCR credentials for PAT auth
+      if: inputs.ghcr_token != ''
+      shell: bash
+      env:
+        GHCR_USER: ${{ vars.GHCR_USER }}
+      run: |
+        if [[ -z "${GHCR_USER}" ]]; then
+          echo "::error::ghcr_token is set but vars.GHCR_USER is not configured. Set the GHCR_USER repository variable to the username that owns the PAT."
+          exit 1
+        fi
+
     - name: Login to GitHub Container Registry
       uses: docker/login-action@v4
       with:
