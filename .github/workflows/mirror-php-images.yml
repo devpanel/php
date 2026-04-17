@@ -66,7 +66,7 @@ jobs:
           GHCR_USER: ${{ vars.GHCR_USER }}
         run: |
           if [[ -z "${GHCR_USER}" ]]; then
-            echo "::error::GHCR_TOKEN is set and github.token cannot write to GHCR, but vars.GHCR_USER is not configured. Set the GHCR_USER repository variable to the username that owns the PAT."
+            echo "::error::secrets.GHCR_TOKEN is set and github.token cannot write to GHCR, but vars.GHCR_USER is not configured. Set the GHCR_USER repository variable to the username that owns the PAT."
             exit 1
           fi
 
@@ -96,8 +96,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "Mirroring PHP base images to ${MIRROR_REPO}..."
-          mapfile -t versions < <(find . -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
-            | grep -E '^[0-9]+\.[0-9]+$' | sort -V)
+          mapfile -t versions < <(find . -mindepth 1 -maxdepth 1 -type d \
+            | sed 's|^\./||' | grep -E '^[0-9]+\.[0-9]+$' | sort -V)
           if [[ "${#versions[@]}" -eq 0 ]]; then
             echo "::warning::No PHP version directories found; nothing to mirror."
             exit 0
