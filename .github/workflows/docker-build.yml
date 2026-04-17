@@ -78,7 +78,7 @@ jobs:
           done
           echo "platform_keys=${result}" >> "$GITHUB_OUTPUT"
 
-      - name: Compute effective before_sha
+      - name: Compute effective before_shas
         id: effective_sha
         uses: ./.github/actions/effective-before-sha
         with:
