@@ -137,8 +137,8 @@ runs:
         # For push events, collect (run_id, head_sha) pairs from prior successful
         # runs.  We record the run_id so we can later check which platforms each
         # run targeted (via the platforms_filter annotation emitted by this same
-        # action in prior runs), ensuring we only anchor against runs that
-        # included all the platforms we are building now.
+        # action in prior runs), allowing each platform to anchor only against
+        # runs that included that specific platform.
         declare -A SHA_TO_RUN_ID   # head_sha → run_id (last seen per SHA)
 
         if [[ -n "${WORKFLOW_FILES:-}" ]]; then
