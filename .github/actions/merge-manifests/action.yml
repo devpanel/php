@@ -193,8 +193,8 @@ runs:
       uses: docker/login-action@v4
       with:
         registry: ghcr.io
-        username: ${{ vars.GHCR_USER || github.actor }}
-        password: ${{ inputs.github_token || inputs.ghcr_token }}
+        username: ${{ inputs.ghcr_token && vars.GHCR_USER || github.actor }}
+        password: ${{ inputs.ghcr_token || inputs.github_token }}
 
     - name: Poll and merge manifests
       shell: bash
@@ -214,8 +214,8 @@ runs:
         RUN_STARTED_AT: ${{ inputs.run_started_at }}
         GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
-        GHCR_TOKEN: ${{ inputs.github_token || inputs.ghcr_token }}
-        GHCR_USER: ${{ vars.GHCR_USER || github.actor }}
+        GHCR_TOKEN: ${{ inputs.ghcr_token || inputs.github_token }}
+        GHCR_USER: ${{ inputs.ghcr_token && vars.GHCR_USER || github.actor }}
       run: |
         set -euo pipefail
 
@@ -503,7 +503,7 @@ runs:
               && (( _now - ${GHCR_BEARER_TIME:-0} < TOKEN_MAX_AGE )); then
             return 0
           fi
-          _ghcr_username="${GHCR_USER:-${GITHUB_ACTOR}}"
+          _ghcr_username="${GHCR_USER}"
           local _json _new_token
           _json="$(curl -sf --connect-timeout 5 --max-time 15 \
             -u "${_ghcr_username}:${GHCR_TOKEN}" \
