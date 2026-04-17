@@ -237,12 +237,13 @@ runs:
           [[ -z "${COMPARE_AHEAD}" ]] && continue
           if [[ "${COMPARE_AHEAD}" -lt "${BEST_AHEAD}" ]]; then
             # Check whether this run targeted all our platforms.
-            local_run_id="${SHA_TO_RUN_ID[${sha}]:-}"
-            if [[ -n "${local_run_id}" && -n "${PLATFORMS}" ]]; then
-              get_run_detect_platforms "${local_run_id}"
+            _local_run_id="${SHA_TO_RUN_ID[${sha}]:-}"
+            if [[ -n "${_local_run_id}" && -n "${PLATFORMS}" ]]; then
+              get_run_detect_platforms "${_local_run_id}"
               if [[ -n "${RUN_DETECT_PLATFORMS}" ]]; then
-                run_covers_all_platforms "${RUN_DETECT_PLATFORMS}" "${PLATFORMS}" \
-                  || continue
+                if ! run_covers_all_platforms "${RUN_DETECT_PLATFORMS}" "${PLATFORMS}"; then
+                  continue
+                fi
               fi
             fi
             BEST_SHA="${sha}"
