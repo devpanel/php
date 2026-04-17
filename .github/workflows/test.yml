@@ -66,42 +66,35 @@ jobs:
         run: bash tests/lint-dockerfile.sh
 
   # ── Find the effective before SHAs ──────────────────────────────────────────
-  # Compute before_shas directly from the event payload — no API calls or
-  # artifact lookups are needed since test.yml only builds linux/amd64 and
-  # the event always carries the required "before" SHA.
-  #
-  #   pull_request → PR base SHA for linux-amd64
-  #   push         → github.event.before for linux-amd64
-  #                  (all-zeros SHA on new branches → {} → full rebuild)
-  #   other        → {} (full rebuild)
-  #
+  # Looks up the last successful test.yml run on this branch and uses its
+  # head SHA as the "before" anchor for the linux-amd64 platform.
+  # For pull_request events the PR base SHA is used directly.
   # When all_versions is requested via workflow_dispatch the job is skipped
-  # entirely; the empty before_shas output causes the detect job to test every
-  # version rather than diff against a previous commit.
+  # and the empty before_shas causes the detect job to test every version.
   prepare:
     runs-on: ubuntu-latest
     if: github.event_name != 'workflow_dispatch' || inputs.all_versions != true
     permissions:
+      actions: read
       contents: read
     outputs:
-      before_shas: ${{ steps.before_shas.outputs.before_shas }}
+      before_shas: ${{ steps.effective_sha.outputs.before_shas }}
     steps:
-      - name: Compute before_shas from event context
-        id: before_shas
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BEFORE_SHA: ${{ github.event.before }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
-            echo "before_shas={\"linux-amd64\":\"${PR_BASE_SHA}\"}" >> "$GITHUB_OUTPUT"
-          elif [[ -n "${BEFORE_SHA:-}" && ! "${BEFORE_SHA}" =~ ^0{40}$ ]]; then
-            echo "before_shas={\"linux-amd64\":\"${BEFORE_SHA}\"}" >> "$GITHUB_OUTPUT"
-          else
-            echo "before_shas={}" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Compute effective before_sha
+        id: effective_sha
+        uses: ./.github/actions/effective-before-sha
+        with:
+          workflow_files: test.yml
+          current_sha: ${{ github.sha }}
+          ref_name: ${{ github.ref_name }}
+          repository: ${{ github.repository }}
+          github_token: ${{ github.token }}
+          event_name: ${{ github.event_name }}
+          pr_base_sha: ${{ github.event.pull_request.base.sha }}
+          platforms: linux-amd64
 
   # Detect PHP versions to test, compute the lowercase GHCR repo name, and
   # pre-seed build downloads for ALL detected versions at once.  Running

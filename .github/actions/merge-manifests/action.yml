@@ -194,7 +194,7 @@ runs:
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
-        password: ${{ inputs.ghcr_token || inputs.github_token }}
+        password: ${{ inputs.github_token || inputs.ghcr_token }}
 
     - name: Poll and merge manifests
       shell: bash
@@ -214,7 +214,7 @@ runs:
         RUN_STARTED_AT: ${{ inputs.run_started_at }}
         GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
-        GHCR_TOKEN: ${{ inputs.ghcr_token || inputs.github_token }}
+        GHCR_TOKEN: ${{ inputs.github_token || inputs.ghcr_token }}
       run: |
         set -euo pipefail
 
@@ -491,10 +491,9 @@ runs:
 
         # Helper: refresh the GHCR Bearer token used for per-digest HEAD probes.
         # Obtains a pull-scoped token from the GHCR token endpoint using
-        # GITHUB_REPOSITORY_OWNER and the GHCR_TOKEN environment variable.
-        # Using GITHUB_REPOSITORY_OWNER (not GITHUB_ACTOR) ensures PAT-based
-        # auth works correctly on scheduled/bot runs where GITHUB_ACTOR may be
-        # "github-actions[bot]" rather than the token owner.
+        # GITHUB_ACTOR and the GHCR_TOKEN environment variable (which is
+        # GITHUB_TOKEN, falling back to an explicit GHCR_TOKEN secret when
+        # GITHUB_TOKEN lacks write permissions).
         # Returns 0 when a valid token is available, 1 when the fetch failed.
         get_ghcr_inspect_token() {
           local _now _ghcr_username
