@@ -46,6 +46,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.all_versions != true
     permissions:
       actions: read
+      checks: read
       contents: read
     outputs:
       before_shas: ${{ steps.effective_sha.outputs.before_shas }}
@@ -151,7 +152,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: ${{ needs.prepare.outputs.before_shas != '{}' && '0' || '1' }}
+          fetch-depth: ${{ (needs.prepare.outputs.before_shas || '{}') != '{}' && '0' || '1' }}
 
       - name: Detect versions
         id: detect
