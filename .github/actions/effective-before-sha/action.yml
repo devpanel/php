@@ -6,12 +6,15 @@ description: >
   For pull_request events, all platforms map to the PR base SHA.
 
   For push events, queries workflow runs for the specified workflow(s)
-  and finds the closest reachable ancestor run's head SHA.  Only runs
-  that included all requested platforms (verified via the
-  platforms_filter annotation emitted by the detect-versions action)
-  are considered.  Runs lacking the annotation are trusted
-  unconditionally for backward compatibility.  When no qualifying prior
-  run is found, before_shas is emitted as {} triggering a full rebuild.
+  and for each platform finds the closest reachable ancestor run's head
+  SHA that included that platform (verified via the platforms_filter
+  annotation emitted by the detect-versions action).  Runs lacking the
+  annotation are trusted unconditionally for backward compatibility.
+  Different platforms may map to different before SHAs — e.g. when a new
+  platform is first added, it will have no recent anchor while existing
+  platforms keep their own.  Platforms with no qualifying prior run get
+  no entry in before_shas, which triggers a full rebuild for that
+  platform.
 
   When `platforms` is empty, before_shas is emitted as {} (no
   filtering, caller should treat that as "build everything").
@@ -55,9 +58,9 @@ inputs:
   platforms:
     description: >
       Space-separated platform keys to populate in the output map
-      (e.g. "linux-amd64 linux-arm64").  When set, all keys in the
-      output map point to the same closest-ancestor SHA.  When empty,
-      before_shas is {} (no filtering, full rebuild).
+      (e.g. "linux-amd64 linux-arm64").  Each key is independently
+      matched to the closest ancestor run that included that platform.
+      When empty, before_shas is {} (no filtering, full rebuild).
     required: false
     default: ''
 
@@ -66,7 +69,9 @@ outputs:
     description: >
       JSON map of platform-key to the closest reachable ancestor SHA,
       e.g. {"linux-amd64":"abc123","linux-arm64":"def456"}.
-      All entries share the same SHA (the closest ancestor run).
+      Each platform maps to the SHA of the closest ancestor run that
+      included that platform.  Platforms with no qualifying prior run
+      are omitted (triggers full rebuild for that platform).
       Emitted as {} when platforms is empty or no candidates are found.
     value: ${{ steps.compute.outputs.before_shas }}
 
@@ -207,56 +212,63 @@ runs:
           RUN_DETECT_PLATFORMS="${_plats}"
         }
 
-        # run_covers_all_platforms <platforms_csv> <platform_keys_space_sep>
-        # Returns 0 when every platform key in the space-separated list maps
-        # to a platform path present in the comma-separated CSV.
-        run_covers_all_platforms() {
-          local _csv="$1" _pkeys="$2"
-          local _pkey _plat
-          for _pkey in ${_pkeys}; do
-            _plat="${_pkey//-/\/}"
-            if ! printf '%s' "${_csv}" | tr ',' '\n' | grep -qxF "${_plat}"; then
-              return 1
-            fi
-          done
-          return 0
+        # run_covers_platform <platforms_csv> <platform_key>
+        # Returns 0 when the platform key maps to a path present in the
+        # comma-separated CSV.
+        run_covers_platform() {
+          local _csv="$1" _pkey="$2"
+          local _plat="${_pkey//-/\/}"
+          printf '%s' "${_csv}" | tr ',' '\n' | grep -qxF "${_plat}"
         }
 
         read -r -a PLATFORM_KEYS <<< "${PLATFORMS}"
 
-        # Find the closest reachable ancestor run that included ALL requested
-        # platforms.  Runs that lack the platforms_filter annotation (old runs
-        # predating the annotation) are trusted unconditionally for backward
-        # compatibility.
-        BEST_SHA=""
-        BEST_AHEAD=999999999
+        # For each platform key, independently find the closest reachable
+        # ancestor run that included that specific platform.  Different
+        # platforms may end up with different before SHAs — e.g. when a
+        # new platform is first added, existing platforms keep their own
+        # recent anchor while the new platform gets none (full rebuild).
+        declare -A BEST_SHA_PER_PKEY    # pkey -> best sha
+        declare -A BEST_AHEAD_PER_PKEY  # pkey -> ahead count for best sha
 
         for sha in "${CANDIDATE_SHAS[@]+"${CANDIDATE_SHAS[@]}"}"; do
           [[ -z "${sha}" || "${sha}" == "${CURRENT_SHA}" ]] && continue
           compare_sha "${sha}"
           [[ -z "${COMPARE_AHEAD}" ]] && continue
-          if [[ "${COMPARE_AHEAD}" -lt "${BEST_AHEAD}" ]]; then
-            # Check whether this run targeted all our platforms.
-            _local_run_id="${SHA_TO_RUN_ID[${sha}]:-}"
-            if [[ -n "${_local_run_id}" && -n "${PLATFORMS}" ]]; then
-              get_run_detect_platforms "${_local_run_id}"
-              if [[ -n "${RUN_DETECT_PLATFORMS}" ]]; then
-                if ! run_covers_all_platforms "${RUN_DETECT_PLATFORMS}" "${PLATFORMS}"; then
-                  continue
-                fi
+
+          # Fetch platforms annotation for this run once.
+          _local_run_id="${SHA_TO_RUN_ID[${sha}]:-}"
+          _run_plats=""
+          if [[ -n "${_local_run_id}" ]]; then
+            get_run_detect_platforms "${_local_run_id}"
+            _run_plats="${RUN_DETECT_PLATFORMS}"
+          fi
+
+          for _pkey in "${PLATFORM_KEYS[@]}"; do
+            # Skip if we already have a closer ancestor for this platform.
+            _existing_ahead="${BEST_AHEAD_PER_PKEY[${_pkey}]:-999999999}"
+            [[ "${COMPARE_AHEAD}" -ge "${_existing_ahead}" ]] && continue
+
+            # Check if this run covered this platform.
+            # Runs with no annotation (old runs) are trusted unconditionally.
+            if [[ -n "${_run_plats}" ]]; then
+              if ! run_covers_platform "${_run_plats}" "${_pkey}"; then
+                continue  # Run didn't cover this platform; skip it.
               fi
             fi
-            BEST_SHA="${sha}"
-            BEST_AHEAD="${COMPARE_AHEAD}"
-          fi
+
+            BEST_SHA_PER_PKEY["${_pkey}"]="${sha}"
+            BEST_AHEAD_PER_PKEY["${_pkey}"]="${COMPARE_AHEAD}"
+          done
         done
 
-        # Build before_shas: all platforms share the closest ancestor SHA.
+        # Build before_shas from per-platform best SHAs.
         BEFORE_SHAS_JSON="{}"
-        if [[ -n "${BEST_SHA}" ]]; then
-          for pkey in "${PLATFORM_KEYS[@]}"; do
+        for pkey in "${PLATFORM_KEYS[@]}"; do
+          _sha="${BEST_SHA_PER_PKEY[${pkey}]:-}"
+          if [[ -n "${_sha}" ]]; then
             BEFORE_SHAS_JSON="$(printf '%s' "${BEFORE_SHAS_JSON}" \
-              | jq -c --arg k "${pkey}" --arg v "${BEST_SHA}" '. + {($k): $v}')"
-          done
-        fi
+              | jq -c --arg k "${pkey}" --arg v "${_sha}" '. + {($k): $v}')"
+          fi
+        done
         echo "before_shas=${BEFORE_SHAS_JSON}" >> "$GITHUB_OUTPUT"
