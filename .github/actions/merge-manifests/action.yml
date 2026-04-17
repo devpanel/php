@@ -193,7 +193,7 @@ runs:
       uses: docker/login-action@v4
       with:
         registry: ghcr.io
-        username: ${{ github.actor }}
+        username: ${{ vars.GHCR_USER || github.actor }}
         password: ${{ inputs.github_token || inputs.ghcr_token }}
 
     - name: Poll and merge manifests
@@ -215,6 +215,7 @@ runs:
         GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
         GHCR_TOKEN: ${{ inputs.github_token || inputs.ghcr_token }}
+        GHCR_USER: ${{ vars.GHCR_USER || github.actor }}
       run: |
         set -euo pipefail
 
@@ -491,9 +492,9 @@ runs:
 
         # Helper: refresh the GHCR Bearer token used for per-digest HEAD probes.
         # Obtains a pull-scoped token from the GHCR token endpoint using
-        # GITHUB_ACTOR and the GHCR_TOKEN environment variable (which is
-        # GITHUB_TOKEN, falling back to an explicit GHCR_TOKEN secret when
-        # GITHUB_TOKEN lacks write permissions).
+        # GHCR_USER (vars.GHCR_USER when GHCR_TOKEN is used, github.actor
+        # otherwise) and the GHCR_TOKEN environment variable (GITHUB_TOKEN
+        # primary, GHCR_TOKEN secret as fallback).
         # Returns 0 when a valid token is available, 1 when the fetch failed.
         get_ghcr_inspect_token() {
           local _now _ghcr_username
@@ -502,7 +503,7 @@ runs:
               && (( _now - ${GHCR_BEARER_TIME:-0} < TOKEN_MAX_AGE )); then
             return 0
           fi
-          _ghcr_username="${GITHUB_ACTOR}"
+          _ghcr_username="${GHCR_USER:-${GITHUB_ACTOR}}"
           local _json _new_token
           _json="$(curl -sf --connect-timeout 5 --max-time 15 \
             -u "${_ghcr_username}:${GHCR_TOKEN}" \

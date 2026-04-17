@@ -412,6 +412,12 @@ runs:
           exit 1
         fi
 
+        # Log the platforms being targeted so effective-before-sha can verify
+        # that a prior successful run included all the platforms we need before
+        # using its head SHA as a change anchor.
+        PLATFORMS_USED="$(IFS=','; printf '%s' "${PLATFORM_LIST[*]}")"
+        echo "::notice title=platforms_filter::${PLATFORMS_USED}"
+
         # Determine whether a non-empty before_shas map was provided.
         # A non-empty map means per-platform version detection should be used.
         BEFORE_SHAS_COUNT="$(printf '%s' "${BEFORE_SHAS:-{}}" \

@@ -93,7 +93,7 @@ runs:
       uses: docker/login-action@v4
       with:
         registry: ghcr.io
-        username: ${{ github.actor }}
+        username: ${{ vars.GHCR_USER || github.actor }}
         password: ${{ inputs.github_token || inputs.ghcr_token }}
 
     - name: Set up QEMU
