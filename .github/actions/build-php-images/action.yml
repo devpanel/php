@@ -90,7 +90,7 @@ runs:
         echo "repo=ghcr.io/${repo_lc}" >> "$GITHUB_OUTPUT"
 
     - name: Validate GHCR credentials for PAT auth
-      if: inputs.ghcr_token != ''
+      if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
       shell: bash
       env:
         GHCR_USER: ${{ vars.GHCR_USER }}
@@ -102,6 +102,9 @@ runs:
 
     - name: Login to GitHub Container Registry
       uses: docker/login-action@v4
+      # When ghcr_writable is false the login is best-effort: a failure must
+      # not abort the build because GHA cache is the fallback layer cache.
+      continue-on-error: ${{ inputs.ghcr_writable != 'true' }}
       with:
         registry: ghcr.io
         username: ${{ inputs.ghcr_token && vars.GHCR_USER || github.actor }}

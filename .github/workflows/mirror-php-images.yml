@@ -1,13 +1,14 @@
 name: Mirror PHP base images to GHCR
 
 # Copies the official php:<version>-apache multi-platform manifest and all
-# referenced blobs from Docker Hub into GHCR so that:
-#   - preseed-downloads can pull the base image from GHCR for Debian codename
-#     detection instead of going to Docker Hub.
-#   - future builds can reference the GHCR mirror image explicitly to avoid
-#     Docker Hub pull quota on base-image fetches.
+# referenced blobs from Docker Hub into GHCR so that builds can pull the
+# base image from GHCR instead of Docker Hub, reducing pull quota consumption.
 #
-# The mirror is stored under ghcr.io/<owner>/php-base-mirror:<version>-apache.
+# The mirror is stored under the nested path required for Docker BuildKit
+# mirror resolution: ghcr.io/<owner>/php-base-mirror/library/php:<version>-apache.
+# When a Buildx builder is configured with ghcr.io/<owner>/php-base-mirror as a
+# registry mirror, BuildKit resolves docker.io/library/php:<version>-apache
+# by looking up that nested path automatically.
 #
 # If the mirror is absent or stale the build falls back to Docker Hub
 # automatically — this workflow is a best-effort quota-reduction measure only.
@@ -43,7 +44,9 @@ jobs:
         run: |
           set -uo pipefail
           owner_lc="$(echo "${REPO_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          mirror_repo="${owner_lc}/php-base-mirror"
+          # Probe the nested package path that is actually pushed to so the
+          # write-access check covers the real target repository.
+          mirror_repo="${owner_lc}/php-base-mirror/library/php"
           NETRC=$(umask 0177 && mktemp)
           trap 'rm -f "${NETRC}"' EXIT
           printf 'machine ghcr.io login %s password %s\n' "${ACTOR}" "${GH_TOKEN}" > "${NETRC}"
@@ -105,19 +108,14 @@ jobs:
           failed=0
           for ver in "${versions[@]}"; do
             src="docker.io/library/php:${ver}-apache"
-            # BuildKit resolves docker.io/library/php:<ver>-apache through the
-            # mirror as <mirror>/library/php:<ver>-apache.  We therefore store
-            # the image at that path so the BuildKit mirror lookup succeeds.
-            # The preseed-downloads action pulls the simpler tag
-            # <mirror>:<ver>-apache directly for codename detection.
+            # Store the image under the nested path that BuildKit mirror
+            # resolution expects: <mirror>/library/php:<ver>-apache.
+            # When a Buildx builder is configured with ${MIRROR_REPO} as a
+            # registry mirror, it resolves docker.io/library/php:<ver>-apache
+            # by looking up this path automatically.
             mirror_path="${MIRROR_REPO}/library/php:${ver}-apache"
-            mirror_tag="${MIRROR_REPO}:${ver}-apache"
-            echo "  ${src} → ${mirror_path} (and ${mirror_tag})"
-            # Push under the nested path for BuildKit mirror resolution.
-            if docker buildx imagetools create --tag "${mirror_path}" "${src}"; then
-              # Also push a simple :<ver>-apache tag for preseed use.
-              docker buildx imagetools create --tag "${mirror_tag}" "${src}" || true
-            else
+            echo "  ${src} → ${mirror_path}"
+            if ! docker buildx imagetools create --tag "${mirror_path}" "${src}"; then
               echo "::warning::Failed to mirror ${src}; skipping."
               failed=$(( failed + 1 ))
             fi
