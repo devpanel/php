@@ -8,13 +8,16 @@ description: >
   For push events, queries workflow runs for the specified workflow(s)
   and for each platform finds the closest reachable ancestor run's head
   SHA that included that platform (verified via the platforms_filter
-  annotation emitted by the detect-versions action).  Runs lacking the
+  annotation emitted by this same action in prior runs).  Runs lacking the
   annotation are trusted unconditionally for backward compatibility.
   Different platforms may map to different before SHAs — e.g. when a new
   platform is first added, it will have no recent anchor while existing
   platforms keep their own.  Platforms with no qualifying prior run get
   no entry in before_shas, which triggers a full rebuild for that
   platform.
+
+  Also emits a platforms_filter annotation listing the platforms this run
+  is targeting, so that future runs can use it to anchor change detection.
 
   When `platforms` is empty, before_shas is emitted as {} (no
   filtering, caller should treat that as "build everything").
@@ -93,6 +96,18 @@ runs:
       run: |
         set -euo pipefail
 
+        # Emit a platforms_filter annotation so that future runs of this action
+        # can verify which platforms this run was asked to target before using
+        # its head SHA as a change anchor.
+        if [[ -n "${PLATFORMS:-}" ]]; then
+          _platforms_csv=""
+          for _pkey in ${PLATFORMS}; do
+            _plat="${_pkey//-/\/}"
+            _platforms_csv="${_platforms_csv:+${_platforms_csv},}${_plat}"
+          done
+          echo "::notice title=platforms_filter::${_platforms_csv}"
+        fi
+
         if [[ "${EVENT_NAME}" == "pull_request" ]]; then
           if [[ -z "${PR_BASE_SHA}" ]]; then
             echo "::error::Input 'pr_base_sha' is required when event_name is 'pull_request'."
@@ -121,8 +136,8 @@ runs:
 
         # For push events, collect (run_id, head_sha) pairs from prior successful
         # runs.  We record the run_id so we can later check which platforms each
-        # run targeted (via the platforms_filter annotation emitted by the
-        # detect-versions action), ensuring we only anchor against runs that
+        # run targeted (via the platforms_filter annotation emitted by this same
+        # action in prior runs), ensuring we only anchor against runs that
         # included all the platforms we are building now.
         declare -A SHA_TO_RUN_ID   # head_sha → run_id (last seen per SHA)
 
@@ -183,8 +198,9 @@ runs:
 
         # get_run_detect_platforms <run_id>
         # Sets RUN_DETECT_PLATFORMS to the comma-separated platform list from
-        # the platforms_filter annotation emitted by the detect job in that run,
-        # or "" when the annotation is absent (old run predating the annotation).
+        # the platforms_filter annotation emitted by the prepare job (new runs)
+        # or the detect job (old runs, backward compatibility) in that run,
+        # or "" when the annotation is absent (runs predating the annotation).
         # On absence the caller should trust the run (backward compatibility).
         get_run_detect_platforms() {
           local _run_id="$1"
@@ -192,11 +208,11 @@ runs:
             RUN_DETECT_PLATFORMS="${RUN_PLATFORMS_CACHE[${_run_id}]}"
             return
           fi
-          # Find the detect/Detect job for this run.
+          # Find the prepare job (new runs) or detect job (old runs, backward compat).
           local _job_id
           _job_id="$(gh api \
             "repos/${REPOSITORY}/actions/runs/${_run_id}/jobs?filter=all" \
-            --jq '[.jobs[] | select(.name | ascii_downcase | contains("detect")) | .id][0] // ""' \
+            --jq '[.jobs[] | select(.name | ascii_downcase | (contains("prepare") or contains("detect"))) | .id][0] // ""' \
             2>/dev/null || echo "")"
           if [[ -z "${_job_id}" ]]; then
             RUN_PLATFORMS_CACHE["${_run_id}"]=""

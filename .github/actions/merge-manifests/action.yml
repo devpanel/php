@@ -491,22 +491,19 @@ runs:
         GHCR_BEARER_TIME=0
 
         # Helper: refresh the GHCR Bearer token used for per-digest HEAD probes.
-        # Obtains a pull-scoped token from the GHCR token endpoint using
-        # GHCR_USER (vars.GHCR_USER when GHCR_TOKEN is used, github.actor
-        # otherwise) and the GHCR_TOKEN environment variable (GITHUB_TOKEN
-        # primary, GHCR_TOKEN secret as fallback).
+        # Obtains a pull-scoped token from the GHCR token endpoint using the
+        # GHCR_USER and GHCR_TOKEN environment variables set by the calling step.
         # Returns 0 when a valid token is available, 1 when the fetch failed.
         get_ghcr_inspect_token() {
-          local _now _ghcr_username
+          local _now
           _now="$(date +%s)"
           if [[ -n "${GHCR_BEARER}" ]] \
               && (( _now - ${GHCR_BEARER_TIME:-0} < TOKEN_MAX_AGE )); then
             return 0
           fi
-          _ghcr_username="${GHCR_USER}"
           local _json _new_token
           _json="$(curl -sf --connect-timeout 5 --max-time 15 \
-            -u "${_ghcr_username}:${GHCR_TOKEN}" \
+            -u "${GHCR_USER}:${GHCR_TOKEN}" \
             "https://ghcr.io/token?service=ghcr.io&scope=repository:${_ghcr_path}:pull" \
             2>/dev/null)" || _json=""
           _new_token="$(printf '%s' "${_json}" | jq -r '.token // ""' 2>/dev/null)" \

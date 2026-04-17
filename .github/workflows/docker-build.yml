@@ -139,6 +139,11 @@ jobs:
       # detect job and passed to every build job via the build matrix so that
       # each job uses GHCR as primary (writable) or GHA as primary (not writable).
       ghcr_writable: ${{ steps.detect.outputs.ghcr_writable }}
+      # Which GHCR credential was used: "github_token" or "ghcr_token".
+      # Used by build and merge jobs to determine which single credential to
+      # pass for GHCR authentication (only ghcr_token is passed when the PAT
+      # was required; github_token is used via the job's GITHUB_TOKEN otherwise).
+      ghcr_cred_source: ${{ steps.detect.outputs.ghcr_cred_source }}
     steps:
       - name: Capture detect job start time
         id: start_time
@@ -283,7 +288,7 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          ghcr_token: ${{ secrets.GHCR_TOKEN }}
+          ghcr_token: ${{ needs.detect.outputs.ghcr_cred_source == 'ghcr_token' && secrets.GHCR_TOKEN || '' }}
           ghcr_writable: ${{ needs.detect.outputs.ghcr_writable }}
           downloads_dir: ${{ runner.temp }}/build-downloads
           bake_overrides_file: ${{ runner.temp }}/preseed-bake-overrides.json
@@ -339,5 +344,5 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           ghcr_repo: ${{ steps.ghcr.outputs.repo }}
-          ghcr_token: ${{ secrets.GHCR_TOKEN }}
+          ghcr_token: ${{ needs.detect.outputs.ghcr_cred_source == 'ghcr_token' && secrets.GHCR_TOKEN || '' }}
           ghcr_writable: ${{ needs.detect.outputs.ghcr_writable }}
