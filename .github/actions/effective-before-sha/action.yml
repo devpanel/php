@@ -198,8 +198,7 @@ runs:
 
         # get_run_detect_platforms <run_id>
         # Sets RUN_DETECT_PLATFORMS to the comma-separated platform list from
-        # the platforms_filter annotation emitted by the prepare job (new runs)
-        # or the detect job (old runs, backward compatibility) in that run,
+        # the platforms_filter annotation emitted by the prepare job in that run,
         # or "" when the annotation is absent (runs predating the annotation).
         # On absence the caller should trust the run (backward compatibility).
         get_run_detect_platforms() {
@@ -208,11 +207,11 @@ runs:
             RUN_DETECT_PLATFORMS="${RUN_PLATFORMS_CACHE[${_run_id}]}"
             return
           fi
-          # Find the prepare job (new runs) or detect job (old runs, backward compat).
+          # Find the prepare job.
           local _job_id
           _job_id="$(gh api \
             "repos/${REPOSITORY}/actions/runs/${_run_id}/jobs?filter=all" \
-            --jq '[.jobs[] | select(.name | ascii_downcase | (contains("prepare") or contains("detect"))) | .id][0] // ""' \
+            --jq '[.jobs[] | select(.name | ascii_downcase | contains("prepare")) | .id][0] // ""' \
             2>/dev/null || echo "")"
           if [[ -z "${_job_id}" ]]; then
             RUN_PLATFORMS_CACHE["${_run_id}"]=""
