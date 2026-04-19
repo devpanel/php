@@ -163,6 +163,7 @@ jobs:
           platforms_filter: ${{ inputs.platforms || vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ghcr_token: ${{ secrets.GHCR_TOKEN }}
+          ghcr_user: ${{ vars.GHCR_USER }}
 
       # Wait here — in the single detect job that runs before the build matrix —
       # until enough authenticated Docker Hub pulls are available for the

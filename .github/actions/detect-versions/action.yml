@@ -48,6 +48,11 @@ inputs:
       write-access check.  Required when the organisation's Actions token
       policy restricts GITHUB_TOKEN from writing to packages.
     default: ''
+  ghcr_user:
+    description: >
+      Username associated with GHCR_TOKEN when using a Personal Access Token.
+      The calling workflow can forward the repository variable (e.g. ${{ vars.GHCR_USER }}).
+    default: ''
 
 outputs:
   versions:
@@ -168,7 +173,7 @@ runs:
         GH_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' && inputs.ghcr_token || inputs.github_token }}
         USING_GHCR_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' }}
         REPO: ${{ github.repository }}
-        GHCR_USER: ${{ vars.GHCR_USER }}
+        GHCR_USER: ${{ inputs.ghcr_user }}
         GH_ACTOR: ${{ github.actor }}
       run: |
         set -uo pipefail
@@ -183,7 +188,7 @@ runs:
         # so string comparisons are required here.
         if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
           if [[ -z "${GHCR_USER}" ]]; then
-            echo "::error::GHCR_TOKEN is configured but vars.GHCR_USER is not set. Set GHCR_USER to the username of the GHCR_TOKEN owner."
+            echo "::error::GHCR_TOKEN is configured but ghcr_user input is not set. Pass the GHCR_TOKEN owner's username via the ghcr_user input (e.g. ghcr_user: \${{ vars.GHCR_USER }})."
             exit 1
           fi
           ACTOR="${GHCR_USER}"
