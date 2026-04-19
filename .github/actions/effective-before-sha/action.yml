@@ -29,6 +29,7 @@ description: >
   Required GITHUB_TOKEN permissions on the calling job:
     actions:  read   (list workflow runs and jobs)
     checks:   read   (read check-run annotations for platform detection)
+    contents: read   (fetch missing commits from the remote)
 
 inputs:
   workflow_files:
@@ -234,9 +235,12 @@ runs:
         for run_id in "${CANDIDATE_RUN_IDS[@]+"${CANDIDATE_RUN_IDS[@]}"}"; do
           sha="${RUN_ID_TO_SHA[${run_id}]:-}"
           [[ -z "${sha}" || ! "${sha}" =~ ^[0-9a-f]{40}$ ]] && continue
-          # Only use SHAs that exist in the local object database; otherwise
-          # downstream git diff calls can fail and incorrectly suppress builds.
-          git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
+          # Ensure the SHA exists in the local object database so downstream
+          # git diff calls don't fail (e.g. after a force-push/rebase).  If it
+          # is missing, fetch it directly; skip only if the fetch also fails.
+          if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "${sha}" 2>/dev/null || continue
+          fi
           [[ "${sha}" == "${CURRENT_SHA}" ]] && continue
 
           # Fetch platforms annotation for this run once.
