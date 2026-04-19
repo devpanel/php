@@ -189,7 +189,7 @@ runs:
         # so string comparisons are required here.
         if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
           if [[ -z "${GHCR_USER}" ]]; then
-            echo "::error::GHCR_TOKEN is configured but ghcr_user input is not set. Pass the GHCR_TOKEN owner's username via the ghcr_user input (e.g. ghcr_user: \${{ vars.GHCR_USER }})."
+            echo "::error::GHCR_TOKEN is configured but ghcr_user input is not set. Pass the GHCR_TOKEN owner's username via the ghcr_user input (typically the value of vars.GHCR_USER in the calling workflow)."
             exit 1
           fi
           ACTOR="${GHCR_USER}"
