@@ -51,8 +51,8 @@ inputs:
   ghcr_user:
     description: >
       Username associated with GHCR_TOKEN when using a Personal Access Token.
-      For example, pass the calling workflow expression "${{ 'vars.GHCR_USER' }}"
-      as this input.
+      Pass the username value as this input, typically from the calling
+      workflow's GHCR_USER repository variable (vars.GHCR_USER).
     default: ''
 
 outputs:
