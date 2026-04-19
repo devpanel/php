@@ -51,7 +51,7 @@ inputs:
   ghcr_user:
     description: >
       Username associated with GHCR_TOKEN when using a Personal Access Token.
-      The calling workflow can forward the repository variable (e.g. ${{ vars.GHCR_USER }}).
+      The calling workflow can forward the repository variable (e.g. ${{ 'vars.GHCR_USER' }}).
     default: ''
 
 outputs:
