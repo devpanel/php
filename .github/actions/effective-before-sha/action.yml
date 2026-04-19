@@ -6,8 +6,8 @@ description: >
   For pull_request events, all platforms map to the PR base SHA.
 
   For push events, queries workflow runs for the specified workflow(s)
-  and for each platform finds the closest reachable ancestor run's head
-  SHA that included that platform (verified via the platforms_filter
+  and for each platform finds the most recent successful run's head SHA
+  that included that platform (verified via the platforms_filter
   annotation emitted by this same action in prior runs).  Annotated runs
   (those with a platforms_filter annotation) are always preferred.
   Unannotated runs (predating the annotation feature) are only used as a
@@ -29,7 +29,6 @@ description: >
   Required GITHUB_TOKEN permissions on the calling job:
     actions:  read   (list workflow runs and jobs)
     checks:   read   (read check-run annotations for platform detection)
-    contents: read   (compare commits via the Repos API)
 
 inputs:
   workflow_files:
@@ -64,7 +63,7 @@ inputs:
     description: >
       Space-separated platform keys to populate in the output map
       (e.g. "linux-amd64 linux-arm64").  Each key is independently
-      matched to the closest ancestor run that included that platform.
+      matched to the most recent run that included that platform.
       When empty, before_shas is {} (no filtering, full rebuild).
     required: false
     default: ''
@@ -72,9 +71,9 @@ inputs:
 outputs:
   before_shas:
     description: >
-      JSON map of platform-key to the closest reachable ancestor SHA,
+      JSON map of platform-key to the most recent successful run's head SHA,
       e.g. {"linux-amd64":"abc123","linux-arm64":"def456"}.
-      Each platform maps to the SHA of the closest ancestor annotated run
+      Each platform maps to the SHA of the most recent annotated run
       that included that platform.  Unannotated runs are used as fallback
       only when no annotated runs exist at all in the candidate set.
       When annotated runs are present, platforms with no annotated run
@@ -141,9 +140,9 @@ runs:
         # For push events, collect (run_id, head_sha) pairs from prior successful
         # runs.  We record the run_id so we can later check which platforms each
         # run targeted (via the platforms_filter annotation emitted by this same
-        # action in prior runs), allowing each platform to anchor only against
-        # runs that included that specific platform.
-        declare -A SHA_TO_RUN_ID   # head_sha → run_id (last seen per SHA)
+        # action in prior runs), and so we can select the most recent run per
+        # platform by comparing run IDs (higher = more recent).
+        declare -A RUN_ID_TO_SHA   # run_id → head_sha
 
         if [[ -n "${WORKFLOW_FILES:-}" ]]; then
           NORMALIZED_WORKFLOW_FILES=$(printf '%s' "${WORKFLOW_FILES}" | tr '\r\n' '  ')
@@ -151,7 +150,7 @@ runs:
           for wf in "${WF_ARRAY[@]}"; do
             while IFS=$'\t' read -r _rsha _rid; do
               [[ -n "${_rsha}" && -n "${_rid}" ]] \
-                && SHA_TO_RUN_ID["${_rsha}"]="${_rid}"
+                && RUN_ID_TO_SHA["${_rid}"]="${_rsha}"
             done < <(gh api \
               "repos/${REPOSITORY}/actions/workflows/${wf}/runs?branch=${REF_NAME}&status=success&per_page=10" \
               --jq '.workflow_runs[] | [.head_sha // "", (.id | tostring)] | join("\t")' \
@@ -159,42 +158,15 @@ runs:
           done
         fi
 
-        # Deduplicate candidate SHAs; discard malformed entries.
-        readarray -t CANDIDATE_SHAS < <(
-          printf '%s\n' "${!SHA_TO_RUN_ID[@]}" \
-            | grep -E '^[0-9a-f]{40}$' \
-            | sort -u \
+        # Collect candidate run IDs; discard non-numeric entries; sort descending
+        # so that the most recent runs are processed first.
+        # SHA format is validated per-entry in the loop below.
+        readarray -t CANDIDATE_RUN_IDS < <(
+          printf '%s\n' "${!RUN_ID_TO_SHA[@]}" \
+            | grep -E '^[0-9]+$' \
+            | sort -rn \
             || true
         )
-
-        # Cache for SHA → ahead_by or "unreachable".
-        declare -A SHA_AHEAD_CACHE
-
-        # compare_sha <sha>
-        # Sets COMPARE_AHEAD to the numeric ahead_by value, or "" when the
-        # SHA is not a reachable ancestor of CURRENT_SHA.
-        compare_sha() {
-          local _sha="$1"
-          if [[ -v "SHA_AHEAD_CACHE[${_sha}]" ]]; then
-            COMPARE_AHEAD="${SHA_AHEAD_CACHE[${_sha}]}"
-            [[ "${COMPARE_AHEAD}" == "unreachable" ]] && COMPARE_AHEAD=""
-            return
-          fi
-          local _compare _status _ahead
-          _compare=$(gh api \
-            "repos/${REPOSITORY}/compare/${_sha}...${CURRENT_SHA}" \
-            --jq '{status: .status, ahead_by: .ahead_by}' 2>/dev/null || true)
-          _status=$(printf '%s' "${_compare}" | jq -r '.status // ""')
-          _ahead=$(printf '%s' "${_compare}" | jq -r '.ahead_by // empty')
-          if [[ "${_status}" == "ahead" || "${_status}" == "identical" ]] \
-             && [[ "${_ahead}" =~ ^[0-9]+$ ]]; then
-            SHA_AHEAD_CACHE["${_sha}"]="${_ahead}"
-            COMPARE_AHEAD="${_ahead}"
-          else
-            SHA_AHEAD_CACHE["${_sha}"]="unreachable"
-            COMPARE_AHEAD=""
-          fi
-        }
 
         # Cache for run_id → platforms_used (comma-separated platform paths,
         # e.g. "linux/amd64,linux/arm64"), or "" when the annotation is absent.
@@ -246,31 +218,28 @@ runs:
 
         read -r -a PLATFORM_KEYS <<< "${PLATFORMS}"
 
-        # For each platform key, independently find the closest reachable
-        # ancestor run that included that specific platform.  Annotated runs
+        # For each platform key, independently find the most recent successful
+        # run that included that specific platform.  Annotated runs
         # (those emitting a platforms_filter annotation) are always preferred.
         # Unannotated runs (predating the annotation feature) are only used as
         # a fallback when no annotated runs exist at all in the candidate set.
         # When annotated runs are present, a platform with no annotated run
         # covering it is omitted from before_shas (full rebuild) rather than
         # being anchored to an old unannotated run.
-        declare -A BEST_ANNOTATED_SHA_PER_PKEY    # pkey -> best annotated sha
-        declare -A BEST_ANNOTATED_AHEAD_PER_PKEY  # pkey -> ahead count for best annotated sha
-        declare -A BEST_UNANNOTATED_SHA_PER_PKEY    # pkey -> best unannotated sha
-        declare -A BEST_UNANNOTATED_AHEAD_PER_PKEY  # pkey -> ahead count for best unannotated sha
+        declare -A BEST_ANNOTATED_SHA_PER_PKEY      # pkey → sha of most recent annotated run
+        declare -A BEST_ANNOTATED_RUN_ID_PER_PKEY   # pkey → run_id of most recent annotated run
+        declare -A BEST_UNANNOTATED_SHA_PER_PKEY    # pkey → sha of most recent unannotated run
+        declare -A BEST_UNANNOTATED_RUN_ID_PER_PKEY # pkey → run_id of most recent unannotated run
 
-        for sha in "${CANDIDATE_SHAS[@]+"${CANDIDATE_SHAS[@]}"}"; do
-          [[ -z "${sha}" || "${sha}" == "${CURRENT_SHA}" ]] && continue
-          compare_sha "${sha}"
-          [[ -z "${COMPARE_AHEAD}" ]] && continue
+        for run_id in "${CANDIDATE_RUN_IDS[@]+"${CANDIDATE_RUN_IDS[@]}"}"; do
+          sha="${RUN_ID_TO_SHA[${run_id}]:-}"
+          [[ -z "${sha}" || ! "${sha}" =~ ^[0-9a-f]{40}$ ]] && continue
+          [[ "${sha}" == "${CURRENT_SHA}" ]] && continue
 
           # Fetch platforms annotation for this run once.
-          _local_run_id="${SHA_TO_RUN_ID[${sha}]:-}"
           _run_plats=""
-          if [[ -n "${_local_run_id}" ]]; then
-            get_run_detect_platforms "${_local_run_id}"
-            _run_plats="${RUN_DETECT_PLATFORMS}"
-          fi
+          get_run_detect_platforms "${run_id}"
+          _run_plats="${RUN_DETECT_PLATFORMS}"
 
           for _pkey in "${PLATFORM_KEYS[@]}"; do
             if [[ -n "${_run_plats}" ]]; then
@@ -278,18 +247,18 @@ runs:
               if ! run_covers_platform "${_run_plats}" "${_pkey}"; then
                 continue  # Run didn't cover this platform; skip it.
               fi
-              _existing_ahead="${BEST_ANNOTATED_AHEAD_PER_PKEY[${_pkey}]:-999999999}"
-              if [[ "${COMPARE_AHEAD}" -lt "${_existing_ahead}" ]]; then
+              _existing_run_id="${BEST_ANNOTATED_RUN_ID_PER_PKEY[${_pkey}]:-0}"
+              if [[ "${run_id}" -gt "${_existing_run_id}" ]]; then
                 BEST_ANNOTATED_SHA_PER_PKEY["${_pkey}"]="${sha}"
-                BEST_ANNOTATED_AHEAD_PER_PKEY["${_pkey}"]="${COMPARE_AHEAD}"
+                BEST_ANNOTATED_RUN_ID_PER_PKEY["${_pkey}"]="${run_id}"
               fi
             else
               # Unannotated run: record as fallback, used only when no annotated
               # runs exist at all in the candidate set.
-              _existing_ahead="${BEST_UNANNOTATED_AHEAD_PER_PKEY[${_pkey}]:-999999999}"
-              if [[ "${COMPARE_AHEAD}" -lt "${_existing_ahead}" ]]; then
+              _existing_run_id="${BEST_UNANNOTATED_RUN_ID_PER_PKEY[${_pkey}]:-0}"
+              if [[ "${run_id}" -gt "${_existing_run_id}" ]]; then
                 BEST_UNANNOTATED_SHA_PER_PKEY["${_pkey}"]="${sha}"
-                BEST_UNANNOTATED_AHEAD_PER_PKEY["${_pkey}"]="${COMPARE_AHEAD}"
+                BEST_UNANNOTATED_RUN_ID_PER_PKEY["${_pkey}"]="${run_id}"
               fi
             fi
           done
