@@ -19,7 +19,8 @@ description: >
 
 inputs:
   github_token:
-    description: GitHub token used for authenticated GitHub API calls during version resolution.
+    description: >
+      GitHub token used for authenticated GitHub API calls during version resolution.
     required: true
   versions:
     description: >
@@ -27,16 +28,6 @@ inputs:
       Used to pull the actual php:<version>-apache images and detect which Debian
       codename each version runs on, so compatibility tests use the real target image.
     required: true
-  dockerhub_username:
-    description: >
-      Docker Hub username for authenticated pulls.  Used only as a fallback when an
-      unauthenticated pull fails (e.g. due to the anonymous rate limit).
-    default: ''
-  dockerhub_token:
-    description: >
-      Docker Hub token for authenticated pulls.  Used only as a fallback when an
-      unauthenticated pull fails (e.g. due to the anonymous rate limit).
-    default: ''
   refresh_cache:
     description: >
       When "true", always download fresh artifacts even when a cache entry
@@ -89,8 +80,6 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
-        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
-        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
       run: |
         set -euo pipefail
         VERSIONS="${{ inputs.versions }}"
@@ -110,18 +99,6 @@ runs:
         CODENAMES_CACHE_FILE="${RUNNER_TEMP}/php-codenames-cache.json"
         [[ -f "${CODENAMES_CACHE_FILE}" ]] || echo '{}' > "${CODENAMES_CACHE_FILE}"
 
-        # Obtain an anonymous Docker Hub token for library/php to look up
-        # image manifests without using the authenticated pull quota.
-        ANON_PHP_TOKEN=""
-        ANON_PHP_TOKEN="$(curl -sf --connect-timeout 5 --max-time 15 \
-          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/php:pull" \
-          2>/dev/null | jq -r '.token // ""')" || ANON_PHP_TOKEN=""
-        if [[ -n "${ANON_PHP_TOKEN}" ]]; then
-          echo "  Obtained anonymous Docker Hub token for library/php." >&2
-        else
-          echo "  Could not obtain anonymous token; will use docker pull for all versions." >&2
-        fi
-
         for ver in $VERSIONS; do
           image="php:${ver}-apache"
 
@@ -136,64 +113,12 @@ runs:
             echo "  ${image} → ${codename} (cached for version ${ver})" >&2
           else
             # ── Cache miss: pull the image and detect codename ─────────────
-            # Attempt flow (best-effort probe → unauthenticated pull →
-            # authenticated fallback):
-            #   1. Best-effort anonymous registry API probe to check manifest
-            #      reachability and capture the digest for logging only
-            #      (no docker pull, no account pull quota consumed). Probe
-            #      failures are diagnostic and do not skip the pull steps.
-            #   2. Unauthenticated docker pull (IP-based anonymous quota).
-            #   3. Authenticated docker pull (per-account quota, only when
-            #      credentials are available and step 2 fails).
-            if [[ -n "${ANON_PHP_TOKEN}" ]]; then
-              _head_tmp="$(mktemp)"
-              _curl_ok=false
-              curl -sf --connect-timeout 5 --max-time 15 \
-                --head \
-                -H "Authorization: Bearer ${ANON_PHP_TOKEN}" \
-                -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
-                -D "${_head_tmp}" \
-                "https://registry-1.docker.io/v2/library/php/manifests/${ver}-apache" \
-                2>/dev/null && _curl_ok=true || true
-              if [[ "${_curl_ok}" == "true" ]]; then
-                _image_digest="$(grep -i '^docker-content-digest:' "${_head_tmp}" 2>/dev/null \
-                  | awk '{print $2}' | tr -d '\r\n')" || _image_digest=""
-                [[ -n "${_image_digest}" ]] \
-                  && echo "  ${image} digest: ${_image_digest} (manifest reachable)" >&2
-              else
-                echo "  Anonymous manifest HEAD failed for ${image}." >&2
-              fi
-              rm -f "${_head_tmp}"
-            fi
-            _DOCKERHUB_LOGGED_IN=false
-            echo "Pulling ${image} to detect Debian codename (unauthenticated)..." >&2
-            if ! docker pull --quiet "$image" >/dev/null 2>&1; then
-              if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
-                echo "  Unauthenticated pull failed; retrying with Docker Hub credentials..." >&2
-                if echo "${DOCKERHUB_TOKEN}" \
-                  | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin >&2; then
-                  _DOCKERHUB_LOGGED_IN=true
-                  # Install a trap so docker logout always runs on EXIT (including
-                  # on set -e early exit from the pull or docker run below).
-                  trap 'docker logout >&2 2>/dev/null || true' EXIT
-                  docker pull --quiet "$image" >&2
-                else
-                  echo "  Docker Hub login failed; cannot retry authenticated pull for ${image}." >&2
-                  exit 1
-                fi
-              else
-                # Re-run without redirection so the error is visible in the log.
-                docker pull --quiet "$image" >&2
-              fi
-            fi
+            # Pull the image using the runner's embedded Docker Hub token
+            # (unlimited pulls on GitHub-hosted runners).
+            echo "Pulling ${image} to detect Debian codename..." >&2
+            docker pull --quiet "$image" >&2
             codename=$(docker run --rm "$image" sh -c \
               '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-}"')
-            # Log out again so subsequent steps start without Docker Hub credentials,
-            # preserving the unauthenticated-first pattern for any later pulls.
-            if [[ "${_DOCKERHUB_LOGGED_IN}" == "true" ]]; then
-              docker logout >&2 2>/dev/null || true
-              trap - EXIT
-            fi
             # Cache the codename by PHP version (stable key, never changes mid-lifecycle).
             if [[ -n "${codename}" ]]; then
               _updated="$(jq --arg v "${ver}" --arg c "${codename}" \
