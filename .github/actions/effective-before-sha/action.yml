@@ -64,7 +64,7 @@ inputs:
     description: >
       Space-separated platform keys to populate in the output map
       (e.g. "linux-amd64 linux-arm64").  Each key is independently
-      matched to the most recent run that included that platform.
+      matched to the most recent successful run that included that platform.
       When empty, before_shas is {} (no filtering, full rebuild).
     required: false
     default: ''
