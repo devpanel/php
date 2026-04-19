@@ -82,6 +82,11 @@ jobs:
         id: effective_sha
         uses: ./.github/actions/effective-before-sha
         with:
+          # Include the previous workflow filenames so that historical
+          # successful runs from those workflows are considered when computing
+          # the before SHA.  The GitHub API returns runs for removed workflow
+          # files by name, so this is safe even though those files no longer
+          # exist in the repository.
           workflow_files: |
             docker-build-on-push.yml
             docker-build-all.yml

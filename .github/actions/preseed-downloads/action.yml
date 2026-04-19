@@ -46,7 +46,7 @@ inputs:
       If the resolved codename and versions are unchanged, the cache key is
       also unchanged and the existing cache entry remains current.  Use this
       in workflows whose purpose is to rebuild cached artifacts (e.g.
-      docker-build-all.yml).
+      docker-build.yml).
     default: 'false'
 
 outputs:
