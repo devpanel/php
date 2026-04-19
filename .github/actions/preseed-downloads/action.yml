@@ -19,7 +19,11 @@ description: >
 
 inputs:
   github_token:
-    description: GitHub token used for authenticated GitHub API calls during version resolution.
+    description: >
+      GitHub token used for authenticated GitHub API calls during version resolution and for
+      best-effort GHCR authentication before the mirror pull.  The token must have at least
+      `packages: read` permission for the mirror pull to succeed; the mirror pull falls back
+      silently to Docker Hub if login or the pull fails.
     required: true
   versions:
     description: >
@@ -36,6 +40,20 @@ inputs:
     description: >
       Docker Hub token for authenticated pulls.  Used only as a fallback when an
       unauthenticated pull fails (e.g. due to the anonymous rate limit).
+    default: ''
+  ghcr_token:
+    description: >
+      Optional classic Personal Access Token with the read:packages scope (or
+      write:packages if this action should also be able to pull private images).
+      When provided, this token is used instead of github_token for the best-effort
+      GHCR login before the mirror pull.  Required when the organisation's Actions
+      token policy restricts GITHUB_TOKEN from reading packages.
+    default: ''
+  ghcr_user:
+    description: >
+      Username associated with ghcr_token when using a Personal Access Token.
+      Pass the username value as this input, typically from the calling
+      workflow's GHCR_USER repository variable (vars.GHCR_USER).
     default: ''
   refresh_cache:
     description: >
@@ -83,6 +101,28 @@ runs:
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
         key: php-codenames-
+
+    # Best-effort GHCR login so the mirror pull below can reach private packages.
+    # Falls back to the PAT (ghcr_token/ghcr_user) when configured, mirroring the
+    # same credential-selection logic used by build-php-images and merge-manifests.
+    # continue-on-error keeps the silent-fallback behaviour when login fails.
+
+    # Emit a non-fatal warning when a PAT is provided without the required username
+    # so the misconfiguration is visible rather than silently falling back to
+    # GITHUB_TOKEN (which may not have read access to the private mirror).
+    - name: Warn on incomplete GHCR PAT configuration
+      if: inputs.ghcr_token != '' && inputs.ghcr_user == ''
+      shell: bash
+      run: |
+        echo "::warning::ghcr_token is set but ghcr_user is not provided. GHCR login will fall back to GITHUB_TOKEN. Set ghcr_user (typically vars.GHCR_USER) if PAT auth is required for the private mirror pull."
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v4
+      continue-on-error: true
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
+        password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
 
     - name: Detect Debian codenames and resolve artifact versions
       id: detect-and-resolve
@@ -166,24 +206,36 @@ runs:
               rm -f "${_head_tmp}"
             fi
             _DOCKERHUB_LOGGED_IN=false
-            echo "Pulling ${image} to detect Debian codename (unauthenticated)..." >&2
-            if ! docker pull --quiet "$image" >/dev/null 2>&1; then
-              if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
-                echo "  Unauthenticated pull failed; retrying with Docker Hub credentials..." >&2
-                if echo "${DOCKERHUB_TOKEN}" \
-                  | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin >&2; then
-                  _DOCKERHUB_LOGGED_IN=true
-                  # Install a trap so docker logout always runs on EXIT (including
-                  # on set -e early exit from the pull or docker run below).
-                  trap 'docker logout >&2 2>/dev/null || true' EXIT
-                  docker pull --quiet "$image" >&2
+            # Try the GHCR mirror first to avoid Docker Hub pull quota.
+            # The mirror is populated by the daily mirror-php-images workflow.
+            # On a cache miss (mirror not yet warm or GHCR not accessible) the
+            # pull fails silently and the existing Docker Hub path is used as a
+            # fallback, preserving the existing behaviour exactly.
+            _GHCR_MIRROR="ghcr.io/$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')/php-base-mirror"
+            _GHCR_MIRROR_IMAGE="${_GHCR_MIRROR}/library/php:${ver}-apache"
+            if docker pull --quiet "${_GHCR_MIRROR_IMAGE}" >/dev/null 2>&1; then
+              echo "  Pulled from GHCR mirror (${_GHCR_MIRROR_IMAGE}); skipping Docker Hub pull." >&2
+              image="${_GHCR_MIRROR_IMAGE}"
+            else
+              echo "Pulling ${image} to detect Debian codename (unauthenticated)..." >&2
+              if ! docker pull --quiet "$image" >/dev/null 2>&1; then
+                if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+                  echo "  Unauthenticated pull failed; retrying with Docker Hub credentials..." >&2
+                  if echo "${DOCKERHUB_TOKEN}" \
+                    | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin >&2; then
+                    _DOCKERHUB_LOGGED_IN=true
+                    # Install a trap so docker logout always runs on EXIT (including
+                    # on set -e early exit from the pull or docker run below).
+                    trap 'docker logout >&2 2>/dev/null || true' EXIT
+                    docker pull --quiet "$image" >&2
+                  else
+                    echo "  Docker Hub login failed; cannot retry authenticated pull for ${image}." >&2
+                    exit 1
+                  fi
                 else
-                  echo "  Docker Hub login failed; cannot retry authenticated pull for ${image}." >&2
-                  exit 1
+                  # Re-run without redirection so the error is visible in the log.
+                  docker pull --quiet "$image" >&2
                 fi
-              else
-                # Re-run without redirection so the error is visible in the log.
-                docker pull --quiet "$image" >&2
               fi
             fi
             codename=$(docker run --rm "$image" sh -c \
