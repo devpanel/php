@@ -139,6 +139,12 @@ inputs:
       Token used to authenticate with GHCR before imagetools create when
       ghcr_writable is "true".  Falls back to github_token when not set.
     default: ''
+  ghcr_user:
+    description: >
+      Username associated with ghcr_token when using a Personal Access Token.
+      Pass the username value as this input, typically from the calling
+      workflow's GHCR_USER repository variable (vars.GHCR_USER).
+    default: ''
   ghcr_writable:
     description: >
       Whether GHCR was used as a push target for the per-platform digest
@@ -192,7 +198,7 @@ runs:
       if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
       shell: bash
       env:
-        GHCR_USER: ${{ vars.GHCR_USER }}
+        GHCR_USER: ${{ inputs.ghcr_user }}
       run: |
         if [[ -z "${GHCR_USER}" ]]; then
           echo "::error::ghcr_token is set but vars.GHCR_USER is not configured. Set the GHCR_USER repository variable to the username that owns the PAT."
@@ -204,7 +210,7 @@ runs:
       uses: docker/login-action@v4
       with:
         registry: ghcr.io
-        username: ${{ inputs.ghcr_token && vars.GHCR_USER || github.actor }}
+        username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
         password: ${{ inputs.ghcr_token || inputs.github_token }}
 
     - name: Poll and merge manifests
@@ -226,7 +232,7 @@ runs:
         GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
         GHCR_TOKEN: ${{ inputs.ghcr_token || inputs.github_token }}
-        GHCR_USER: ${{ inputs.ghcr_token && vars.GHCR_USER || github.actor }}
+        GHCR_USER: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
       run: |
         set -euo pipefail
 

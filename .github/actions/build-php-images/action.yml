@@ -55,6 +55,12 @@ inputs:
       login.  Required when the organisation's Actions token policy restricts
       GITHUB_TOKEN from writing to packages.
     default: ''
+  ghcr_user:
+    description: >
+      Username associated with ghcr_token when using a Personal Access Token.
+      Pass the username value as this input, typically from the calling
+      workflow's GHCR_USER repository variable (vars.GHCR_USER).
+    default: ''
   ghcr_writable:
     description: >
       Whether the GHCR registry is writable ("true"/"false").  Pass the
@@ -93,7 +99,7 @@ runs:
       if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
       shell: bash
       env:
-        GHCR_USER: ${{ vars.GHCR_USER }}
+        GHCR_USER: ${{ inputs.ghcr_user }}
       run: |
         if [[ -z "${GHCR_USER}" ]]; then
           echo "::error::ghcr_token is set but vars.GHCR_USER is not configured. Set the GHCR_USER repository variable to the username that owns the PAT."
@@ -107,7 +113,7 @@ runs:
       continue-on-error: ${{ inputs.ghcr_writable != 'true' }}
       with:
         registry: ghcr.io
-        username: ${{ inputs.ghcr_token && vars.GHCR_USER || github.actor }}
+        username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
         password: ${{ inputs.ghcr_token || inputs.github_token }}
 
     - name: Set up QEMU
