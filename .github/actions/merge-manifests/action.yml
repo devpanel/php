@@ -125,6 +125,36 @@ inputs:
       QUOTA_MAX_WAIT.  Pass needs.detect.outputs.run_started_at from the
       calling workflow.
     required: true
+  ghcr_repo:
+    description: >
+      GHCR repository for pulling per-platform images pushed by digest (e.g.
+      "ghcr.io/devpanel/php").  When ghcr_writable is "true", newly-built
+      platform refs are always sourced from GHCR, and seeded/existing
+      platform refs whose digests are confirmed present on GHCR (via the
+      per-cycle seeding probe) are also sourced from GHCR to save Docker Hub
+      authenticated pull quota.  Has no effect when ghcr_writable is "false".
+    default: ''
+  ghcr_token:
+    description: >
+      Token used to authenticate with GHCR before imagetools create when
+      ghcr_writable is "true".  Falls back to github_token when not set.
+    default: ''
+  ghcr_user:
+    description: >
+      Username associated with ghcr_token when using a Personal Access Token.
+      Pass the username value as this input, typically from the calling
+      workflow's GHCR_USER repository variable (vars.GHCR_USER).
+    default: ''
+  ghcr_writable:
+    description: >
+      Whether GHCR was used as a push target for the per-platform digest
+      images ("true"/"false").  When "true", newly-built platform refs
+      always use the GHCR digest path; seeded/existing platform refs use
+      GHCR when the digest is confirmed present there by the per-cycle
+      seeding probe, and fall back to Docker Hub otherwise (e.g. built
+      before GHCR dual-push was enabled).  Defaults to "false" (Docker Hub
+      only, preserving existing behaviour as a fallback).
+    default: 'false'
 
 runs:
   using: composite
@@ -160,6 +190,29 @@ runs:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
 
+    # Login to GHCR so imagetools create can pull per-platform digest refs
+    # from GHCR (avoiding Docker Hub authenticated pull quota).  Only needed
+    # when ghcr_writable is true; skipped otherwise so no unnecessary
+    # registry credentials are requested.
+    - name: Validate GHCR credentials for PAT auth
+      if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
+      shell: bash
+      env:
+        GHCR_USER: ${{ inputs.ghcr_user }}
+      run: |
+        if [[ -z "${GHCR_USER}" ]]; then
+          echo "::error::ghcr_token is set but vars.GHCR_USER is not configured. Set the GHCR_USER repository variable to the username that owns the PAT."
+          exit 1
+        fi
+
+    - name: Login to GitHub Container Registry
+      if: inputs.ghcr_writable == 'true'
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
+        password: ${{ inputs.ghcr_token || inputs.github_token }}
+
     - name: Poll and merge manifests
       shell: bash
       env:
@@ -176,6 +229,10 @@ runs:
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
         BUILD_MATRIX_LENGTH: ${{ inputs.build_matrix_length }}
         RUN_STARTED_AT: ${{ inputs.run_started_at }}
+        GHCR_REPO: ${{ inputs.ghcr_repo }}
+        GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
+        GHCR_TOKEN: ${{ inputs.ghcr_token || inputs.github_token }}
+        GHCR_USER: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
       run: |
         set -euo pipefail
 
@@ -208,6 +265,7 @@ runs:
         declare -A IMG_SEEDED           # image_key → "true" (seeded) / "false" (pending)
         declare -A IMG_PLATFORM_DIGESTS # image_key → path to platform-digest state file
         declare -A IMG_LAST_ERROR       # image_key → last imagetools create error text
+        declare -A IMG_GHCR_PROBE_FILE    # image_key → path to GHCR-probe cache file
         #   State file format: one "platform_key<TAB>sha256:digest" per line.
         #   Seeded from the existing manifest during the first polling cycle
         #   where the pull quota allows it; updated after each successful
@@ -255,6 +313,8 @@ runs:
           # Only create the digests file if it wasn't pre-populated by the
           # cache restore step.
           [[ -f "${IMG_PLATFORM_DIGESTS[$key]}" ]] || touch "${IMG_PLATFORM_DIGESTS[$key]}"
+          IMG_GHCR_PROBE_FILE[$key]="${DIGESTS_CACHE_DIR}/ghcr-probe-${safe_key}.txt"
+          [[ -f "${IMG_GHCR_PROBE_FILE[$key]}" ]] || touch "${IMG_GHCR_PROBE_FILE[$key]}"
           # Sanitize the restored cache file: keep only well-formed
           # "platform_key<TAB>sha256:..." lines so that any truncated,
           # partially-written, or otherwise corrupted entries are stripped
@@ -290,6 +350,7 @@ runs:
               fi
             else
               : > "${_pdigest_file}"
+              : > "${IMG_GHCR_PROBE_FILE[$key]}"
               echo "  WARNING: ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
                    "failed to sanitize cached digest state;" \
                    "cleared the cached baseline and forcing re-seeding."
@@ -297,6 +358,27 @@ runs:
             fi
           else
             echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
+          fi
+          # Prune the GHCR probe cache to only entries whose digest still
+          # appears in the (now-sanitized) platform-digest file.  Without
+          # this, stale entries appended by previous imagetools-create cycles
+          # accumulate in the cached file without bound.  The awk pass reads
+          # the digest file first (NR==FNR) to build a set of known digests
+          # (column 2), then filters the probe file keeping only lines whose
+          # digest (column 1) is in the set.
+          if [[ -s "${IMG_GHCR_PROBE_FILE[$key]}" ]]; then
+            if [[ -s "${_pdigest_file}" ]]; then
+              _pruned_probe=$(awk -F'\t' \
+                'NR==FNR{known[$2]=1;next} ($1 in known)' \
+                "${_pdigest_file}" "${IMG_GHCR_PROBE_FILE[$key]}")
+              if [[ -n "${_pruned_probe}" ]]; then
+                printf '%s\n' "${_pruned_probe}" > "${IMG_GHCR_PROBE_FILE[$key]}"
+              else
+                : > "${IMG_GHCR_PROBE_FILE[$key]}"
+              fi
+            else
+              : > "${IMG_GHCR_PROBE_FILE[$key]}"
+            fi
           fi
 
           if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
@@ -414,6 +496,46 @@ runs:
         # Warm up the anonymous inspect token so the first loop cycle can use it immediately.
         # Failure is non-fatal: the loop will retry via get_inspect_token when needed.
         get_inspect_token || true
+
+        # GHCR Registry API path: GHCR_REPO minus the "ghcr.io/" prefix.
+        # Empty when GHCR_REPO is unset; used by get_ghcr_inspect_token and
+        # the per-digest GHCR probe block below.
+        _ghcr_path="${GHCR_REPO#ghcr.io/}"
+
+        # GHCR Bearer token globals (analogous to ANON_TOKEN / ANON_TOKEN_TIME
+        # for the Docker Hub anonymous inspect token).  Updated directly by
+        # get_ghcr_inspect_token in the main shell; reset to empty on failure.
+        GHCR_BEARER=""
+        GHCR_BEARER_TIME=0
+
+        # Helper: refresh the GHCR Bearer token used for per-digest HEAD probes.
+        # Obtains a pull-scoped token from the GHCR token endpoint using the
+        # GHCR_USER and GHCR_TOKEN environment variables set by the calling step.
+        # Returns 0 when a valid token is available, 1 when the fetch failed.
+        get_ghcr_inspect_token() {
+          local _now
+          _now="$(date +%s)"
+          if [[ -n "${GHCR_BEARER}" ]] \
+              && (( _now - ${GHCR_BEARER_TIME:-0} < TOKEN_MAX_AGE )); then
+            return 0
+          fi
+          local _json _new_token
+          _json="$(curl -sf --connect-timeout 5 --max-time 15 \
+            -u "${GHCR_USER}:${GHCR_TOKEN}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${_ghcr_path}:pull" \
+            2>/dev/null)" || _json=""
+          _new_token="$(printf '%s' "${_json}" | jq -r '.token // ""' 2>/dev/null)" \
+            || _new_token=""
+          if [[ -n "${_new_token}" ]]; then
+            GHCR_BEARER="${_new_token}"
+            GHCR_BEARER_TIME="$(date +%s)"
+            return 0
+          else
+            GHCR_BEARER=""
+            GHCR_BEARER_TIME=0
+            return 1
+          fi
+        }
 
         # Consecutive artifact-list API failure counter.  After this many
         # back-to-back failures the loop aborts so the job fails instead of
@@ -851,10 +973,15 @@ runs:
                     echo "::warning::${IMAGE_SEED}: could not extract platform/digest" \
                          "from manifest; starting with empty state."
                   fi
+                  # Clear the probe cache so it is rebuilt fresh for the current
+                  # manifest digests in this cycle's GHCR probe loop.  This
+                  # mirrors how IMG_PLATFORM_DIGESTS is rewritten on every seed.
+                  > "${IMG_GHCR_PROBE_FILE[$key]}"
                   ;;
                 not_found)
                   # Tag doesn't exist yet — start fresh.
                   > "${IMG_PLATFORM_DIGESTS[$key]}"
+                  > "${IMG_GHCR_PROBE_FILE[$key]}"
                   echo "  ${IMAGE_SEED}: no existing manifest (first push)."
                   ;;
                 error)
@@ -895,6 +1022,71 @@ runs:
                   break
                 fi
               fi
+            done
+          fi
+
+          # ── Probe GHCR for seeded platform digests ─────────────────────────────
+          # For every image that is now seeded (pre-seeded from cache or newly
+          # seeded this cycle), issue an authenticated HEAD to the GHCR Registry
+          # API for each platform digest not yet definitively probed.
+          # Results are stored in a single probe-cache file (ghcr-probe-*.txt),
+          # one line per digest in the format "digest<TAB>status" where status
+          # is "found" (HTTP 200) or "missing" (HTTP 404).  The cache contains
+          # only digests that are currently present in IMG_PLATFORM_DIGESTS;
+          # stale entries are pruned at seeding time and at startup.
+          # A digest is considered already probed when any line in the cache
+          # file starts with that digest (regardless of status), preventing
+          # redundant HTTP requests.
+          # HTTP 200: writes "digest<TAB>found".  REFS construction uses this to
+          #   source the platform ref from GHCR instead of Docker Hub.
+          # HTTP 404: writes "digest<TAB>missing" so the digest is not re-probed.
+          # Transient errors: leave the digest unrecorded so the probe retries.
+          # Only runs when ghcr_writable is "true" and GHCR_REPO is set.
+          if [[ "${GHCR_WRITABLE}" == "true" && -n "${_ghcr_path}" ]]; then
+            # Accept header for GHCR manifest HEAD requests: covers OCI and
+            # Docker manifest list types so multi-arch digests are recognised.
+            _ghcr_accept="application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
+            for vs in "${VERSIONS_STAGES[@]}"; do
+              version="${vs%%:*}"
+              stage="${vs##*:}"
+              key="${version}:${stage}"
+              [[ "${IMG_SEEDED[$key]}" == "true" ]] || continue
+              [[ -s "${IMG_PLATFORM_DIGESTS[$key]}" ]] || continue
+              _ghcr_probe_img="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+              while IFS=$'\t' read -r _pkey _pdigest; do
+                [[ -n "${_pkey}" && -n "${_pdigest}" ]] || continue
+                # Skip digests already probed (any status: found or missing).
+                { grep -qxF "${_pdigest}"$'\t''found'   "${IMG_GHCR_PROBE_FILE[$key]}" \
+                    2>/dev/null || \
+                  grep -qxF "${_pdigest}"$'\t''missing' "${IMG_GHCR_PROBE_FILE[$key]}" \
+                    2>/dev/null; } && continue
+                # Refresh the GHCR Bearer token when expired.
+                if ! get_ghcr_inspect_token; then
+                  echo "  ${_ghcr_probe_img}: GHCR token unavailable;" \
+                       "skipping GHCR probe for ${_pkey//-/\/}."
+                  continue
+                fi
+                _ghcr_http_code="$(curl -sI --connect-timeout 10 --max-time 30 \
+                  -H "Authorization: Bearer ${GHCR_BEARER}" \
+                  -H "Accept: ${_ghcr_accept}" \
+                  -o /dev/null -w "%{http_code}" \
+                  "https://ghcr.io/v2/${_ghcr_path}/manifests/${_pdigest}" \
+                  2>/dev/null)" || true
+                case "${_ghcr_http_code:-000}" in
+                  200)
+                    printf '%s\tfound\n' "${_pdigest}" >> "${IMG_GHCR_PROBE_FILE[$key]}"
+                    echo "  ${_ghcr_probe_img}: ${_pkey//-/\/} confirmed on GHCR."
+                    ;;
+                  404)
+                    printf '%s\tmissing\n' "${_pdigest}" >> "${IMG_GHCR_PROBE_FILE[$key]}"
+                    echo "  ${_ghcr_probe_img}: ${_pkey//-/\/} not on GHCR."
+                    ;;
+                  *)
+                    echo "  ${_ghcr_probe_img}: GHCR probe for ${_pkey//-/\/}" \
+                         "returned HTTP ${_ghcr_http_code:-000}; will retry."
+                    ;;
+                esac
+              done < "${IMG_PLATFORM_DIGESTS[$key]}"
             done
           fi
 
@@ -1098,12 +1290,32 @@ runs:
                 echo "  [${IMAGE}] ${pkey//-/\/}: ${pdigest}"
               done
 
-              # Collect REFS from every entry in the temp map
+              # Collect REFS from every entry in the temp map.
+              # - Newly-built platforms (in NEW_PKEYS): use GHCR_REPO when
+              #   ghcr_writable is true — those digests were pushed to GHCR by
+              #   the build job.
+              # - Seeded/existing platforms: use GHCR_REPO when the digest is
+              #   confirmed present on GHCR (recorded as "digest<TAB>found" in
+              #   IMG_GHCR_PROBE_FILE by the per-cycle seeding probe); fall back
+              #   to REPO (Docker Hub) otherwise (e.g. built before GHCR
+              #   dual-push was introduced).
+              declare -A _new_pkeys_for_refs=()
+              for _npk in "${NEW_PKEYS[@]+"${NEW_PKEYS[@]}"}"; do
+                _new_pkeys_for_refs["${_npk}"]=1
+              done
               REFS=()
               while IFS=$'\t' read -r pkey pdigest; do
                 [[ -n "${pkey}" && -n "${pdigest}" ]] || continue
-                REFS+=("${REPO}@${pdigest}")
+                if [[ "${GHCR_WRITABLE}" == "true" && -n "${GHCR_REPO}" ]] \
+                   && { [[ -v "_new_pkeys_for_refs[${pkey}]" ]] || \
+                        grep -qxF "${pdigest}"$'\t''found' \
+                          "${IMG_GHCR_PROBE_FILE[$key]}" 2>/dev/null; }; then
+                  REFS+=("${GHCR_REPO}@${pdigest}")
+                else
+                  REFS+=("${REPO}@${pdigest}")
+                fi
               done < "${REFS_MAP}"
+              unset _new_pkeys_for_refs
 
               if [[ ${#REFS[@]} -gt 0 ]]; then
                 # ── Gate imagetools create on pull quota ──────────────────
@@ -1161,6 +1373,20 @@ runs:
                         IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
                       fi
                     done
+                    # Record newly-pushed GHCR digests as confirmed so they
+                    # are not re-probed on the next run.  The build job pushed
+                    # them to GHCR, so we know they are present there; a probe
+                    # would only confirm what we already know.
+                    if [[ "${GHCR_WRITABLE}" == "true" && -n "${GHCR_REPO}" ]]; then
+                      for i in "${!NEW_PKEYS[@]}"; do
+                        _np_digest="${NEW_PDIGESTS[$i]}"
+                        if ! grep -qxF "${_np_digest}"$'\t''found' \
+                             "${IMG_GHCR_PROBE_FILE[$key]}" 2>/dev/null; then
+                          printf '%s\tfound\n' "${_np_digest}" \
+                            >> "${IMG_GHCR_PROBE_FILE[$key]}"
+                        fi
+                      done
+                    fi
                   else
                     _create_err="$(cat "${_create_err_file}" 2>/dev/null || true)"
                     rm -f "${_create_err_file}"
