@@ -3,25 +3,32 @@ description: >
   Detects which PHP versions to build and emits a build matrix and merge matrix
   for use in the CI pipeline.
 
-  When before_sha and after_sha are provided, only the PHP versions whose
-  source files changed between those two commits are included. Otherwise every
-  versioned directory is built.
+  When before_shas and after_sha are provided, each platform uses its own
+  before SHA for change detection: only the PHP versions whose source files
+  changed since that platform's anchor are included for that platform.
+  Platforms absent from before_shas receive a full rebuild (all versions).
+  When before_shas is empty ({}) every versioned directory is built.
 
   The repository must be checked out by the calling job before this action
-  is invoked. Pass fetch-depth: 0 when before_sha/after_sha are used so that
+  is invoked. Pass fetch-depth: 0 when before_shas/after_sha are used so that
   the git history required by detect-versions.sh is available.
 
 inputs:
-  before_sha:
-    description: >
-      Commit SHA before the push. When provided together with after_sha, only
-      changed versions are detected. Omit for a full rebuild.
-    default: ''
   after_sha:
     description: >
-      Commit SHA after the push. When provided together with before_sha, only
-      changed versions are detected. Omit for a full rebuild.
+      Commit SHA after the push. When provided together with before_shas,
+      only changed versions are detected per platform. Omit for a full
+      rebuild.
     default: ''
+  before_shas:
+    description: >
+      JSON map of platform-key to before_sha, e.g.
+      {"linux-amd64":"abc123","linux-arm64":"def456"}.  When non-empty, each
+      platform uses its own anchor for change detection: versions that changed
+      since that platform's before_sha are built for that platform only.
+      Platforms absent from the map receive a full rebuild (all versions).
+      When empty ({}) or omitted, every versioned directory is built.
+    default: '{}'
   platforms_filter:
     description: >
       Comma-separated list of platforms to build
@@ -41,6 +48,12 @@ inputs:
       write-access check.  Required when the organisation's Actions token
       policy restricts GITHUB_TOKEN from writing to packages.
     default: ''
+  ghcr_user:
+    description: >
+      Username associated with GHCR_TOKEN when using a Personal Access Token.
+      Pass the username value as this input, typically from the calling
+      workflow's GHCR_USER repository variable (vars.GHCR_USER).
+    default: ''
 
 outputs:
   versions:
@@ -55,13 +68,13 @@ outputs:
   latest_php_version:
     description: The highest PHP version present in the repository.
     value: ${{ steps.detect.outputs.latest_php_version }}
-  total_platforms:
-    description: Total number of distinct build platforms.
-    value: ${{ steps.detect.outputs.total_platforms }}
   merge_matrix:
     description: >
-      JSON array of {version, stage} objects — one entry per Docker Hub image
-      that needs a manifest merge.
+      JSON array of {version, stage, expected_platforms} objects — one entry
+      per Docker Hub image that needs a manifest merge.  expected_platforms is
+      the number of build-matrix entries that will produce a digest artifact
+      for that (version, stage), used by merge-manifests as the per-image
+      completion threshold.
     value: ${{ steps.detect.outputs.merge_matrix }}
   build_matrix:
     description: >
@@ -71,8 +84,6 @@ outputs:
   build_matrix_length:
     description: >
       Total number of entries in the build matrix (versions × platforms).
-      Equals the number of parallel build jobs that may each need one
-      authenticated Docker Hub pull for the base PHP image.
     value: ${{ steps.detect.outputs.build_matrix_length }}
   ghcr_writable:
     description: >
@@ -80,10 +91,17 @@ outputs:
       otherwise.  Consumed by build jobs to select whether GHCR is primary
       (when writable) or GHA is primary (when not writable) for layer caches.
     value: ${{ steps.check-ghcr.outputs.writable }}
+  ghcr_cred_source:
+    description: >
+      Which GHCR credential was used: "github_token" when GITHUB_TOKEN has
+      write access, "ghcr_token" when the GHCR_TOKEN PAT fallback was used.
+      Empty when ghcr_writable is "false".  Consumed by the calling workflow
+      to determine which single credential to pass to build and merge jobs.
+    value: ${{ steps.check-ghcr.outputs.ghcr_cred_source }}
   all_versions:
     description: >
       Space-separated list of ALL PHP versions present in the repository,
-      regardless of the before_sha / after_sha filter.  Used to run preseed
+      regardless of the before_shas / after_sha filter.  Used to run preseed
       with the full version set so the newest Debian codename is always
       treated as primary and older codenames receive proper GLIBC
       compatibility testing.
@@ -91,19 +109,8 @@ outputs:
   all_versions_count:
     description: >
       Total number of PHP versions present in the repository (word count of
-      all_versions).  Used together with build_matrix_length to compute the
-      worst-case Docker Hub pull count passed to wait-pull-quota: the
-      pre-seed action may need one authenticated pull per version when the
-      codenames cache is cold.
+      all_versions).
     value: ${{ steps.detect.outputs.all_versions_count }}
-  needed_pulls:
-    description: >
-      Worst-case total number of Docker Hub pulls needed: the sum of
-      build_matrix_length (one pull per build job for the base PHP image)
-      and all_versions_count (one pull per PHP version for the pre-seed
-      codename probe when the cache is cold).  Pass directly to the
-      needed_pulls input of wait-pull-quota.
-    value: ${{ steps.detect.outputs.needed_pulls }}
   tag_suffix:
     description: >
       Docker image tag suffix derived from the branch/ref name.  Empty string
@@ -117,26 +124,93 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Check GHCR write access
-      id: check-ghcr
+    # Determine which GHCR credential to use.
+    #
+    # Request a push-scoped bearer token for GITHUB_TOKEN from the GHCR token
+    # endpoint.  If the endpoint grants a token, trust that GITHUB_TOKEN has
+    # write access (the calling job must declare `packages: write`).  If the
+    # endpoint refuses the request and a PAT (ghcr_token) is configured, fall
+    # back to the PAT so the downstream check-ghcr step uses the correct
+    # credential.
+    - name: Resolve GHCR credential
+      id: resolve-ghcr
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.ghcr_token || inputs.github_token }}
-        USING_GHCR_TOKEN: ${{ inputs.ghcr_token != '' }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GHCR_TOKEN_SET: ${{ inputs.ghcr_token != '' }}
         REPO: ${{ github.repository }}
         ACTOR: ${{ github.actor }}
       run: |
         set -uo pipefail
         REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
+        NETRC=$(umask 0177 && mktemp)
+        TOKEN_RESP=$(umask 0177 && mktemp)
+        trap 'rm -f "${NETRC}" "${TOKEN_RESP}"' EXIT
+        printf 'machine ghcr.io login %s password %s\n' "${ACTOR}" "${GH_TOKEN}" > "${NETRC}"
+
+        # Request a push-scoped bearer token for GITHUB_TOKEN.  A successful
+        # response (non-empty token) means the token endpoint granted push scope;
+        # trust this as confirmation of write access.
+        curl -s -o "${TOKEN_RESP}" --netrc-file "${NETRC}" \
+          "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:push" \
+          2>/dev/null || true
+        REG_TOKEN=$(jq -r '.token // empty' "${TOKEN_RESP}" 2>/dev/null || true)
+
+        if [[ -n "${REG_TOKEN}" ]]; then
+          echo "using_ghcr_token=false" >> "$GITHUB_OUTPUT"
+          echo "github_token_writable=true" >> "$GITHUB_OUTPUT"
+        elif [[ "${GHCR_TOKEN_SET}" == "true" ]]; then
+          echo "using_ghcr_token=true" >> "$GITHUB_OUTPUT"
+          echo "github_token_writable=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "using_ghcr_token=false" >> "$GITHUB_OUTPUT"
+          echo "github_token_writable=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Check GHCR write access
+      id: check-ghcr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' && inputs.ghcr_token || inputs.github_token }}
+        USING_GHCR_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' }}
+        GITHUB_TOKEN_WRITABLE: ${{ steps.resolve-ghcr.outputs.github_token_writable }}
+        REPO: ${{ github.repository }}
+        GHCR_USER: ${{ inputs.ghcr_user }}
+        GH_ACTOR: ${{ github.actor }}
+      run: |
+        set -uo pipefail
+        REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
         ORG=$(echo "${REPO}" | cut -d'/' -f1)
 
-        # Determine which credential is in use for accurate diagnostics.
+        # When GITHUB_TOKEN is being used and its write access was already confirmed
+        # by the resolve-ghcr token-scope check, reuse that result to avoid a
+        # redundant network call.
+        if [[ "${USING_GHCR_TOKEN}" == "false" && "${GITHUB_TOKEN_WRITABLE}" == "true" ]]; then
+          echo "GHCR write access confirmed for ghcr.io/${REPO_LC} (reusing resolve-ghcr token-scope check result)."
+          echo "writable=true" >> "$GITHUB_OUTPUT"
+          echo "ghcr_cred_source=github_token" >> "$GITHUB_OUTPUT"
+          echo "✅ **GHCR cache write pre-check:** passed — layer caches will be written to ghcr.io/${REPO_LC} (GHCR is primary)." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        # Determine ACTOR and credential name.  When using a PAT (USING_GHCR_TOKEN=true),
+        # GHCR_USER must be explicitly set; there is no fallback so that a missing/empty
+        # GHCR_USER is caught here rather than silently querying the token endpoint with
+        # the wrong username.
         # GHA expressions produce the string 'true'/'false', not bash booleans,
-        # so a string comparison is required here.
+        # so string comparisons are required here.
         if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
+          if [[ -z "${GHCR_USER}" ]]; then
+            echo "::error::GHCR_TOKEN is configured but ghcr_user input is not set. Pass the GHCR_TOKEN owner's username via the ghcr_user input (typically the value of vars.GHCR_USER in the calling workflow)."
+            exit 1
+          fi
+          ACTOR="${GHCR_USER}"
           AUTH_CRED_NAME="GHCR_TOKEN"
+          GHCR_CRED_SOURCE="ghcr_token"
         else
+          ACTOR="${GH_ACTOR}"
           AUTH_CRED_NAME="GITHUB_TOKEN"
+          GHCR_CRED_SOURCE="github_token"
         fi
 
         NOTE="When GHCR is not writable, build jobs will use GHA as the primary layer cache instead."
@@ -263,103 +337,19 @@ runs:
           exit 0
         fi
 
-        # Probe write permission: initiate (and immediately abandon) a blob upload.
-        # Use a temp curl config file so the bearer token is not a command-line argument.
-        CFG=$(umask 0177 && mktemp)
-        CURL_ERR_FILE=$(mktemp)
-        printf 'header = "Authorization: Bearer %s"\n' "${REG_TOKEN}" > "${CFG}"
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-          -K "${CFG}" \
-          "https://ghcr.io/v2/${REPO_LC}/blobs/uploads/" 2>"${CURL_ERR_FILE}") \
-          || HTTP_STATUS="000"
-        CURL_ERR=$(cat "${CURL_ERR_FILE}")
-        rm -f "${CFG}" "${CURL_ERR_FILE}"
-        # Ensure HTTP_STATUS is never empty (e.g. if curl produced no output).
-        HTTP_STATUS="${HTTP_STATUS:-000}"
-
-        if [[ "${HTTP_STATUS}" == "202" || "${HTTP_STATUS}" == "201" ]]; then
-          echo "GHCR write access confirmed for ghcr.io/${REPO_LC}."
-          echo "writable=true" >> "$GITHUB_OUTPUT"
-          echo "✅ **GHCR cache write pre-check:** passed — layer caches will be written to ghcr.io/${REPO_LC} (GHCR is primary)." >> "$GITHUB_STEP_SUMMARY"
-        else
-          case "${HTTP_STATUS}" in
-            401)
-              REASON="${AUTH_CRED_NAME} was rejected when initiating a GHCR blob upload (HTTP 401): the token lacks the required write permissions."
-              echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
-              echo "writable=false" >> "$GITHUB_OUTPUT"
-              cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
-        ### ❌ GHCR cache write pre-check: failed
-
-        **Diagnosis:** ${AUTH_CRED_NAME} was rejected when initiating a GHCR blob upload (HTTP 401). The token lacks the required write permissions.
-
-        SUMMARY_EOF
-              if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
-                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
-        **Fix:** Ensure the `GHCR_TOKEN` secret contains a valid [classic PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the `write:packages` scope. Classic PATs are required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry). If the token has expired, regenerate it at <https://github.com/settings/tokens> and update the `GHCR_TOKEN` secret.
-        SUMMARY_EOF
-              else
-                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
-        **Fix:** Ensure the calling workflow job declares the following permission:
-
-        ```yaml
-        permissions:
-          packages: write
-        ```
-        SUMMARY_EOF
-              fi
-              echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            403)
-              REASON="${AUTH_CRED_NAME} was forbidden from writing to ghcr.io/${REPO_LC} (HTTP 403). The organisation's Actions token policy or the package's own access settings may block this token."
-              echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
-              echo "writable=false" >> "$GITHUB_OUTPUT"
-              cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
-        ### ❌ GHCR cache write pre-check: failed
-
-        **Diagnosis:** ${AUTH_CRED_NAME} obtained a push-scoped token but the blob upload was still denied (HTTP 403). This can be caused by the **organisation's Actions token policy** or **package-level access restrictions**.
-
-        **Option 1 — Organisation owner: check workflow permissions and package access**
-        SUMMARY_EOF
-              cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
-        1. Check workflow permissions: <https://github.com/organizations/${ORG}/settings/actions> → **Workflow permissions** → select **"Read and write permissions"** and save
-        2. If the package already exists, check its access settings: navigate to the package at <https://github.com/orgs/${ORG}/packages>, open its **Settings** tab, and ensure this repository has write access under **Actions access**
-
-        See:
-        - [Setting the permissions of the GITHUB\_Token for your organisation](https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization#setting-the-permissions-of-the-github_token-for-your-organization)
-        - [Configuring a package's access control and visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
-
-        **Option 2 — Repository admin: use a Personal Access Token (no org-owner access needed)**
-
-        > **Note:** A classic token is required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
-
-        1. Create a [Personal Access Token (classic)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the \`write:packages\` scope at <https://github.com/settings/tokens>
-        2. In this repository, go to **Settings → Secrets and variables → Actions**
-        3. Add or update the repository secret named **\`GHCR_TOKEN\`** and paste the PAT as the value
-        4. Re-run the workflow
-        SUMMARY_EOF
-              echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            *)
-              if [[ "${HTTP_STATUS}" == "000" ]]; then
-                REASON="curl failed to reach ghcr.io when probing write access (HTTP 000 / network error)."
-                CURL_DETAIL="${CURL_ERR:+ curl stderr: ${CURL_ERR}}"
-              else
-                REASON="${AUTH_CRED_NAME} does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS})."
-                CURL_DETAIL=""
-              fi
-              echo "::warning title=GHCR cache write likely to fail::${REASON}${CURL_DETAIL} ${NOTE}"
-              echo "writable=false" >> "$GITHUB_OUTPUT"
-              echo "❌ **GHCR cache write pre-check:** failed — ${REASON}${CURL_DETAIL} ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
-              ;;
-          esac
-        fi
+        # Push-scoped bearer token was granted — trust the token scope and
+        # report write access confirmed.
+        echo "GHCR write access confirmed for ghcr.io/${REPO_LC} (push-scoped token granted)."
+        echo "writable=true" >> "$GITHUB_OUTPUT"
+        echo "ghcr_cred_source=${GHCR_CRED_SOURCE}" >> "$GITHUB_OUTPUT"
+        echo "✅ **GHCR cache write pre-check:** passed — layer caches will be written to ghcr.io/${REPO_LC} (GHCR is primary)." >> "$GITHUB_STEP_SUMMARY"
 
     - name: Detect versions and build matrix
       id: detect
       shell: bash
       env:
-        BEFORE_SHA:      ${{ inputs.before_sha }}
         AFTER_SHA:       ${{ inputs.after_sha }}
+        BEFORE_SHAS:     ${{ inputs.before_shas }}
         PLATFORMS:       ${{ inputs.platforms_filter }}
       run: |
         set -euo pipefail
@@ -376,33 +366,6 @@ runs:
         # giving older codenames proper GLIBC compatibility testing even
         # when only a subset of versions changed.
         ALL_VERSIONS_OUT=$(bash tests/detect-versions.sh | tr '\n' ' ' | xargs)
-
-        if [[ -n "${BEFORE_SHA}" && -n "${AFTER_SHA}" ]]; then
-          VERSIONS_OUT=$(bash tests/detect-versions.sh \
-            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" | tr '\n' ' ' | xargs)
-          VERSIONS_BASE_OUT=$(bash tests/detect-versions.sh \
-            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage base \
-            | tr '\n' ' ' | xargs)
-          VERSIONS_SECURE_OUT=$(bash tests/detect-versions.sh \
-            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage secure \
-            | tr '\n' ' ' | xargs)
-        else
-          VERSIONS_OUT="$ALL_VERSIONS_OUT"
-          VERSIONS_BASE_OUT="$VERSIONS_OUT"
-          VERSIONS_SECURE_OUT="$VERSIONS_OUT"
-        fi
-
-        echo "latest_php_version=${LATEST_PHP_VERSION}"     >> "$GITHUB_OUTPUT"
-        echo "versions=${VERSIONS_OUT}"                     >> "$GITHUB_OUTPUT"
-        echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
-        echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
-        echo "all_versions=${ALL_VERSIONS_OUT}"             >> "$GITHUB_OUTPUT"
-        if [[ -n "${ALL_VERSIONS_OUT}" ]]; then
-          read -r -a _all_vers_arr <<< "${ALL_VERSIONS_OUT}"
-        else
-          _all_vers_arr=()
-        fi
-        echo "all_versions_count=${#_all_vers_arr[@]}"       >> "$GITHUB_OUTPUT"
 
         # Parse configured platforms into an array, trimming whitespace,
         # normalizing default variants to canonical keys, and removing
@@ -432,45 +395,181 @@ runs:
           exit 1
         fi
 
+        # Normalize BEFORE_SHAS to a single compact JSON object up-front so
+        # that both the count check and per-platform lookups operate on the same
+        # validated, single-document value. jq -sc slurps all stdin, takes the
+        # first element (or {} when empty/null), coerces any non-object value to
+        # {}, and outputs compact JSON. If jq fails (truly malformed input),
+        # fall back to '{}'.
+        BEFORE_SHAS="$(printf '%s' "${BEFORE_SHAS:-}" \
+          | jq -sc '((first // {}) | if type == "object" then . else {} end)' 2>/dev/null || echo '{}')"
+
+        # Determine whether a non-empty before_shas map was provided.
+        # A non-empty map means per-platform version detection should be used.
+        BEFORE_SHAS_COUNT="$(printf '%s' "${BEFORE_SHAS}" \
+          | jq 'length' 2>/dev/null || echo '0')"
+
+        if [[ "${BEFORE_SHAS_COUNT}" -gt 0 && -n "${AFTER_SHA}" ]]; then
+          # ── Per-platform version detection ───────────────────────────────
+          # For each platform, look up its own before_sha from the map and run
+          # detect-versions.sh against that anchor.  Platforms absent from the
+          # map get a full rebuild (all versions).
+          #
+          # The build matrix is per-(version, platform): a (v, p) entry is
+          # only included when v actually changed for platform p since its
+          # anchor.  The global versions/merge-matrix outputs are the union
+          # across all platforms.
+          declare -A PLAT_VERSIONS         # pkey → space-sep changed versions
+          declare -A PLAT_VERSIONS_BASE    # pkey → space-sep base-changed
+          declare -A PLAT_VERSIONS_SECURE  # pkey → space-sep secure-changed
+
+          VERSIONS_OUT=""
+          VERSIONS_BASE_OUT=""
+          VERSIONS_SECURE_OUT=""
+
+          for p in "${PLATFORM_LIST[@]}"; do
+            pkey="${p//\//-}"
+            plat_before="$(printf '%s' "${BEFORE_SHAS}" \
+              | jq -r --arg k "${pkey}" '.[$k] // ""' 2>/dev/null || echo '')"
+
+            if [[ -n "${plat_before}" ]]; then
+              # Ensure the before SHA is in the local git object database so
+              # the diff inside detect-versions.sh can run even when the commit
+              # is no longer referenced by any branch (e.g. after a force-push).
+              # Ignore fetch errors: if the commit is truly gone, the diff will
+              # fail and detect-versions.sh will exit 1, which is handled below
+              # by the `|| echo ''` fallback.
+              if ! git cat-file -e "${plat_before}^{commit}" 2>/dev/null; then
+                git fetch --no-tags --depth=1 origin "${plat_before}" 2>/dev/null || true
+              fi
+              plat_changed="$(bash tests/detect-versions.sh \
+                --before "${plat_before}" --after "${AFTER_SHA}" \
+                | tr '\n' ' ' | xargs || echo '')"
+              plat_changed_base="$(bash tests/detect-versions.sh \
+                --before "${plat_before}" --after "${AFTER_SHA}" --stage base \
+                | tr '\n' ' ' | xargs || echo '')"
+              plat_changed_secure="$(bash tests/detect-versions.sh \
+                --before "${plat_before}" --after "${AFTER_SHA}" --stage secure \
+                | tr '\n' ' ' | xargs || echo '')"
+            else
+              plat_changed="${ALL_VERSIONS_OUT}"
+              plat_changed_base="${ALL_VERSIONS_OUT}"
+              plat_changed_secure="${ALL_VERSIONS_OUT}"
+            fi
+
+            PLAT_VERSIONS["${pkey}"]="${plat_changed}"
+            PLAT_VERSIONS_BASE["${pkey}"]="${plat_changed_base}"
+            PLAT_VERSIONS_SECURE["${pkey}"]="${plat_changed_secure}"
+
+            # Accumulate union across platforms for global outputs.
+            for v in ${plat_changed}; do
+              [[ " ${VERSIONS_OUT} " != *" ${v} "* ]] \
+                && VERSIONS_OUT="${VERSIONS_OUT:+${VERSIONS_OUT} }${v}"
+            done
+            for v in ${plat_changed_base}; do
+              [[ " ${VERSIONS_BASE_OUT} " != *" ${v} "* ]] \
+                && VERSIONS_BASE_OUT="${VERSIONS_BASE_OUT:+${VERSIONS_BASE_OUT} }${v}"
+            done
+            for v in ${plat_changed_secure}; do
+              [[ " ${VERSIONS_SECURE_OUT} " != *" ${v} "* ]] \
+                && VERSIONS_SECURE_OUT="${VERSIONS_SECURE_OUT:+${VERSIONS_SECURE_OUT} }${v}"
+            done
+          done
+        else
+          # No before_shas provided — full rebuild of all versions.
+          # Populate per-platform arrays uniformly so the build matrix
+          # construction below works in both code paths.
+          VERSIONS_OUT="$ALL_VERSIONS_OUT"
+          VERSIONS_BASE_OUT="$VERSIONS_OUT"
+          VERSIONS_SECURE_OUT="$VERSIONS_OUT"
+          declare -A PLAT_VERSIONS
+          declare -A PLAT_VERSIONS_BASE
+          declare -A PLAT_VERSIONS_SECURE
+          for p in "${PLATFORM_LIST[@]}"; do
+            pkey="${p//\//-}"
+            PLAT_VERSIONS["${pkey}"]="${VERSIONS_OUT}"
+            PLAT_VERSIONS_BASE["${pkey}"]="${VERSIONS_BASE_OUT}"
+            PLAT_VERSIONS_SECURE["${pkey}"]="${VERSIONS_SECURE_OUT}"
+          done
+        fi
+
+        echo "latest_php_version=${LATEST_PHP_VERSION}"     >> "$GITHUB_OUTPUT"
+        echo "versions=${VERSIONS_OUT}"                     >> "$GITHUB_OUTPUT"
+        echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
+        echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
+        echo "all_versions=${ALL_VERSIONS_OUT}"             >> "$GITHUB_OUTPUT"
+        if [[ -n "${ALL_VERSIONS_OUT}" ]]; then
+          read -r -a _all_vers_arr <<< "${ALL_VERSIONS_OUT}"
+        else
+          _all_vers_arr=()
+        fi
+        echo "all_versions_count=${#_all_vers_arr[@]}"       >> "$GITHUB_OUTPUT"
+
         if [[ -z "${VERSIONS_OUT}" ]]; then
-          echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
           echo "merge_matrix=[]"                    >> "$GITHUB_OUTPUT"
           echo "build_matrix=[]"                    >> "$GITHUB_OUTPUT"
           echo "build_matrix_length=0"              >> "$GITHUB_OUTPUT"
-          echo "needed_pulls=${#_all_vers_arr[@]}"  >> "$GITHUB_OUTPUT"
         else
-          echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
-
           # Build merge matrix: one {version, stage} entry per Docker Hub image
           # to be merged.  base/secure entries are included only for versions
-          # that actually changed at that stage.
+          # that actually changed at that stage (union across all platforms).
           MERGE_MATRIX="$(
             {
               for v in ${VERSIONS_OUT}; do
+                # Count expected platforms per stage for version v.  The
+                # expected platform count for a (version, stage) is the number
+                # of build-matrix entries for that version whose per-platform
+                # stage list includes v; the merge job uses these counts as
+                # per-image completion thresholds so that (version, platform) pairs
+                # intentionally omitted from the build matrix do not cause
+                # the merge loop to poll indefinitely.
+                _advance_ep=0
+                _base_ep=0
+                _secure_ep=0
+                for p in "${PLATFORM_LIST[@]}"; do
+                  pkey="${p//\//-}"
+                  [[ " ${PLAT_VERSIONS[${pkey}]} " == *" ${v} "* ]] \
+                    && _advance_ep=$(( _advance_ep + 1 ))
+                  [[ " ${PLAT_VERSIONS_BASE[${pkey}]} " == *" ${v} "* ]] \
+                    && _base_ep=$(( _base_ep + 1 ))
+                  [[ " ${PLAT_VERSIONS_SECURE[${pkey}]} " == *" ${v} "* ]] \
+                    && _secure_ep=$(( _secure_ep + 1 ))
+                done
                 [[ " ${VERSIONS_BASE_OUT} " == *" ${v} "* ]] \
-                  && jq -nc --arg version "${v}" --arg stage "base" \
-                       '{"version":$version,"stage":$stage}'
+                  && jq -nc \
+                       --arg version "${v}" --arg stage "base" \
+                       --argjson expected_platforms "${_base_ep}" \
+                       '{"version":$version,"stage":$stage,"expected_platforms":$expected_platforms}'
                 [[ " ${VERSIONS_SECURE_OUT} " == *" ${v} "* ]] \
-                  && jq -nc --arg version "${v}" --arg stage "secure" \
-                       '{"version":$version,"stage":$stage}'
-                jq -nc --arg version "${v}" --arg stage "advance" \
-                  '{"version":$version,"stage":$stage}'
+                  && jq -nc \
+                       --arg version "${v}" --arg stage "secure" \
+                       --argjson expected_platforms "${_secure_ep}" \
+                       '{"version":$version,"stage":$stage,"expected_platforms":$expected_platforms}'
+                jq -nc \
+                  --arg version "${v}" --arg stage "advance" \
+                  --argjson expected_platforms "${_advance_ep}" \
+                  '{"version":$version,"stage":$stage,"expected_platforms":$expected_platforms}'
               done
             } | jq -sc '.'
           )"
           echo "merge_matrix=${MERGE_MATRIX}" >> "$GITHUB_OUTPUT"
 
           # Build build matrix: one {version, platform, versions_base,
-          # versions_secure} entry per PHP-version x platform pair so that
-          # each job builds exactly one version on one platform and can upload
-          # per-image digest artifacts without waiting for other combinations.
+          # versions_secure} entry per PHP-version x platform pair.
+          # Only (v, p) pairs where v actually changed for platform p are
+          # included; versions_base/versions_secure reflect whether the
+          # base/secure stage changed for that platform's anchor.
           BUILD_MATRIX="$(
             {
               for p in "${PLATFORM_LIST[@]}"; do
-                for v in ${VERSIONS_OUT}; do
-                  vb=$( [[ " ${VERSIONS_BASE_OUT} " == *" ${v} "* ]] \
+                pkey="${p//\//-}"
+                plat_versions="${PLAT_VERSIONS[${pkey}]}"
+                plat_vb="${PLAT_VERSIONS_BASE[${pkey}]}"
+                plat_vs="${PLAT_VERSIONS_SECURE[${pkey}]}"
+                for v in ${plat_versions}; do
+                  vb=$( [[ " ${plat_vb} " == *" ${v} "* ]] \
                           && echo "${v}" || echo "" )
-                  vs=$( [[ " ${VERSIONS_SECURE_OUT} " == *" ${v} "* ]] \
+                  vs=$( [[ " ${plat_vs} " == *" ${v} "* ]] \
                           && echo "${v}" || echo "" )
                   jq -nc \
                     --arg version "${v}" \
@@ -485,7 +584,6 @@ runs:
           echo "build_matrix=${BUILD_MATRIX}" >> "$GITHUB_OUTPUT"
           BUILD_MATRIX_LENGTH="$(printf '%s' "${BUILD_MATRIX}" | jq 'length')"
           echo "build_matrix_length=${BUILD_MATRIX_LENGTH}" >> "$GITHUB_OUTPUT"
-          echo "needed_pulls=$(( BUILD_MATRIX_LENGTH + ${#_all_vers_arr[@]} ))" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Compute tag suffix
