@@ -235,12 +235,6 @@ runs:
         for run_id in "${CANDIDATE_RUN_IDS[@]+"${CANDIDATE_RUN_IDS[@]}"}"; do
           sha="${RUN_ID_TO_SHA[${run_id}]:-}"
           [[ -z "${sha}" || ! "${sha}" =~ ^[0-9a-f]{40}$ ]] && continue
-          # Ensure the SHA exists in the local object database so downstream
-          # git diff calls don't fail (e.g. after a force-push/rebase).  If it
-          # is missing, fetch it directly; skip only if the fetch also fails.
-          if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
-            git fetch --no-tags --depth=1 origin "${sha}" 2>/dev/null || continue
-          fi
           [[ "${sha}" == "${CURRENT_SHA}" ]] && continue
 
           # Fetch platforms annotation for this run once.
@@ -248,6 +242,33 @@ runs:
           get_run_detect_platforms "${run_id}"
           _run_plats="${RUN_DETECT_PLATFORMS}"
 
+          # First pass: determine whether this run would improve the best for
+          # any platform before touching the git object database, to avoid
+          # unnecessary fetches for runs that are already superseded.
+          _is_useful=false
+          for _pkey in "${PLATFORM_KEYS[@]}"; do
+            if [[ -n "${_run_plats}" ]]; then
+              run_covers_platform "${_run_plats}" "${_pkey}" || continue
+              _existing_run_id="${BEST_ANNOTATED_RUN_ID_PER_PKEY[${_pkey}]:-0}"
+            else
+              _existing_run_id="${BEST_UNANNOTATED_RUN_ID_PER_PKEY[${_pkey}]:-0}"
+            fi
+            if [[ "${run_id}" -gt "${_existing_run_id}" ]]; then
+              _is_useful=true
+              break
+            fi
+          done
+          [[ "${_is_useful}" == "false" ]] && continue
+
+          # Ensure the SHA exists in the local object database so downstream
+          # git diff calls don't fail (e.g. after a force-push/rebase).  If it
+          # is missing, fetch it directly; skip only if the fetch also fails.
+          if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "${sha}" 2>/dev/null || continue
+          fi
+
+          # Second pass: update the best-per-platform maps now that the SHA is
+          # confirmed to be present locally.
           for _pkey in "${PLATFORM_KEYS[@]}"; do
             if [[ -n "${_run_plats}" ]]; then
               # Annotated run: only valid if it covers this platform.
