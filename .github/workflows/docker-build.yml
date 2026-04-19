@@ -83,11 +83,15 @@ jobs:
         uses: ./.github/actions/effective-before-sha
         with:
           # Include the numeric IDs of the previous (now-removed) build
-          # workflows so that their historical successful runs are considered
-          # when computing the before SHA.  Numeric IDs are used for the
-          # removed workflows (docker-build-on-push.yml and
-          # docker-build-all.yml) because they guarantee the API will return
-          # their run history even after the workflow files are deleted.
+          # workflows so that their historical successful runs can still be
+          # considered when computing the before SHA for this repository.
+          # Using numeric IDs for the removed workflows can help retain
+          # access to their run history after the workflow files are deleted,
+          # and effective-before-sha tolerates missing workflows by ignoring
+          # 404 responses.  These legacy IDs can be removed once
+          # docker-build.yml has its own successful runs to use as a baseline.
+          #   242168596 = docker-build-on-push.yml (removed)
+          #   242173818 = docker-build-all.yml (removed)
           workflow_files: |
             242168596
             242173818
