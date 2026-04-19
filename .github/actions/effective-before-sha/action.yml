@@ -1,22 +1,35 @@
-name: Compute effective before SHA
+name: Compute effective before SHAs
 description: >
-  Finds the effective "before" SHA for a push or pull_request event.
+  Finds the effective per-platform "before" SHAs for a push or
+  pull_request event, emitted as a JSON map (before_shas).
 
-  For pull_request events, returns the PR base SHA immediately.
+  For pull_request events, all platforms map to the PR base SHA.
 
-  For push events, queries workflow runs for the most recent successful
-  run on this branch whose head commit is an ancestor of the current
-  commit (smallest ahead_by distance).  When no prior successful run is
-  found, returns an empty string (callers should treat that as "build
-  everything").
+  For push events, queries workflow runs for the specified workflow(s)
+  and for each platform finds the most recent successful run's head SHA
+  that included that platform (verified via the platforms_filter
+  annotation emitted by this same action in prior runs).  Annotated runs
+  (those with a platforms_filter annotation) are always preferred.
+  Unannotated runs (predating the annotation feature) are only used as a
+  fallback when no annotated runs exist at all in the candidate set.  When
+  annotated runs are present, platforms with no annotated run covering them
+  are omitted from before_shas (triggering a full rebuild for that platform)
+  rather than being anchored to an old unannotated run.  Different platforms
+  may map to different before SHAs.
+
+  Also emits a platforms_filter annotation listing the platforms this run
+  is targeting, so that future runs can use it to anchor change detection.
+
+  When `platforms` is empty, before_shas is emitted as {} (no
+  filtering, caller should treat that as "build everything").
 
   Workflow discovery (push events only): fetches recent successful
-  runs via workflow_files (bare filenames or numeric workflow IDs) and
-  picks the closest reachable ancestor of the current commit.
+  runs via workflow_files (bare filenames or numeric workflow IDs).
 
   Required GITHUB_TOKEN permissions on the calling job:
-    actions:  read   (list workflow runs)
-    contents: read   (compare commits via the Repos API)
+    actions:  read   (list workflow runs and jobs)
+    checks:   read   (read check-run annotations for platform detection)
+    contents: read   (fetch missing commits from the remote)
 
 inputs:
   workflow_files:
@@ -26,9 +39,6 @@ inputs:
       not supported; pass only bare filenames or numeric workflow IDs.
     required: false
     default: ''
-  current_sha:
-    description: The current commit SHA (github.sha).
-    required: true
   ref_name:
     description: The branch name (github.ref_name).
     required: true
@@ -47,82 +57,264 @@ inputs:
       Required when event_name is "pull_request".
     required: false
     default: ''
+  platforms:
+    description: >
+      Space-separated platform keys to populate in the output map
+      (e.g. "linux-amd64 linux-arm64").  Each key is independently
+      matched to the most recent successful run that included that platform.
+      When empty, before_shas is {} (no filtering, full rebuild).
+    required: false
+    default: ''
 
 outputs:
-  before_sha:
+  before_shas:
     description: >
-      The effective before SHA to use as the diff anchor.  Empty string
-      when no prior successful run is found; callers should treat that
-      as "build everything".
-    value: ${{ steps.compute.outputs.before_sha }}
+      JSON map of platform-key to the most recent successful run's head SHA,
+      e.g. {"linux-amd64":"abc123","linux-arm64":"def456"}.
+      Each platform maps to the SHA of the most recent annotated run
+      that included that platform.  Unannotated runs are used as fallback
+      only when no annotated runs exist at all in the candidate set.
+      When annotated runs are present, platforms with no annotated run
+      covering them are omitted (triggers full rebuild for that platform).
+      Emitted as {} when platforms is empty or no candidates are found.
+    value: ${{ steps.compute.outputs.before_shas }}
 
 runs:
   using: composite
   steps:
-    - name: Compute effective before_sha
+    - name: Compute effective before_shas
       id: compute
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         WORKFLOW_FILES: ${{ inputs.workflow_files }}
-        CURRENT_SHA: ${{ inputs.current_sha }}
         REF_NAME: ${{ inputs.ref_name }}
         REPOSITORY: ${{ inputs.repository }}
         EVENT_NAME: ${{ inputs.event_name }}
         PR_BASE_SHA: ${{ inputs.pr_base_sha }}
+        PLATFORMS: ${{ inputs.platforms }}
       run: |
         set -euo pipefail
+
+        # Emit a platforms_filter annotation so that future runs of this action
+        # can verify which platforms this run was asked to target before using
+        # its head SHA as a change anchor.
+        if [[ -n "${PLATFORMS:-}" ]]; then
+          _platforms_csv=""
+          for _pkey in ${PLATFORMS}; do
+            _plat="${_pkey//-/\/}"
+            _platforms_csv="${_platforms_csv:+${_platforms_csv},}${_plat}"
+          done
+          echo "::notice title=platforms_filter::${_platforms_csv}"
+        fi
 
         if [[ "${EVENT_NAME}" == "pull_request" ]]; then
           if [[ -z "${PR_BASE_SHA}" ]]; then
             echo "::error::Input 'pr_base_sha' is required when event_name is 'pull_request'."
             exit 1
           fi
-          echo "before_sha=${PR_BASE_SHA}" >> "$GITHUB_OUTPUT"
+          # For pull_request events, all platforms share the same base SHA.
+          # Build a before_shas map with each platform key pointing to it.
+          if [[ -n "${PLATFORMS:-}" ]]; then
+            read -r -a _pr_pkeys <<< "${PLATFORMS}"
+            _pr_shas_json="{}"
+            for _k in "${_pr_pkeys[@]}"; do
+              _pr_shas_json="$(printf '%s' "${_pr_shas_json}" \
+                | jq -c --arg k "${_k}" --arg v "${PR_BASE_SHA}" '. + {($k): $v}')"
+            done
+            _pr_shas_json="$(printf '%s' "${_pr_shas_json}" | jq -c '.')"
+            echo "before_shas=${_pr_shas_json}" >> "$GITHUB_OUTPUT"
+          else
+            echo "before_shas={}" >> "$GITHUB_OUTPUT"
+          fi
           exit 0
         fi
 
-        # For push events, collect head SHAs of prior successful runs via
-        # workflow_files.
-        CANDIDATES=""
+        if [[ -z "${PLATFORMS:-}" ]]; then
+          echo "before_shas={}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # For push events, collect (run_id, head_sha) pairs from prior successful
+        # runs.  We record the run_id so we can later check which platforms each
+        # run targeted (via the platforms_filter annotation emitted by this same
+        # action in prior runs), and so we can select the most recent run per
+        # platform by comparing run IDs (higher = more recent).
+        declare -A RUN_ID_TO_SHA   # run_id → head_sha
+
         if [[ -n "${WORKFLOW_FILES:-}" ]]; then
           NORMALIZED_WORKFLOW_FILES=$(printf '%s' "${WORKFLOW_FILES}" | tr '\r\n' '  ')
           read -r -a WF_ARRAY <<< "${NORMALIZED_WORKFLOW_FILES}"
           for wf in "${WF_ARRAY[@]}"; do
-            CANDIDATES=$(printf '%s\n%s' "$CANDIDATES" "$(
-              gh api \
-                "repos/${REPOSITORY}/actions/workflows/${wf}/runs?branch=${REF_NAME}&status=success&per_page=10" \
-                --jq '.workflow_runs[] | .head_sha // empty' || true
-            )")
+            while IFS=$'\t' read -r _rsha _rid; do
+              [[ -n "${_rsha}" && -n "${_rid}" ]] \
+                && RUN_ID_TO_SHA["${_rid}"]="${_rsha}"
+            done < <(gh api \
+              "repos/${REPOSITORY}/actions/workflows/${wf}/runs?branch=${REF_NAME}&status=success&per_page=10" \
+              --jq '.workflow_runs[] | [.head_sha // "", (.id | tostring)] | join("\t")' \
+              || true)
           done
         fi
 
-        # Deduplicate and remove empty lines.
-        CANDIDATES=$(printf '%s' "$CANDIDATES" | sort -u | grep . || true)
+        # Collect candidate run IDs; discard non-numeric entries; sort descending
+        # so that the most recent runs are processed first.
+        # SHA format is validated per-entry in the loop below.
+        readarray -t CANDIDATE_RUN_IDS < <(
+          printf '%s\n' "${!RUN_ID_TO_SHA[@]}" \
+            | grep -E '^[0-9]+$' \
+            | sort -rn \
+            || true
+        )
 
-        # Among all candidates, pick the closest reachable ancestor of the
-        # current commit — the one with the smallest ahead_by distance.
-        # This is more correct than using timestamps because it is based on
-        # the actual git ancestry of the branch rather than wall-clock time.
-        LAST_SUCCESS_SHA=""
-        BEST_AHEAD=""
-        while IFS= read -r SHA; do
-          [[ -z "$SHA" || "$SHA" == "${CURRENT_SHA}" ]] && continue
-          COMPARE=$(gh api \
-            "repos/${REPOSITORY}/compare/${SHA}...${CURRENT_SHA}" \
-            --jq '{status: .status, ahead_by: .ahead_by}' 2>/dev/null || true)
-          STATUS=$(printf '%s' "$COMPARE" | jq -r '.status // ""')
-          AHEAD=$(printf '%s' "$COMPARE" | jq -r '.ahead_by // empty')
-          if [[ "$STATUS" == "ahead" || "$STATUS" == "identical" ]] && [[ "$AHEAD" =~ ^[0-9]+$ ]]; then
-            if [[ -z "$BEST_AHEAD" || "$AHEAD" -lt "$BEST_AHEAD" ]]; then
-              BEST_AHEAD="$AHEAD"
-              LAST_SUCCESS_SHA="$SHA"
+        # Cache for run_id → platforms_used (comma-separated platform paths,
+        # e.g. "linux/amd64,linux/arm64"), or "" when the annotation is absent.
+        declare -A RUN_PLATFORMS_CACHE
+
+        # get_run_detect_platforms <run_id>
+        # Sets RUN_DETECT_PLATFORMS to the comma-separated platform list from
+        # the platforms_filter annotation emitted by the prepare job in that run,
+        # or "" when the annotation is absent (runs predating the annotation).
+        # On absence the caller should trust the run (backward compatibility).
+        get_run_detect_platforms() {
+          local _run_id="$1"
+          if [[ -v "RUN_PLATFORMS_CACHE[${_run_id}]" ]]; then
+            RUN_DETECT_PLATFORMS="${RUN_PLATFORMS_CACHE[${_run_id}]}"
+            return
+          fi
+          # Find the prepare job's check run id via its check_run_url.
+          # The annotations API requires the check_run_id, not the Actions job id.
+          local _check_run_url _check_run_id
+          _check_run_url="$(gh api \
+            "repos/${REPOSITORY}/actions/runs/${_run_id}/jobs?filter=all" \
+            --jq '[.jobs[] | select(.name | ascii_downcase | contains("prepare")) | .check_run_url][0] // ""')"
+          if [[ "${_check_run_url}" =~ /check-runs/([0-9]+)([/?].*)?$ ]]; then
+            _check_run_id="${BASH_REMATCH[1]}"
+          else
+            _check_run_id=""
+          fi
+          if [[ -z "${_check_run_id}" ]]; then
+            RUN_PLATFORMS_CACHE["${_run_id}"]=""
+            RUN_DETECT_PLATFORMS=""
+            return
+          fi
+          local _plats
+          _plats="$(gh api \
+            "repos/${REPOSITORY}/check-runs/${_check_run_id}/annotations" \
+            --jq '[.[] | select(.title == "platforms_filter") | .message][0] // ""')"
+          RUN_PLATFORMS_CACHE["${_run_id}"]="${_plats}"
+          RUN_DETECT_PLATFORMS="${_plats}"
+        }
+
+        # run_covers_platform <platforms_csv> <platform_key>
+        # Returns 0 when the platform key maps to a path present in the
+        # comma-separated CSV.
+        run_covers_platform() {
+          local _csv="$1" _pkey="$2"
+          local _plat="${_pkey//-/\/}"
+          printf '%s' "${_csv}" | tr ',' '\n' | grep -qxF "${_plat}"
+        }
+
+        read -r -a PLATFORM_KEYS <<< "${PLATFORMS}"
+
+        # For each platform key, independently find the most recent successful
+        # run that included that specific platform.  Annotated runs
+        # (those emitting a platforms_filter annotation) are always preferred.
+        # Unannotated runs (predating the annotation feature) are only used as
+        # a fallback when no annotated runs exist at all in the candidate set.
+        # When annotated runs are present, a platform with no annotated run
+        # covering it is omitted from before_shas (full rebuild) rather than
+        # being anchored to an old unannotated run.
+        declare -A BEST_ANNOTATED_SHA_PER_PKEY      # pkey → sha of most recent annotated run
+        declare -A BEST_ANNOTATED_RUN_ID_PER_PKEY   # pkey → run_id of most recent annotated run
+        declare -A BEST_UNANNOTATED_SHA_PER_PKEY    # pkey → sha of most recent unannotated run
+        declare -A BEST_UNANNOTATED_RUN_ID_PER_PKEY # pkey → run_id of most recent unannotated run
+
+        for run_id in "${CANDIDATE_RUN_IDS[@]+"${CANDIDATE_RUN_IDS[@]}"}"; do
+          sha="${RUN_ID_TO_SHA[${run_id}]:-}"
+          [[ -z "${sha}" || ! "${sha}" =~ ^[0-9a-f]{40}$ ]] && continue
+
+          # Fetch platforms annotation for this run once.
+          _run_plats=""
+          get_run_detect_platforms "${run_id}"
+          _run_plats="${RUN_DETECT_PLATFORMS}"
+
+          # First pass: determine whether this run would improve the best for
+          # any platform before touching the git object database, to avoid
+          # unnecessary fetches for runs that are already superseded.
+          _is_useful=false
+          for _pkey in "${PLATFORM_KEYS[@]}"; do
+            if [[ -n "${_run_plats}" ]]; then
+              run_covers_platform "${_run_plats}" "${_pkey}" || continue
+              _existing_run_id="${BEST_ANNOTATED_RUN_ID_PER_PKEY[${_pkey}]:-0}"
+            else
+              _existing_run_id="${BEST_UNANNOTATED_RUN_ID_PER_PKEY[${_pkey}]:-0}"
+            fi
+            if [[ "${run_id}" -gt "${_existing_run_id}" ]]; then
+              _is_useful=true
+              break
+            fi
+          done
+          [[ "${_is_useful}" == "false" ]] && continue
+
+          # Ensure the SHA exists in the local object database so downstream
+          # git diff calls don't fail (e.g. after a force-push/rebase).  If it
+          # is missing, fetch it directly; skip only if the fetch also fails.
+          if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+            if ! git fetch --no-tags --depth=1 origin "${sha}"; then
+              echo "::warning::Skipping candidate run ${run_id}: failed to fetch missing commit ${sha}"
+              continue
             fi
           fi
-        done <<< "$CANDIDATES"
 
-        if [[ -n "$LAST_SUCCESS_SHA" ]]; then
-          echo "before_sha=${LAST_SUCCESS_SHA}" >> "$GITHUB_OUTPUT"
-        else
-          echo "before_sha=" >> "$GITHUB_OUTPUT"
-        fi
+          # Second pass: update the best-per-platform maps now that the SHA is
+          # confirmed to be present locally.
+          for _pkey in "${PLATFORM_KEYS[@]}"; do
+            if [[ -n "${_run_plats}" ]]; then
+              # Annotated run: only valid if it covers this platform.
+              if ! run_covers_platform "${_run_plats}" "${_pkey}"; then
+                continue  # Run didn't cover this platform; skip it.
+              fi
+              _existing_run_id="${BEST_ANNOTATED_RUN_ID_PER_PKEY[${_pkey}]:-0}"
+              if [[ "${run_id}" -gt "${_existing_run_id}" ]]; then
+                BEST_ANNOTATED_SHA_PER_PKEY["${_pkey}"]="${sha}"
+                BEST_ANNOTATED_RUN_ID_PER_PKEY["${_pkey}"]="${run_id}"
+              fi
+            else
+              # Unannotated run: record as fallback, used only when no annotated
+              # runs exist at all in the candidate set.
+              _existing_run_id="${BEST_UNANNOTATED_RUN_ID_PER_PKEY[${_pkey}]:-0}"
+              if [[ "${run_id}" -gt "${_existing_run_id}" ]]; then
+                BEST_UNANNOTATED_SHA_PER_PKEY["${_pkey}"]="${sha}"
+                BEST_UNANNOTATED_RUN_ID_PER_PKEY["${_pkey}"]="${run_id}"
+              fi
+            fi
+          done
+        done
+
+        # Build before_shas: use annotated runs only.  Unannotated runs are
+        # used as a fallback only when no annotated runs were found at all
+        # across all platforms (i.e. the history predates the annotation
+        # feature entirely).  When annotated runs exist, a platform with no
+        # annotated coverage gets no entry (triggering a full rebuild) rather
+        # than being anchored to an old unannotated run.
+        _has_any_annotated=false
+        for _pkey in "${PLATFORM_KEYS[@]}"; do
+          if [[ -n "${BEST_ANNOTATED_SHA_PER_PKEY[${_pkey}]:-}" ]]; then
+            _has_any_annotated=true
+            break
+          fi
+        done
+
+        BEFORE_SHAS_JSON="{}"
+        for pkey in "${PLATFORM_KEYS[@]}"; do
+          _sha="${BEST_ANNOTATED_SHA_PER_PKEY[${pkey}]:-}"
+          if [[ -z "${_sha}" ]] && [[ "${_has_any_annotated}" == "false" ]]; then
+            _sha="${BEST_UNANNOTATED_SHA_PER_PKEY[${pkey}]:-}"
+          fi
+          if [[ -n "${_sha}" ]]; then
+            BEFORE_SHAS_JSON="$(printf '%s' "${BEFORE_SHAS_JSON}" \
+              | jq -c --arg k "${pkey}" --arg v "${_sha}" '. + {($k): $v}')"
+          fi
+        done
+        BEFORE_SHAS_JSON="$(printf '%s' "${BEFORE_SHAS_JSON}" | jq -c '.')"
+        echo "before_shas=${BEFORE_SHAS_JSON}" >> "$GITHUB_OUTPUT"

@@ -1,12 +1,12 @@
 # docker-bake.hcl — Docker Buildx Bake file for devpanel/php
 #
 # Build graph (→ = "depends on"):
-#   phpX_Y-downloader              (GHCR registry-cached via mode=max, not pushed to Docker Hub)
-#     └─▶ phpX_Y-php-ext           (GHCR registry-cached via mode=max, not pushed to Docker Hub)
-#           └─▶ phpX_Y-base        (GHCR registry-cached, pushed to Docker Hub)
-#                 └─▶ phpX_Y-secure-int  (GHCR registry-cached via mode=max, not pushed to Docker Hub)
-#                       └─▶ phpX_Y-secure    (GHCR registry-cached, pushed to Docker Hub)
-#                             └─▶ phpX_Y-advance  (GHCR registry-cached, pushed to Docker Hub)
+#   phpX_Y-downloader              (GHCR layer-cached via mode=max, not pushed to Docker Hub)
+#     └─▶ phpX_Y-php-ext           (GHCR layer-cached via mode=max, not pushed to Docker Hub)
+#           └─▶ phpX_Y-base        (GHCR layer-cached, pushed to Docker Hub)
+#                 └─▶ phpX_Y-secure-int  (GHCR layer-cached via mode=max, not pushed to Docker Hub)
+#                       └─▶ phpX_Y-secure    (GHCR layer-cached, pushed to Docker Hub)
+#                             └─▶ phpX_Y-advance  (GHCR layer-cached, pushed to Docker Hub)
 #
 # Key variables (all overridable via environment variables):
 #   REPO                          Docker Hub repository                        (devpanel/php)
@@ -30,11 +30,13 @@
 # durable cache store; GHA cache writes are skipped so that GHA cache quota
 # is preserved for other workflow caches (e.g. dependency caches).  When
 # GHCR_WRITABLE=false, both GHCR and GHA are used as best-effort caches
-# (ignore-error=true for both).  Intermediate targets (downloader, php-ext,
-# secure-int) participate in that GHCR-backed registry cache as build cache
-# only; this bake file does not publish them as standalone GHCR images.
-# GHA cache eviction ("cache entry no longer exists") is non-fatal for all
-# targets.
+# (ignore-error=true for both).  Final images are pushed to Docker Hub only.
+# Intermediate targets (downloader, php-ext, secure-int) carry GHCR tags so
+# they can be built directly if needed, but when they are built only as named
+# build contexts they are not pushed just because they have tags.  With
+# GHCR_WRITABLE=true, GHCR must still be reachable because registry cache
+# exports are required (no ignore-error).  GHA cache eviction ("cache entry
+# no longer exists") is non-fatal for all targets.
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
@@ -292,8 +294,18 @@ target "php-base" {
   # Normal mode (default): push directly to the named tag on Docker Hub.
   # Digest mode (CI): push by content-hash only (no tag); a separate merge
   # step creates / updates the tagged multi-arch manifest list.
+  # When GHCR_WRITABLE=true the same image is also pushed to GHCR by digest so
+  # that the merge job can read source manifests from GHCR (via GITHUB_TOKEN)
+  # rather than from Docker Hub, eliminating DOCKERHUB_TOKEN pull-quota
+  # consumption.  Blobs are already present in Docker Hub from the first output,
+  # so imagetools create only needs to write the manifest index (no layer
+  # transfer).  The digest is identical in both registries (same content →
+  # same sha256).
   tags   = PUSH_BY_DIGEST != "true" && should_push(VERSIONS_BASE, version) ? ["${REPO}:${version}-base${TAG_SUFFIX}"] : []
-  output = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_BASE, version) ? ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  output = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_BASE, version) ? concat(
+    ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"],
+    GHCR_WRITABLE == "true" ? ["type=image,name=${GHCR_REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  ) : []
   cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-base${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-base${plat_sfx()}")
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-base${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-base${plat_sfx()}")
 }
@@ -348,8 +360,12 @@ target "php-secure" {
   # Normal mode (default): push directly to the named tag on Docker Hub.
   # Digest mode (CI): push by content-hash only (no tag); a separate merge
   # step creates / updates the tagged multi-arch manifest list.
+  # When GHCR_WRITABLE=true, also push to GHCR by digest (see php-base comment).
   tags   = PUSH_BY_DIGEST != "true" && should_push(VERSIONS_SECURE, version) ? ["${REPO}:${version}-secure${TAG_SUFFIX}"] : []
-  output = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_SECURE, version) ? ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  output = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_SECURE, version) ? concat(
+    ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"],
+    GHCR_WRITABLE == "true" ? ["type=image,name=${GHCR_REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  ) : []
   cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-secure${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-secure${plat_sfx()}")
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-secure${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-secure${plat_sfx()}")
 }
@@ -374,8 +390,12 @@ target "php-advance" {
   # Normal mode (default): push directly to the named tag on Docker Hub.
   # Digest mode (CI): push by content-hash only (no tag); a separate merge
   # step creates / updates the tagged multi-arch manifest list.
+  # When GHCR_WRITABLE=true, also push to GHCR by digest (see php-base comment).
   tags   = PUSH_BY_DIGEST != "true" ? ["${REPO}:${version}-advance${TAG_SUFFIX}"] : []
-  output = PUSH_BY_DIGEST == "true" ? ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  output = PUSH_BY_DIGEST == "true" ? concat(
+    ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"],
+    GHCR_WRITABLE == "true" ? ["type=image,name=${GHCR_REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  ) : []
   cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-advance${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-advance${plat_sfx()}")
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-advance${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-advance${plat_sfx()}")
 }
