@@ -234,6 +234,9 @@ runs:
         for run_id in "${CANDIDATE_RUN_IDS[@]+"${CANDIDATE_RUN_IDS[@]}"}"; do
           sha="${RUN_ID_TO_SHA[${run_id}]:-}"
           [[ -z "${sha}" || ! "${sha}" =~ ^[0-9a-f]{40}$ ]] && continue
+          # Only use SHAs that exist in the local object database; otherwise
+          # downstream git diff calls can fail and incorrectly suppress builds.
+          git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
           [[ "${sha}" == "${CURRENT_SHA}" ]] && continue
 
           # Fetch platforms annotation for this run once.
