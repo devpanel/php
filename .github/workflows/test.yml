@@ -65,37 +65,36 @@ jobs:
       - name: Run Dockerfile lint
         run: bash tests/lint-dockerfile.sh
 
-  # ── Find the effective before SHA ───────────────────────────────────────────
-  # For pull_request events the PR base is always the right anchor.  For push
-  # events, use the head SHA of the last *successful* test run on this branch
-  # so that commits covered by cancelled runs are not silently skipped.
-  #
+  # ── Find the effective before SHAs ──────────────────────────────────────────
+  # Looks up the last successful test.yml run on this branch and uses its
+  # head SHA as the "before" anchor for the linux-amd64 platform.
+  # For pull_request events the PR base SHA is used directly.
   # When all_versions is requested via workflow_dispatch the job is skipped
-  # entirely; the empty before_sha output causes the detect job to test every
-  # version rather than diff against a previous commit.
+  # and the empty before_shas causes the detect job to test every version.
   prepare:
     runs-on: ubuntu-latest
     if: github.event_name != 'workflow_dispatch' || inputs.all_versions != true
     permissions:
       actions: read
+      checks: read
       contents: read
     outputs:
-      before_sha: ${{ steps.effective_sha.outputs.before_sha }}
+      before_shas: ${{ steps.effective_sha.outputs.before_shas }}
     steps:
-      - uses: actions/checkout@v6
-      - name: Compute effective before_sha
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Compute effective before_shas
         id: effective_sha
         uses: ./.github/actions/effective-before-sha
         with:
-          workflow_files: |
-            ci.yml
-            test.yml
-          current_sha: ${{ github.sha }}
+          workflow_files: test.yml
           ref_name: ${{ github.ref_name }}
           repository: ${{ github.repository }}
           github_token: ${{ github.token }}
           event_name: ${{ github.event_name }}
           pr_base_sha: ${{ github.event.pull_request.base.sha }}
+          platforms: linux-amd64
 
   # Detect PHP versions to test, compute the lowercase GHCR repo name, and
   # pre-seed build downloads for ALL detected versions at once.  Running
@@ -121,6 +120,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
       actions: write
     outputs:
       versions: ${{ steps.versions.outputs.versions }}
@@ -129,7 +129,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: ${{ needs.prepare.outputs.before_sha != '' && '0' || '1' }}
+          fetch-depth: ${{ (needs.prepare.outputs.before_shas || '{}') != '{}' && '0' || '1' }}
 
       - name: Compute GHCR repository (lowercase)
         id: ghcr
@@ -137,19 +137,27 @@ jobs:
           REPO: ${{ github.repository }}
         run: echo "repo=ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      - name: Detect PHP versions for build test
+      - name: Detect PHP versions
+        id: detect
+        uses: ./.github/actions/detect-versions
+        with:
+          before_shas: ${{ needs.prepare.outputs.before_shas || '{}' }}
+          after_sha: ${{ github.sha }}
+          platforms_filter: linux/amd64
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token: ${{ secrets.GHCR_TOKEN }}
+          ghcr_user: ${{ vars.GHCR_USER }}
+
+      # Convert the action's space-separated versions output to the JSON array
+      # that the build matrix expects, and derive the has_versions flag.
+      - name: Build versions list
         id: versions
+        env:
+          VERSIONS: ${{ steps.detect.outputs.versions }}
         run: |
-          before_sha="${{ needs.prepare.outputs.before_sha }}"
-          if [[ -n "$before_sha" ]]; then
-            versions_str=$(bash tests/detect-versions.sh --before "$before_sha" --after "${{ github.sha }}" | sort -V | tr '\n' ' ' | sed 's/ $//')
-          else
-            versions_str=$(bash tests/detect-versions.sh | sort -V | tr '\n' ' ' | sed 's/ $//')
-          fi
-          versions_json=$(printf '%s\n' $versions_str | jq -R -s -c '[split("\n")[] | select(length > 0)]')
+          versions_json=$(printf '%s' "$VERSIONS" | tr ' ' '\n' | jq -R -s -c '[split("\n")[] | select(length > 0)]')
           echo "versions=${versions_json}" >> "$GITHUB_OUTPUT"
-          echo "versions_str=${versions_str}" >> "$GITHUB_OUTPUT"
-          if [[ -n "${versions_str}" ]]; then
+          if [[ -n "${VERSIONS}" ]]; then
             echo "has_versions=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_versions=false" >> "$GITHUB_OUTPUT"
@@ -161,9 +169,7 @@ jobs:
         uses: ./.github/actions/preseed-downloads
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
-          versions: ${{ steps.versions.outputs.versions_str }}
+          versions: ${{ steps.detect.outputs.all_versions }}
 
       - name: Upload preseed bake overrides
         if: steps.versions.outputs.has_versions == 'true'

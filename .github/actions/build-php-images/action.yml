@@ -55,13 +55,25 @@ inputs:
       login.  Required when the organisation's Actions token policy restricts
       GITHUB_TOKEN from writing to packages.
     default: ''
+  ghcr_user:
+    description: >
+      Username associated with ghcr_token when using a Personal Access Token.
+      Pass the username value as this input, typically from the calling
+      workflow's GHCR_USER repository variable (vars.GHCR_USER).
+    default: ''
   ghcr_writable:
     description: >
       Whether the GHCR registry is writable ("true"/"false").  Pass the
       ghcr_writable output from the detect-versions action.  When "true",
       GHCR is used as the primary layer cache; when "false", GHA is primary.
-      Defaults to "false" so that builds without a detect step are safe.
+      Defaults to "false" but ghcr_repo must still be provided.
     default: 'false'
+  ghcr_repo:
+    description: >
+      GHCR repository name (ghcr.io/<lowercase-owner/repo>).  Pass the
+      ghcr_repo output from the detect-versions action, or provide the
+      repository name manually when not using detect outputs.
+    required: true
   downloads_dir:
     description: >
       Pre-assembled downloads directory whose pre-downloaded/ subdirectory
@@ -80,19 +92,26 @@ runs:
   using: composite
   steps:
     # ── Build steps ──────────────────────────────────────────────────────────
-    - name: Compute GHCR repository (lowercase)
-      id: ghcr
+    - name: Validate GHCR credentials for PAT auth
+      if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
       shell: bash
       env:
-        REPO: ${{ github.repository }}
-      run: echo "repo=ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+        GHCR_USER: ${{ inputs.ghcr_user }}
+      run: |
+        if [[ -z "${GHCR_USER}" ]]; then
+          echo "::error::ghcr_token is set but the ghcr_user input is not provided. Pass the PAT owner's username via the ghcr_user input (typically vars.GHCR_USER from the calling workflow)."
+          exit 1
+        fi
 
     - name: Login to GitHub Container Registry
       uses: docker/login-action@v4
+      # When ghcr_writable is false the login is best-effort: a failure must
+      # not abort the build because GHA cache is the fallback layer cache.
+      continue-on-error: ${{ inputs.ghcr_writable != 'true' }}
       with:
         registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ inputs.ghcr_token || inputs.github_token }}
+        username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
+        password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v4
@@ -144,64 +163,52 @@ runs:
         echo "platform_key=${platform_normalized//\//-}" >> "$GITHUB_OUTPUT"
         echo "version=${VERSION}"                         >> "$GITHUB_OUTPUT"
 
-    # Probe the anonymous Docker Hub quota before attempting the unauthenticated
-    # pre-pull below.  When the quota is already at 0 the pre-pull would fail
-    # immediately and waste time, so skip it in that case.  The probe itself is
-    # non-fatal: a probe failure (empty output) is treated as non-zero remaining
-    # so the pre-pull is still attempted.
-    - name: Probe anonymous Docker Hub pull quota
-      id: quota-probe
-      shell: bash
-      run: |
-        set -euo pipefail
-        # shellcheck source=.github/scripts/hub-quota-helpers.sh
-        source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
-        _anon_rem="$(anon_quota_remaining)"
-        if [[ "${_anon_rem}" == "0" ]]; then
-          echo "anon_remaining=0" >> "$GITHUB_OUTPUT"
-          echo "Anonymous Docker Hub quota exhausted (0 remaining);" \
-               "skipping unauthenticated pre-pull."
-        else
-          echo "anon_remaining=${_anon_rem:-unknown}" >> "$GITHUB_OUTPUT"
-          if [[ -n "${_anon_rem}" ]]; then
-            echo "Anonymous Docker Hub quota: ${_anon_rem} remaining."
-          else
-            echo "Anonymous Docker Hub quota: unknown (probe failed);" \
-                 "will attempt unauthenticated pre-pull anyway."
-          fi
-        fi
-
-    # Pull the base PHP image into the active Buildx builder's content store
-    # before logging in to Docker Hub so that this pull uses the anonymous
-    # (IP-based) pull quota rather than the shared per-account authenticated
-    # quota (200 pulls/6 h).  Using "docker buildx build" (rather than plain
-    # "docker pull") ensures the layers land in the BuildKit content store of
-    # the builder created by docker/setup-buildx-action, which is the same
-    # builder used by the bake steps below — they therefore find the base image
-    # already cached and do not re-pull it authenticated.  A failure here is
-    # non-fatal: bake will re-pull authenticated if the cache miss occurs.
-    # Skipped when the anonymous quota probe above confirmed 0 remaining.
-    - name: Pre-pull base PHP image (unauthenticated)
-      if: steps.quota-probe.outputs.anon_remaining != '0'
-      shell: bash
+    # Pre-warm the BuildKit layer cache before the scoped Docker Hub login.
+    # Running a no-push bake here achieves two goals:
+    #   1. GHCR cache warm  → BuildKit reads all layers (including
+    #      php:VERSION-apache) from GHCR; Docker Hub is never contacted.
+    #   2. GHCR cache cold  → BuildKit pulls php:VERSION-apache from Docker Hub
+    #      using the runner's embedded token (DOCKER_CONFIG, before the scoped
+    #      push-only DOCKERHUB_TOKEN is written into the Buildx alt-config).
+    # After this step every layer is in BuildKit's content-addressable cache, so
+    # the push bakes below just export from cache to Docker Hub without re-pulling.
+    # VERSIONS_BASE='' and PUSH_BY_DIGEST=false ensure no Docker Hub output is
+    # produced here; the php-base target resolves to empty tags and empty output.
+    - name: Pre-warm GHCR layer cache (build php-base without Docker Hub push)
+      uses: docker/bake-action@v7
       env:
-        VERSION: ${{ inputs.version }}
-        PLATFORM: ${{ steps.platform.outputs.platform }}
-      run: |
-        set -euo pipefail
-        _ctx="$(mktemp -d)"
-        trap 'rm -rf "${_ctx}"' EXIT
-        printf 'FROM php:%s-apache\n' "${VERSION}" \
-          | docker buildx build --platform "${PLATFORM}" -f - "${_ctx}" || true
+        TAG_SUFFIX: ${{ inputs.tag_suffix }}
+        VERSIONS: ${{ inputs.version }}
+        VERSIONS_BASE: ''
+        VERSIONS_SECURE: ''
+        PLATFORMS: ${{ steps.platform.outputs.platform }}
+        PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
+        REPO: ${{ inputs.repo }}
+        PUSH_BY_DIGEST: 'false'
+        CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
+        GHCR_REPO: ${{ inputs.ghcr_repo }}
+        GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
+        DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
+        BUILDX_BAKE_ENTITLEMENTS_FS: 0
+      with:
+        source: .
+        files: |
+          docker-bake.hcl
+          ${{ steps.preseed-paths.outputs.bake_overrides_file }}
+        targets: php-base
 
-    # Docker Hub login is required so that the bake steps below can push
-    # images by digest.  The base image pull above runs before this login
-    # so it uses the anonymous quota rather than the authenticated quota.
+    # Docker Hub login scoped to push-only on inputs.repo (devpanel/php by
+    # default).  The scope parameter writes credentials to the Buildx
+    # configuration rather than the global Docker config.  The pre-warm bake
+    # above already built all layers (and fetched php:VERSION-apache from
+    # Docker Hub via the runner token when the GHCR cache was cold), so the
+    # push bakes below find everything in BuildKit's cache and never re-pull.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
+        scope: ${{ inputs.repo }}@push
 
     # ── Build each stage separately ───────────────────────────────────────────────
     # Stages are built sequentially (base → secure → advance).  Each stage's
@@ -226,7 +233,7 @@ runs:
         REPO: ${{ inputs.repo }}
         PUSH_BY_DIGEST: 'true'
         CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
-        GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+        GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
         DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
@@ -287,7 +294,7 @@ runs:
         REPO: ${{ inputs.repo }}
         PUSH_BY_DIGEST: 'true'
         CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
-        GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+        GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
         DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
@@ -347,7 +354,7 @@ runs:
         REPO: ${{ inputs.repo }}
         PUSH_BY_DIGEST: 'true'
         CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
-        GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+        GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
         DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
@@ -401,57 +408,6 @@ runs:
     # compare the encoded attempt directly against GITHUB_RUN_ATTEMPT (a default
     # GitHub Actions environment variable automatically set on every runner) and
     # ignore stale markers from a previous failed attempt when re-running.
-
-    # Diagnostic step: when any bake stage failed, probe Docker Hub's pull
-    # rate-limit endpoint and emit an actionable error message.
-    - name: Check for Docker Hub rate limit errors
-      if: failure() && (steps.bake-base.outcome == 'failure' || steps.bake-secure.outcome == 'failure' || steps.bake-advance.outcome == 'failure')
-      shell: bash
-      env:
-        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
-        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
-        VERSION: ${{ inputs.version }}
-        PLATFORM: ${{ steps.platform.outputs.platform }}
-      run: |
-        set -euo pipefail
-        # Use the Docker Hub ratelimitpreview endpoint to inspect the current
-        # pull rate limit without consuming any quota.  If RateLimit-Remaining
-        # is 0 the pull rate limit is exhausted; a base-image pull throttle
-        # may have caused the bake failure.  Otherwise report a generic
-        # build failure and direct the user to the failed step's output.
-        # shellcheck source=.github/scripts/hub-quota-helpers.sh
-        source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
-        _auth_token_ok=false
-        refresh_auth_quota_token && _auth_token_ok=true || true
-        rl_remaining=""
-        if ${_auth_token_ok}; then
-          rl_remaining="$(auth_quota_remaining)"
-        fi
-        if [[ "${rl_remaining}" == "unlimited" ]]; then
-          echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
-               "Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \
-               "quota exhaustion is not the cause of this failure." \
-               "See the failed bake step above for details." \
-               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-        elif [[ "${rl_remaining}" == "0" ]]; then
-          echo "::error::Docker Hub pull rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
-               "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
-        elif [[ -n "${rl_remaining}" ]]; then
-          echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
-               "Docker Hub pull rate limit is not exhausted (${rl_remaining} request(s) remaining)." \
-               "See the failed bake step above for details." \
-               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-        elif ${_auth_token_ok}; then
-          echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
-               "Could not determine Docker Hub pull rate limit status" \
-               "(rate-limit probe failed with a non-2xx response or network error); see the failed bake step above." \
-               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-        else
-          echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
-               "Could not determine Docker Hub pull rate limit status" \
-               "(auth token fetch from auth.docker.io failed); see the failed bake step above." \
-               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-        fi
 
     - name: Prepare build-done marker
       if: always()
