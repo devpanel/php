@@ -468,21 +468,24 @@ runs:
           exit 1
         fi
 
+        # Normalize BEFORE_SHAS to a single compact JSON object up-front so
+        # that both the count check and per-platform lookups operate on the same
+        # validated, single-document value.  jq -sc '(first // {})' slurps all
+        # stdin, takes the first element (or {} when empty/null), and outputs
+        # compact JSON.  If jq fails (truly malformed input), fall back to '{}'.
+        BEFORE_SHAS="$(printf '%s' "${BEFORE_SHAS:-{}}" \
+          | jq -sc '(first // {})' 2>/dev/null || echo '{}')"
+
         # Determine whether a non-empty before_shas map was provided.
         # A non-empty map means per-platform version detection should be used.
-        #
-        # Use jq -s (slurp) so that all stdin is collected into a single array
-        # before processing.  This guards against a malformed BEFORE_SHAS value
-        # that contains multiple JSON documents (e.g. a valid object followed by
-        # "{}"), which would cause plain `jq 'length'` to emit multiple output
-        # lines and silently break the arithmetic [[ -gt 0 ]] comparison below:
-        # bash's set -e does not abort for if-condition failures, so a bad
-        # comparison would fall through to the full-rebuild else branch with no
-        # visible error.
-        BEFORE_SHAS_COUNT="$(printf '%s' "${BEFORE_SHAS:-{}}" \
-          | jq -s '(first // {}) | length' 2>/dev/null || echo '0')"
+        BEFORE_SHAS_COUNT="$(printf '%s' "${BEFORE_SHAS}" \
+          | jq 'length' 2>/dev/null || echo '0')"
         if [[ ! "${BEFORE_SHAS_COUNT}" =~ ^[0-9]+$ ]]; then
-          echo "::error::BEFORE_SHAS_COUNT resolved to a non-integer value ('${BEFORE_SHAS_COUNT}'); the before_shas input may be malformed. BEFORE_SHAS (first 200 chars): ${BEFORE_SHAS:0:200}"
+          BEFORE_SHAS_PREVIEW="${BEFORE_SHAS:0:200}"
+          BEFORE_SHAS_PREVIEW="${BEFORE_SHAS_PREVIEW//'%'/'%25'}"
+          BEFORE_SHAS_PREVIEW="${BEFORE_SHAS_PREVIEW//$'\r'/'%0D'}"
+          BEFORE_SHAS_PREVIEW="${BEFORE_SHAS_PREVIEW//$'\n'/'%0A'}"
+          echo "::error::BEFORE_SHAS_COUNT resolved to a non-integer value ('${BEFORE_SHAS_COUNT}'); the before_shas input may be malformed. BEFORE_SHAS (first 200 chars): ${BEFORE_SHAS_PREVIEW}"
           exit 1
         fi
 
