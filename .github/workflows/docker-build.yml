@@ -82,14 +82,15 @@ jobs:
         id: effective_sha
         uses: ./.github/actions/effective-before-sha
         with:
-          # Include the previous workflow filenames so that historical
-          # successful runs from those workflows are considered when computing
-          # the before SHA.  The GitHub API returns runs for removed workflow
-          # files by name, so this is safe even though those files no longer
-          # exist in the repository.
+          # Include the numeric IDs of the previous (now-removed) build
+          # workflows so that their historical successful runs are considered
+          # when computing the before SHA.  Numeric IDs are used for the
+          # removed workflows (docker-build-on-push.yml and
+          # docker-build-all.yml) because they guarantee the API will return
+          # their run history even after the workflow files are deleted.
           workflow_files: |
-            docker-build-on-push.yml
-            docker-build-all.yml
+            242168596
+            242173818
             docker-build.yml
           current_sha: ${{ github.sha }}
           ref_name: ${{ github.ref_name }}
