@@ -482,9 +482,7 @@ runs:
         BEFORE_SHAS_COUNT="$(printf '%s' "${BEFORE_SHAS:-{}}" \
           | jq -s '(first // {}) | length' 2>/dev/null || echo '0')"
         if [[ ! "${BEFORE_SHAS_COUNT}" =~ ^[0-9]+$ ]]; then
-          echo "::error::BEFORE_SHAS_COUNT resolved to a non-integer value" \
-               "('${BEFORE_SHAS_COUNT}'); the before_shas input may be" \
-               "malformed. BEFORE_SHAS (first 200 chars): ${BEFORE_SHAS:0:200}"
+          echo "::error::BEFORE_SHAS_COUNT resolved to a non-integer value ('${BEFORE_SHAS_COUNT}'); the before_shas input may be malformed. BEFORE_SHAS (first 200 chars): ${BEFORE_SHAS:0:200}"
           exit 1
         fi
 
