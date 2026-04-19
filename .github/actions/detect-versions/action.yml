@@ -3,25 +3,32 @@ description: >
   Detects which PHP versions to build and emits a build matrix and merge matrix
   for use in the CI pipeline.
 
-  When before_sha and after_sha are provided, only the PHP versions whose
-  source files changed between those two commits are included. Otherwise every
-  versioned directory is built.
+  When before_shas and after_sha are provided, each platform uses its own
+  before SHA for change detection: only the PHP versions whose source files
+  changed since that platform's anchor are included for that platform.
+  Platforms absent from before_shas receive a full rebuild (all versions).
+  When before_shas is empty ({}) every versioned directory is built.
 
   The repository must be checked out by the calling job before this action
-  is invoked. Pass fetch-depth: 0 when before_sha/after_sha are used so that
+  is invoked. Pass fetch-depth: 0 when before_shas/after_sha are used so that
   the git history required by detect-versions.sh is available.
 
 inputs:
-  before_sha:
-    description: >
-      Commit SHA before the push. When provided together with after_sha, only
-      changed versions are detected. Omit for a full rebuild.
-    default: ''
   after_sha:
     description: >
-      Commit SHA after the push. When provided together with before_sha, only
-      changed versions are detected. Omit for a full rebuild.
+      Commit SHA after the push. When provided together with before_shas,
+      only changed versions are detected per platform. Omit for a full
+      rebuild.
     default: ''
+  before_shas:
+    description: >
+      JSON map of platform-key to before_sha, e.g.
+      {"linux-amd64":"abc123","linux-arm64":"def456"}.  When non-empty, each
+      platform uses its own anchor for change detection: versions that changed
+      since that platform's before_sha are built for that platform only.
+      Platforms absent from the map receive a full rebuild (all versions).
+      When empty ({}) or omitted, every versioned directory is built.
+    default: '{}'
   platforms_filter:
     description: >
       Comma-separated list of platforms to build
@@ -40,6 +47,12 @@ inputs:
       When provided, this token is used instead of github_token for the GHCR
       write-access check.  Required when the organisation's Actions token
       policy restricts GITHUB_TOKEN from writing to packages.
+    default: ''
+  ghcr_user:
+    description: >
+      Username associated with GHCR_TOKEN when using a Personal Access Token.
+      Pass the username value as this input, typically from the calling
+      workflow's GHCR_USER repository variable (vars.GHCR_USER).
     default: ''
 
 outputs:
@@ -80,10 +93,17 @@ outputs:
       otherwise.  Consumed by build jobs to select whether GHCR is primary
       (when writable) or GHA is primary (when not writable) for layer caches.
     value: ${{ steps.check-ghcr.outputs.writable }}
+  ghcr_cred_source:
+    description: >
+      Which GHCR credential was used: "github_token" when GITHUB_TOKEN has
+      write access, "ghcr_token" when the GHCR_TOKEN PAT fallback was used.
+      Empty when ghcr_writable is "false".  Consumed by the calling workflow
+      to determine which single credential to pass to build and merge jobs.
+    value: ${{ steps.check-ghcr.outputs.ghcr_cred_source }}
   all_versions:
     description: >
       Space-separated list of ALL PHP versions present in the repository,
-      regardless of the before_sha / after_sha filter.  Used to run preseed
+      regardless of the before_shas / after_sha filter.  Used to run preseed
       with the full version set so the newest Debian codename is always
       treated as primary and older codenames receive proper GLIBC
       compatibility testing.
@@ -117,26 +137,68 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Check GHCR write access
-      id: check-ghcr
+    # Determine which GHCR credential to use: try github_token (GITHUB_TOKEN)
+    # first since it should have write access when the job declares
+    # packages:write.  Fall back to ghcr_token (GHCR_TOKEN PAT) only when the
+    # quick token-endpoint probe shows github_token cannot obtain a push-scoped
+    # bearer token.
+    - name: Resolve GHCR credential
+      id: resolve-ghcr
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.ghcr_token || inputs.github_token }}
-        USING_GHCR_TOKEN: ${{ inputs.ghcr_token != '' }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GHCR_TOKEN_SET: ${{ inputs.ghcr_token != '' }}
         REPO: ${{ github.repository }}
         ACTOR: ${{ github.actor }}
       run: |
         set -uo pipefail
         REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
+        NETRC=$(umask 0177 && mktemp)
+        trap 'rm -f "${NETRC}"' EXIT
+        printf 'machine ghcr.io login %s password %s\n' "${ACTOR}" "${GH_TOKEN}" > "${NETRC}"
+        TOKEN_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --netrc-file "${NETRC}" \
+          "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:push" \
+          2>/dev/null || echo "000")
+        if [[ "${TOKEN_HTTP}" == "200" ]]; then
+          echo "using_ghcr_token=false" >> "$GITHUB_OUTPUT"
+        elif [[ "${GHCR_TOKEN_SET}" == "true" ]]; then
+          echo "using_ghcr_token=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "using_ghcr_token=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Check GHCR write access
+      id: check-ghcr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' && inputs.ghcr_token || inputs.github_token }}
+        USING_GHCR_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' }}
+        REPO: ${{ github.repository }}
+        GHCR_USER: ${{ inputs.ghcr_user }}
+        GH_ACTOR: ${{ github.actor }}
+      run: |
+        set -uo pipefail
+        REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
         ORG=$(echo "${REPO}" | cut -d'/' -f1)
 
-        # Determine which credential is in use for accurate diagnostics.
+        # Determine ACTOR and credential name.  When using a PAT (USING_GHCR_TOKEN=true),
+        # GHCR_USER must be explicitly set; there is no fallback so that a missing/empty
+        # GHCR_USER is caught here rather than silently querying the token endpoint with
+        # the wrong username.
         # GHA expressions produce the string 'true'/'false', not bash booleans,
-        # so a string comparison is required here.
+        # so string comparisons are required here.
         if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
+          if [[ -z "${GHCR_USER}" ]]; then
+            echo "::error::GHCR_TOKEN is configured but ghcr_user input is not set. Pass the GHCR_TOKEN owner's username via the ghcr_user input (typically the value of vars.GHCR_USER in the calling workflow)."
+            exit 1
+          fi
+          ACTOR="${GHCR_USER}"
           AUTH_CRED_NAME="GHCR_TOKEN"
+          GHCR_CRED_SOURCE="ghcr_token"
         else
+          ACTOR="${GH_ACTOR}"
           AUTH_CRED_NAME="GITHUB_TOKEN"
+          GHCR_CRED_SOURCE="github_token"
         fi
 
         NOTE="When GHCR is not writable, build jobs will use GHA as the primary layer cache instead."
@@ -280,6 +342,7 @@ runs:
         if [[ "${HTTP_STATUS}" == "202" || "${HTTP_STATUS}" == "201" ]]; then
           echo "GHCR write access confirmed for ghcr.io/${REPO_LC}."
           echo "writable=true" >> "$GITHUB_OUTPUT"
+          echo "ghcr_cred_source=${GHCR_CRED_SOURCE}" >> "$GITHUB_OUTPUT"
           echo "✅ **GHCR cache write pre-check:** passed — layer caches will be written to ghcr.io/${REPO_LC} (GHCR is primary)." >> "$GITHUB_STEP_SUMMARY"
         else
           case "${HTTP_STATUS}" in
@@ -358,8 +421,8 @@ runs:
       id: detect
       shell: bash
       env:
-        BEFORE_SHA:      ${{ inputs.before_sha }}
         AFTER_SHA:       ${{ inputs.after_sha }}
+        BEFORE_SHAS:     ${{ inputs.before_shas }}
         PLATFORMS:       ${{ inputs.platforms_filter }}
       run: |
         set -euo pipefail
@@ -376,33 +439,6 @@ runs:
         # giving older codenames proper GLIBC compatibility testing even
         # when only a subset of versions changed.
         ALL_VERSIONS_OUT=$(bash tests/detect-versions.sh | tr '\n' ' ' | xargs)
-
-        if [[ -n "${BEFORE_SHA}" && -n "${AFTER_SHA}" ]]; then
-          VERSIONS_OUT=$(bash tests/detect-versions.sh \
-            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" | tr '\n' ' ' | xargs)
-          VERSIONS_BASE_OUT=$(bash tests/detect-versions.sh \
-            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage base \
-            | tr '\n' ' ' | xargs)
-          VERSIONS_SECURE_OUT=$(bash tests/detect-versions.sh \
-            --before "${BEFORE_SHA}" --after "${AFTER_SHA}" --stage secure \
-            | tr '\n' ' ' | xargs)
-        else
-          VERSIONS_OUT="$ALL_VERSIONS_OUT"
-          VERSIONS_BASE_OUT="$VERSIONS_OUT"
-          VERSIONS_SECURE_OUT="$VERSIONS_OUT"
-        fi
-
-        echo "latest_php_version=${LATEST_PHP_VERSION}"     >> "$GITHUB_OUTPUT"
-        echo "versions=${VERSIONS_OUT}"                     >> "$GITHUB_OUTPUT"
-        echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
-        echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
-        echo "all_versions=${ALL_VERSIONS_OUT}"             >> "$GITHUB_OUTPUT"
-        if [[ -n "${ALL_VERSIONS_OUT}" ]]; then
-          read -r -a _all_vers_arr <<< "${ALL_VERSIONS_OUT}"
-        else
-          _all_vers_arr=()
-        fi
-        echo "all_versions_count=${#_all_vers_arr[@]}"       >> "$GITHUB_OUTPUT"
 
         # Parse configured platforms into an array, trimming whitespace,
         # normalizing default variants to canonical keys, and removing
@@ -432,6 +468,98 @@ runs:
           exit 1
         fi
 
+        # Determine whether a non-empty before_shas map was provided.
+        # A non-empty map means per-platform version detection should be used.
+        BEFORE_SHAS_COUNT="$(printf '%s' "${BEFORE_SHAS:-{}}" \
+          | jq 'length' 2>/dev/null || echo '0')"
+
+        if [[ "${BEFORE_SHAS_COUNT}" -gt 0 && -n "${AFTER_SHA}" ]]; then
+          # ── Per-platform version detection ───────────────────────────────
+          # For each platform, look up its own before_sha from the map and run
+          # detect-versions.sh against that anchor.  Platforms absent from the
+          # map get a full rebuild (all versions).
+          #
+          # The build matrix is per-(version, platform): a (v, p) entry is
+          # only included when v actually changed for platform p since its
+          # anchor.  The global versions/merge-matrix outputs are the union
+          # across all platforms.
+          declare -A PLAT_VERSIONS         # pkey → space-sep changed versions
+          declare -A PLAT_VERSIONS_BASE    # pkey → space-sep base-changed
+          declare -A PLAT_VERSIONS_SECURE  # pkey → space-sep secure-changed
+
+          VERSIONS_OUT=""
+          VERSIONS_BASE_OUT=""
+          VERSIONS_SECURE_OUT=""
+
+          for p in "${PLATFORM_LIST[@]}"; do
+            pkey="${p//\//-}"
+            plat_before="$(printf '%s' "${BEFORE_SHAS}" \
+              | jq -r --arg k "${pkey}" '.[$k] // ""' 2>/dev/null || echo '')"
+
+            if [[ -n "${plat_before}" ]]; then
+              plat_changed="$(bash tests/detect-versions.sh \
+                --before "${plat_before}" --after "${AFTER_SHA}" \
+                | tr '\n' ' ' | xargs || echo '')"
+              plat_changed_base="$(bash tests/detect-versions.sh \
+                --before "${plat_before}" --after "${AFTER_SHA}" --stage base \
+                | tr '\n' ' ' | xargs || echo '')"
+              plat_changed_secure="$(bash tests/detect-versions.sh \
+                --before "${plat_before}" --after "${AFTER_SHA}" --stage secure \
+                | tr '\n' ' ' | xargs || echo '')"
+            else
+              plat_changed="${ALL_VERSIONS_OUT}"
+              plat_changed_base="${ALL_VERSIONS_OUT}"
+              plat_changed_secure="${ALL_VERSIONS_OUT}"
+            fi
+
+            PLAT_VERSIONS["${pkey}"]="${plat_changed}"
+            PLAT_VERSIONS_BASE["${pkey}"]="${plat_changed_base}"
+            PLAT_VERSIONS_SECURE["${pkey}"]="${plat_changed_secure}"
+
+            # Accumulate union across platforms for global outputs.
+            for v in ${plat_changed}; do
+              [[ " ${VERSIONS_OUT} " != *" ${v} "* ]] \
+                && VERSIONS_OUT="${VERSIONS_OUT:+${VERSIONS_OUT} }${v}"
+            done
+            for v in ${plat_changed_base}; do
+              [[ " ${VERSIONS_BASE_OUT} " != *" ${v} "* ]] \
+                && VERSIONS_BASE_OUT="${VERSIONS_BASE_OUT:+${VERSIONS_BASE_OUT} }${v}"
+            done
+            for v in ${plat_changed_secure}; do
+              [[ " ${VERSIONS_SECURE_OUT} " != *" ${v} "* ]] \
+                && VERSIONS_SECURE_OUT="${VERSIONS_SECURE_OUT:+${VERSIONS_SECURE_OUT} }${v}"
+            done
+          done
+        else
+          # No before_shas provided — full rebuild of all versions.
+          # Populate per-platform arrays uniformly so the build matrix
+          # construction below works in both code paths.
+          VERSIONS_OUT="$ALL_VERSIONS_OUT"
+          VERSIONS_BASE_OUT="$VERSIONS_OUT"
+          VERSIONS_SECURE_OUT="$VERSIONS_OUT"
+          declare -A PLAT_VERSIONS
+          declare -A PLAT_VERSIONS_BASE
+          declare -A PLAT_VERSIONS_SECURE
+          for p in "${PLATFORM_LIST[@]}"; do
+            pkey="${p//\//-}"
+            PLAT_VERSIONS["${pkey}"]="${VERSIONS_OUT}"
+            PLAT_VERSIONS_BASE["${pkey}"]="${VERSIONS_BASE_OUT}"
+            PLAT_VERSIONS_SECURE["${pkey}"]="${VERSIONS_SECURE_OUT}"
+          done
+        fi
+
+        echo "latest_php_version=${LATEST_PHP_VERSION}"     >> "$GITHUB_OUTPUT"
+        echo "versions=${VERSIONS_OUT}"                     >> "$GITHUB_OUTPUT"
+        echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
+        echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"
+        echo "all_versions=${ALL_VERSIONS_OUT}"             >> "$GITHUB_OUTPUT"
+        if [[ -n "${ALL_VERSIONS_OUT}" ]]; then
+          read -r -a _all_vers_arr <<< "${ALL_VERSIONS_OUT}"
+        else
+          _all_vers_arr=()
+        fi
+        echo "all_versions_count=${#_all_vers_arr[@]}"       >> "$GITHUB_OUTPUT"
+
         if [[ -z "${VERSIONS_OUT}" ]]; then
           echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
           echo "merge_matrix=[]"                    >> "$GITHUB_OUTPUT"
@@ -443,7 +571,7 @@ runs:
 
           # Build merge matrix: one {version, stage} entry per Docker Hub image
           # to be merged.  base/secure entries are included only for versions
-          # that actually changed at that stage.
+          # that actually changed at that stage (union across all platforms).
           MERGE_MATRIX="$(
             {
               for v in ${VERSIONS_OUT}; do
@@ -461,16 +589,21 @@ runs:
           echo "merge_matrix=${MERGE_MATRIX}" >> "$GITHUB_OUTPUT"
 
           # Build build matrix: one {version, platform, versions_base,
-          # versions_secure} entry per PHP-version x platform pair so that
-          # each job builds exactly one version on one platform and can upload
-          # per-image digest artifacts without waiting for other combinations.
+          # versions_secure} entry per PHP-version x platform pair.
+          # Only (v, p) pairs where v actually changed for platform p are
+          # included; versions_base/versions_secure reflect whether the
+          # base/secure stage changed for that platform's anchor.
           BUILD_MATRIX="$(
             {
               for p in "${PLATFORM_LIST[@]}"; do
-                for v in ${VERSIONS_OUT}; do
-                  vb=$( [[ " ${VERSIONS_BASE_OUT} " == *" ${v} "* ]] \
+                pkey="${p//\//-}"
+                plat_versions="${PLAT_VERSIONS[${pkey}]}"
+                plat_vb="${PLAT_VERSIONS_BASE[${pkey}]}"
+                plat_vs="${PLAT_VERSIONS_SECURE[${pkey}]}"
+                for v in ${plat_versions}; do
+                  vb=$( [[ " ${plat_vb} " == *" ${v} "* ]] \
                           && echo "${v}" || echo "" )
-                  vs=$( [[ " ${VERSIONS_SECURE_OUT} " == *" ${v} "* ]] \
+                  vs=$( [[ " ${plat_vs} " == *" ${v} "* ]] \
                           && echo "${v}" || echo "" )
                   jq -nc \
                     --arg version "${v}" \
