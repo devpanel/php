@@ -351,9 +351,9 @@ runs:
       id: detect
       shell: bash
       env:
-        AFTER_SHA:       ${{ inputs.after_sha }}
-        BEFORE_SHAS:     ${{ inputs.before_shas }}
-        PLATFORMS:       ${{ inputs.platforms_filter }}
+        AFTER_SHA: ${{ inputs.after_sha }}
+        BEFORE_SHAS: ${{ inputs.before_shas }}
+        PLATFORMS: ${{ inputs.platforms_filter }}
       run: |
         set -euo pipefail
 

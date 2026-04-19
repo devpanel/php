@@ -1,38 +1,31 @@
 #!/usr/bin/env bash
 # tests/lint-yaml.sh — Run yamllint on all GitHub Actions YAML files
-# (workflows and composite actions) and compare against the stored baseline.
-# Any deviation from the baseline counts (increase or decrease) causes failure —
-# the baseline must match exactly.
+# (workflows and composite actions) and fail on any violation.
+# Zero violations are strictly enforced: any yamllint error or warning
+# that matches the configured rules causes an immediate CI failure.
 #
 # Options:
 #   --files <f1> [f2 ...]   Lint specific files instead of all YAML files.
-#   --update-baseline       Overwrite the baseline with the current results.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BASELINE="${REPO_ROOT}/tests/baselines/yamllint-baseline.json"
 YAMLLINT_CONFIG="${REPO_ROOT}/.yamllint.yml"
-TMP_CURRENT="$(mktemp "${TMPDIR:-/tmp}/yamllint-current-XXXXXX")"
-trap 'rm -f "$TMP_CURRENT"' EXIT
 
 # ---------------------------------------------------------------------------
 # Parse arguments
 # ---------------------------------------------------------------------------
-UPDATE_BASELINE=false
 FILES=()
-FILES_SPECIFIED=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --update-baseline) UPDATE_BASELINE=true; shift ;;
-    --files) FILES_SPECIFIED=true; shift; while [[ $# -gt 0 && "$1" != --* ]]; do FILES+=("$1"); shift; done ;;
+    --update-baseline)
+      echo "ERROR: tests/lint-yaml.sh does not support --update-baseline." >&2
+      echo "       yamllint violations must be fixed; they cannot be baselined." >&2
+      exit 1
+      ;;
+    --files) shift; while [[ $# -gt 0 && "$1" != --* ]]; do FILES+=("$1"); shift; done ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
-
-if [[ "$UPDATE_BASELINE" == true && "$FILES_SPECIFIED" == true ]]; then
-  echo "ERROR: --update-baseline cannot be combined with --files. Regenerate baselines with a full lint run." >&2
-  exit 1
-fi
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
   # macOS ships Bash 3.2, which does not provide mapfile.
@@ -42,34 +35,20 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Run yamllint and collect counts per file:rule
+# Run yamllint and fail on any violation
 # ---------------------------------------------------------------------------
 echo "Running yamllint on ${#FILES[@]} file(s)…"
 
-python3 - "$REPO_ROOT" "$YAMLLINT_CONFIG" "$BASELINE" "$TMP_CURRENT" "${FILES[@]}" << 'PYEOF'
-import subprocess, json, sys, re, os
+python3 - "$YAMLLINT_CONFIG" "${FILES[@]}" << 'PYEOF'
+import subprocess, sys, re
 
-repo_root      = sys.argv[1]
-config_path    = sys.argv[2]
-baseline_path  = sys.argv[3]
-current_path   = sys.argv[4]
-files          = sys.argv[5:]
+config_path = sys.argv[1]
+files       = sys.argv[2:]
 
-def rel(path):
-    try:
-        r = os.path.relpath(path, repo_root)
-    except ValueError:
-        r = path
-    # os.path.relpath never returns a leading "./" for subdirectory paths,
-    # so we only need to strip a leading "/" (shouldn't happen on POSIX but
-    # be safe), and must NOT strip leading dots (e.g. ".github/workflows/…").
-    return "./" + r.lstrip("/")
-
-counts = {}
-# parsable format: path:line:col: [level] message (rule)
-# The rule name appears in parentheses at the end of each line.
 PATTERN = re.compile(r"^.+?:\d+:\d+: \[(?:warning|error)\] .+\((.+?)\)\s*$")
 
+total_violations = 0
+any_failed = False
 for f in files:
     result = subprocess.run(
         ["yamllint", "--format", "parsable", "-c", config_path, f],
@@ -81,46 +60,22 @@ for f in files:
         if result.stderr:
             sys.stderr.write(result.stderr)
         sys.exit(result.returncode)
-    for line in result.stdout.splitlines():
-        m = PATTERN.match(line)
-        if m:
-            rule = m.group(1)
-            key = "{}:{}".format(rel(f), rule)
-            counts[key] = counts.get(key, 0) + 1
-            print("  {}".format(line))
+    if result.returncode == 1:
+        any_failed = True
+        matched = 0
+        for line in result.stdout.splitlines():
+            if PATTERN.match(line):
+                matched += 1
+                total_violations += 1
+                print("  {}".format(line))
+        # If nothing matched the expected pattern, print raw output so nothing is hidden
+        if matched == 0 and result.stdout.strip():
+            sys.stderr.write("yamllint reported issues in {} (raw output):\n".format(f))
+            sys.stderr.write(result.stdout)
 
-with open(current_path, "w") as fh:
-    json.dump(counts, fh, indent=2, sort_keys=True)
-    fh.write("\n")
+if any_failed or total_violations > 0:
+    sys.stderr.write("yamllint: {} violation(s) found. Fix all violations before committing.\n".format(total_violations))
+    sys.exit(1)
 PYEOF
 
-# ---------------------------------------------------------------------------
-# Update baseline if requested
-# ---------------------------------------------------------------------------
-if [[ "$UPDATE_BASELINE" == true ]]; then
-  count=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$TMP_CURRENT")
-  cp "$TMP_CURRENT" "$BASELINE"
-  if [[ "$count" == "0" ]]; then
-    echo "All violations resolved. Baseline written as empty: $BASELINE"
-    BASELINE_REL="${BASELINE#"${REPO_ROOT}/"}"
-    TODO_ENTRY="- [ ] Remove yamllint baseline comparison: delete ${BASELINE_REL} and the baseline comparison logic from tests/lint-yaml.sh, and update the script to fail when yamllint reports any violations (fail when the generated JSON is non-empty). After that, any new yamllint violation will be an immediate CI failure."
-    if ! grep -qFe "$TODO_ENTRY" "${REPO_ROOT}/TODO.md" 2>/dev/null; then
-      echo "$TODO_ENTRY" >> "${REPO_ROOT}/TODO.md"
-      echo "TODO entry appended to TODO.md — remove the baseline comparison for this linter entirely."
-    else
-      echo "TODO entry already present in TODO.md."
-    fi
-  else
-    echo "Baseline updated: $BASELINE"
-  fi
-  exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Compare against baseline
-# ---------------------------------------------------------------------------
-if [[ "$FILES_SPECIFIED" == true ]]; then
-  python3 "${REPO_ROOT}/tests/compare-baseline.py" "$BASELINE" "$TMP_CURRENT" --repo-root "$REPO_ROOT" --files "${FILES[@]}"
-else
-  python3 "${REPO_ROOT}/tests/compare-baseline.py" "$BASELINE" "$TMP_CURRENT"
-fi
+echo "yamllint: no violations found."
