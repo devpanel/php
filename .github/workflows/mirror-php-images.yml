@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Test whether github.token (GITHUB_TOKEN) can write to the GHCR mirror
       # repository.  The job declares packages:write so this should succeed in
