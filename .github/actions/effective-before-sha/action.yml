@@ -126,6 +126,7 @@ runs:
               _pr_shas_json="$(printf '%s' "${_pr_shas_json}" \
                 | jq -c --arg k "${_k}" --arg v "${PR_BASE_SHA}" '. + {($k): $v}')"
             done
+            _pr_shas_json="$(printf '%s' "${_pr_shas_json}" | jq -c '.')"
             echo "before_shas=${_pr_shas_json}" >> "$GITHUB_OUTPUT"
           else
             echo "before_shas={}" >> "$GITHUB_OUTPUT"
@@ -320,4 +321,5 @@ runs:
               | jq -c --arg k "${pkey}" --arg v "${_sha}" '. + {($k): $v}')"
           fi
         done
+        BEFORE_SHAS_JSON="$(printf '%s' "${BEFORE_SHAS_JSON}" | jq -c '.')"
         echo "before_shas=${BEFORE_SHAS_JSON}" >> "$GITHUB_OUTPUT"
