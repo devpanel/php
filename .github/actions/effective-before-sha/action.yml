@@ -9,13 +9,13 @@ description: >
   and for each platform finds the closest reachable ancestor run's head
   SHA that included that platform (verified via the platforms_filter
   annotation emitted by this same action in prior runs).  Annotated runs
-  (those with a platforms_filter annotation) are preferred; unannotated
-  runs (predating the annotation feature) are only used as a fallback when
-  no annotated run exists for that platform.  Different platforms may map
-  to different before SHAs — e.g. when a new platform is first added, it
-  will have no recent annotated anchor and will only match old unannotated
-  runs if those exist, or get no entry in before_shas otherwise (triggering
-  a full rebuild for that platform).
+  (those with a platforms_filter annotation) are always preferred.
+  Unannotated runs (predating the annotation feature) are only used as a
+  fallback when no annotated runs exist at all in the candidate set.  When
+  annotated runs are present, platforms with no annotated run covering them
+  are omitted from before_shas (triggering a full rebuild for that platform)
+  rather than being anchored to an old unannotated run.  Different platforms
+  may map to different before SHAs.
 
   Also emits a platforms_filter annotation listing the platforms this run
   is targeting, so that future runs can use it to anchor change detection.
@@ -75,10 +75,10 @@ outputs:
       JSON map of platform-key to the closest reachable ancestor SHA,
       e.g. {"linux-amd64":"abc123","linux-arm64":"def456"}.
       Each platform maps to the SHA of the closest ancestor annotated run
-      that included that platform.  When no annotated run exists for a
-      platform, the closest unannotated run is used as a fallback.
-      Platforms with no qualifying prior run are omitted (triggers full
-      rebuild for that platform).
+      that included that platform.  Unannotated runs are used as fallback
+      only when no annotated runs exist at all in the candidate set.
+      When annotated runs are present, platforms with no annotated run
+      covering them are omitted (triggers full rebuild for that platform).
       Emitted as {} when platforms is empty or no candidates are found.
     value: ${{ steps.compute.outputs.before_shas }}
 
@@ -248,9 +248,12 @@ runs:
 
         # For each platform key, independently find the closest reachable
         # ancestor run that included that specific platform.  Annotated runs
-        # (those emitting a platforms_filter annotation) are preferred.
-        # Unannotated runs (predating the annotation feature) are used only as
-        # a fallback when no annotated run exists for that platform.
+        # (those emitting a platforms_filter annotation) are always preferred.
+        # Unannotated runs (predating the annotation feature) are only used as
+        # a fallback when no annotated runs exist at all in the candidate set.
+        # When annotated runs are present, a platform with no annotated run
+        # covering it is omitted from before_shas (full rebuild) rather than
+        # being anchored to an old unannotated run.
         declare -A BEST_ANNOTATED_SHA_PER_PKEY    # pkey -> best annotated sha
         declare -A BEST_ANNOTATED_AHEAD_PER_PKEY  # pkey -> ahead count for best annotated sha
         declare -A BEST_UNANNOTATED_SHA_PER_PKEY    # pkey -> best unannotated sha
@@ -282,7 +285,7 @@ runs:
               fi
             else
               # Unannotated run: record as fallback, used only when no annotated
-              # run exists for this platform.
+              # runs exist at all in the candidate set.
               _existing_ahead="${BEST_UNANNOTATED_AHEAD_PER_PKEY[${_pkey}]:-999999999}"
               if [[ "${COMPARE_AHEAD}" -lt "${_existing_ahead}" ]]; then
                 BEST_UNANNOTATED_SHA_PER_PKEY["${_pkey}"]="${sha}"
@@ -292,12 +295,24 @@ runs:
           done
         done
 
-        # Build before_shas: prefer closest annotated run; fall back to closest
-        # unannotated run when no annotated run exists for a platform.
+        # Build before_shas: use annotated runs only.  Unannotated runs are
+        # used as a fallback only when no annotated runs were found at all
+        # across all platforms (i.e. the history predates the annotation
+        # feature entirely).  When annotated runs exist, a platform with no
+        # annotated coverage gets no entry (triggering a full rebuild) rather
+        # than being anchored to an old unannotated run.
+        _has_any_annotated=false
+        for _pkey in "${PLATFORM_KEYS[@]}"; do
+          if [[ -n "${BEST_ANNOTATED_SHA_PER_PKEY[${_pkey}]:-}" ]]; then
+            _has_any_annotated=true
+            break
+          fi
+        done
+
         BEFORE_SHAS_JSON="{}"
         for pkey in "${PLATFORM_KEYS[@]}"; do
           _sha="${BEST_ANNOTATED_SHA_PER_PKEY[${pkey}]:-}"
-          if [[ -z "${_sha}" ]]; then
+          if [[ -z "${_sha}" ]] && [[ "${_has_any_annotated}" == "false" ]]; then
             _sha="${BEST_UNANNOTATED_SHA_PER_PKEY[${pkey}]:-}"
           fi
           if [[ -n "${_sha}" ]]; then
