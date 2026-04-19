@@ -470,24 +470,17 @@ runs:
 
         # Normalize BEFORE_SHAS to a single compact JSON object up-front so
         # that both the count check and per-platform lookups operate on the same
-        # validated, single-document value.  jq -sc '(first // {})' slurps all
-        # stdin, takes the first element (or {} when empty/null), and outputs
-        # compact JSON.  If jq fails (truly malformed input), fall back to '{}'.
+        # validated, single-document value. jq -sc slurps all stdin, takes the
+        # first element (or {} when empty/null), coerces any non-object value to
+        # {}, and outputs compact JSON. If jq fails (truly malformed input),
+        # fall back to '{}'.
         BEFORE_SHAS="$(printf '%s' "${BEFORE_SHAS:-{}}" \
-          | jq -sc '(first // {})' 2>/dev/null || echo '{}')"
+          | jq -sc '((first // {}) | if type == "object" then . else {} end)' 2>/dev/null || echo '{}')"
 
         # Determine whether a non-empty before_shas map was provided.
         # A non-empty map means per-platform version detection should be used.
         BEFORE_SHAS_COUNT="$(printf '%s' "${BEFORE_SHAS}" \
           | jq 'length' 2>/dev/null || echo '0')"
-        if [[ ! "${BEFORE_SHAS_COUNT}" =~ ^[0-9]+$ ]]; then
-          BEFORE_SHAS_PREVIEW="${BEFORE_SHAS:0:200}"
-          BEFORE_SHAS_PREVIEW="${BEFORE_SHAS_PREVIEW//'%'/'%25'}"
-          BEFORE_SHAS_PREVIEW="${BEFORE_SHAS_PREVIEW//$'\r'/'%0D'}"
-          BEFORE_SHAS_PREVIEW="${BEFORE_SHAS_PREVIEW//$'\n'/'%0A'}"
-          echo "::error::BEFORE_SHAS_COUNT resolved to a non-integer value ('${BEFORE_SHAS_COUNT}'); the before_shas input may be malformed. BEFORE_SHAS (first 200 chars): ${BEFORE_SHAS_PREVIEW}"
-          exit 1
-        fi
 
         if [[ "${BEFORE_SHAS_COUNT}" -gt 0 && -n "${AFTER_SHA}" ]]; then
           # ── Per-platform version detection ───────────────────────────────
