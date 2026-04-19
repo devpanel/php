@@ -74,7 +74,7 @@ echo
 
 for suite in "${SUITES[@]}"; do
   case "$suite" in
-    yaml)       run_suite "YAML lint"        "${TESTS_DIR}/lint-yaml.sh"        "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
+    yaml)       run_suite "YAML lint"        "${TESTS_DIR}/lint-yaml.sh" ;;
     shell)      run_suite "Shell lint"       "${TESTS_DIR}/lint-shell.sh"       "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
     dockerfile) run_suite "Dockerfile lint"  "${TESTS_DIR}/lint-dockerfile.sh"  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
     build)      run_suite "Docker build"     "${TESTS_DIR}/build-dockerfile.sh" \

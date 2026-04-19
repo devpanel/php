@@ -120,7 +120,6 @@ Run any individual suite with `--update-baseline`:
 ```bash
 bash tests/lint-dockerfile.sh --update-baseline
 bash tests/lint-shell.sh      --update-baseline
-bash tests/lint-yaml.sh       --update-baseline
 ```
 
 Or update all baselines at once:
@@ -128,6 +127,10 @@ Or update all baselines at once:
 ```bash
 ./test.sh --update-baseline
 ```
+
+> **Note:** YAML linting (`tests/lint-yaml.sh`) does not support `--update-baseline`.
+> When `./test.sh --update-baseline` is run, the YAML suite is skipped gracefully.
+> yamllint violations must be fixed before committing — they cannot be baselined.
 
 Commit the changed `tests/baselines/*.json` files together with the code
 change that justifies the update.
@@ -274,7 +277,8 @@ for setup instructions.
   `tests/detect-versions.sh`.
 - Lint baselines are stored as JSON in `tests/baselines/`.  Update them with
   `./test.sh --update-baseline` whenever you make a change that intentionally
-  alters lint counts.
+  alters lint counts.  Note that YAML linting does not use baselines — any
+  yamllint violation must be fixed directly.
 - Build tests (`tests/build-dockerfile.sh`) try to build every Dockerfile
   without pushing.  Functional tests (`tests/run-dockerfile.sh`) then start each
   built image and verify PHP, Apache, Composer, and extensions work.
