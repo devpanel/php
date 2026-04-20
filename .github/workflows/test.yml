@@ -145,7 +145,10 @@ jobs:
           before_sha="$(printf '%s' "${BEFORE_SHAS}" \
             | jq -r '.["linux-amd64"] // ""' 2>/dev/null || echo '')"
           if [[ -n "$before_sha" ]]; then
-            versions_str=$(bash tests/detect-versions.sh --before "$before_sha" --after "${{ github.sha }}" | sort -V | tr '\n' ' ' | sed 's/ $//')
+            if ! git cat-file -e "${before_sha}^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=1 origin "${before_sha}" 2>/dev/null || true
+            fi
+            versions_str=$(bash tests/detect-versions.sh --before "$before_sha" --after "${{ github.sha }}" | sort -V | tr '\n' ' ' | sed 's/ $//' || echo '')
           else
             versions_str=$(bash tests/detect-versions.sh | sort -V | tr '\n' ' ' | sed 's/ $//')
           fi
