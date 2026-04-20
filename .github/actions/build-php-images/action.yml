@@ -166,36 +166,11 @@ runs:
         echo "platform_key=${platform_normalized//\//-}" >> "$GITHUB_OUTPUT"
         echo "version=${VERSION}"                         >> "$GITHUB_OUTPUT"
 
-    # Pull the base PHP image into the active Buildx builder's content store
-    # from the GHCR mirror before logging in to Docker Hub.  Using
-    # "docker buildx build" (rather than plain "docker pull") ensures the
-    # layers land in the BuildKit content store of the builder created by
-    # docker/setup-buildx-action, which is the same builder used by the bake
-    # steps below — they therefore find the base image already cached and do
-    # not re-pull it from Docker Hub.  A failure is non-fatal; bake will
-    # re-pull as a last resort using the runner's anonymous Docker Hub quota.
-    - name: Pre-pull base PHP image from GHCR mirror
-      shell: bash
-      env:
-        VERSION: ${{ inputs.version }}
-        PLATFORM: ${{ steps.platform.outputs.platform }}
-      run: |
-        set -euo pipefail
-        _ctx="$(mktemp -d)"
-        trap 'rm -rf "${_ctx}"' EXIT
-        _owner_lc="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-        _mirror_image="ghcr.io/${_owner_lc}/php-base-mirror/library/php:${VERSION}-apache"
-        if printf 'FROM %s\n' "${_mirror_image}" \
-            | docker buildx build --platform "${PLATFORM}" -f - "${_ctx}" 2>/dev/null; then
-          echo "Pre-pulled base image from GHCR mirror (${_mirror_image})."
-        else
-          echo "GHCR mirror pull failed; bake will pull from Docker Hub directly."
-        fi
-
     # Docker Hub login scoped to push-only on inputs.repo (devpanel/php by
-    # default).  The scope parameter requests an OAuth2 token that only covers
-    # push operations on that repository, so Docker falls back to the runner's
-    # anonymous (IP-based) quota when pulling library/php during bake.
+    # default).  The scope parameter writes credentials to the Buildx
+    # configuration rather than the global Docker config, so the runner's
+    # embedded Docker Hub token (unlimited pulls) remains active for pulling
+    # library/php during bake.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
@@ -401,57 +376,6 @@ runs:
     # compare the encoded attempt directly against GITHUB_RUN_ATTEMPT (a default
     # GitHub Actions environment variable automatically set on every runner) and
     # ignore stale markers from a previous failed attempt when re-running.
-
-    # Diagnostic step: when any bake stage failed, probe Docker Hub's pull
-    # rate-limit endpoint and emit an actionable error message.
-    - name: Check for Docker Hub rate limit errors
-      if: failure() && (steps.bake-base.outcome == 'failure' || steps.bake-secure.outcome == 'failure' || steps.bake-advance.outcome == 'failure')
-      shell: bash
-      env:
-        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
-        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
-        VERSION: ${{ inputs.version }}
-        PLATFORM: ${{ steps.platform.outputs.platform }}
-      run: |
-        set -euo pipefail
-        # Use the Docker Hub ratelimitpreview endpoint to inspect the current
-        # pull rate limit without consuming any quota.  If RateLimit-Remaining
-        # is 0 the pull rate limit is exhausted; a base-image pull throttle
-        # may have caused the bake failure.  Otherwise report a generic
-        # build failure and direct the user to the failed step's output.
-        # shellcheck source=.github/scripts/hub-quota-helpers.sh
-        source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
-        _auth_token_ok=false
-        refresh_auth_quota_token && _auth_token_ok=true || true
-        rl_remaining=""
-        if ${_auth_token_ok}; then
-          rl_remaining="$(auth_quota_remaining)"
-        fi
-        if [[ "${rl_remaining}" == "unlimited" ]]; then
-          echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
-               "Docker Hub account '${DOCKERHUB_USERNAME}' has no pull rate limit;" \
-               "quota exhaustion is not the cause of this failure." \
-               "See the failed bake step above for details." \
-               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-        elif [[ "${rl_remaining}" == "0" ]]; then
-          echo "::error::Docker Hub pull rate limit exhausted for account '${DOCKERHUB_USERNAME}'." \
-               "Wait ~6 hours, then click 'Re-run failed jobs' on this workflow run's summary page."
-        elif [[ -n "${rl_remaining}" ]]; then
-          echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
-               "Docker Hub pull rate limit is not exhausted (${rl_remaining} request(s) remaining)." \
-               "See the failed bake step above for details." \
-               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-        elif ${_auth_token_ok}; then
-          echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
-               "Could not determine Docker Hub pull rate limit status" \
-               "(rate-limit probe failed with a non-2xx response or network error); see the failed bake step above." \
-               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-        else
-          echo "::error::One or more bake stages failed for PHP ${VERSION} on ${PLATFORM}." \
-               "Could not determine Docker Hub pull rate limit status" \
-               "(auth token fetch from auth.docker.io failed); see the failed bake step above." \
-               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
-        fi
 
     - name: Prepare build-done marker
       if: always()

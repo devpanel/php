@@ -20,10 +20,7 @@ description: >
 inputs:
   github_token:
     description: >
-      GitHub token used for authenticated GitHub API calls during version resolution and for
-      best-effort GHCR authentication before the mirror pull.  The token must have at least
-      `packages: read` permission for the mirror pull to succeed; the mirror pull falls back
-      silently to Docker Hub if login or the pull fails.
+      GitHub token used for authenticated GitHub API calls during version resolution.
     required: true
   versions:
     description: >
@@ -31,20 +28,6 @@ inputs:
       Used to pull the actual php:<version>-apache images and detect which Debian
       codename each version runs on, so compatibility tests use the real target image.
     required: true
-  ghcr_token:
-    description: >
-      Optional classic Personal Access Token with the read:packages scope (or
-      write:packages if this action should also be able to pull private images).
-      When provided, this token is used instead of github_token for the best-effort
-      GHCR login before the mirror pull.  Required when the organisation's Actions
-      token policy restricts GITHUB_TOKEN from reading packages.
-    default: ''
-  ghcr_user:
-    description: >
-      Username associated with ghcr_token when using a Personal Access Token.
-      Pass the username value as this input, typically from the calling
-      workflow's GHCR_USER repository variable (vars.GHCR_USER).
-    default: ''
   refresh_cache:
     description: >
       When "true", always download fresh artifacts even when a cache entry
@@ -92,28 +75,6 @@ runs:
         path: ${{ runner.temp }}/php-codenames-cache.json
         key: php-codenames-
 
-    # Best-effort GHCR login so the mirror pull below can reach private packages.
-    # Falls back to the PAT (ghcr_token/ghcr_user) when configured, mirroring the
-    # same credential-selection logic used by build-php-images and merge-manifests.
-    # continue-on-error keeps the silent-fallback behaviour when login fails.
-
-    # Emit a non-fatal warning when a PAT is provided without the required username
-    # so the misconfiguration is visible rather than silently falling back to
-    # GITHUB_TOKEN (which may not have read access to the private mirror).
-    - name: Warn on incomplete GHCR PAT configuration
-      if: inputs.ghcr_token != '' && inputs.ghcr_user == ''
-      shell: bash
-      run: |
-        echo "::warning::ghcr_token is set but ghcr_user is not provided. GHCR login will fall back to GITHUB_TOKEN. Set ghcr_user (typically vars.GHCR_USER) if PAT auth is required for the private mirror pull."
-
-    - name: Login to GitHub Container Registry
-      uses: docker/login-action@v4
-      continue-on-error: true
-      with:
-        registry: ghcr.io
-        username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
-        password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
-
     - name: Detect Debian codenames and resolve artifact versions
       id: detect-and-resolve
       shell: bash
@@ -138,18 +99,6 @@ runs:
         CODENAMES_CACHE_FILE="${RUNNER_TEMP}/php-codenames-cache.json"
         [[ -f "${CODENAMES_CACHE_FILE}" ]] || echo '{}' > "${CODENAMES_CACHE_FILE}"
 
-        # Obtain an anonymous Docker Hub token for library/php to look up
-        # image manifests without using the authenticated pull quota.
-        ANON_PHP_TOKEN=""
-        ANON_PHP_TOKEN="$(curl -sf --connect-timeout 5 --max-time 15 \
-          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/php:pull" \
-          2>/dev/null | jq -r '.token // ""')" || ANON_PHP_TOKEN=""
-        if [[ -n "${ANON_PHP_TOKEN}" ]]; then
-          echo "  Obtained anonymous Docker Hub token for library/php." >&2
-        else
-          echo "  Could not obtain anonymous token; will use docker pull for all versions." >&2
-        fi
-
         for ver in $VERSIONS; do
           image="php:${ver}-apache"
 
@@ -164,49 +113,10 @@ runs:
             echo "  ${image} → ${codename} (cached for version ${ver})" >&2
           else
             # ── Cache miss: pull the image and detect codename ─────────────
-            # Attempt flow (GHCR mirror first, then unauthenticated Docker Hub):
-            #   1. Best-effort anonymous registry API probe to check manifest
-            #      reachability and capture the digest for logging only
-            #      (no docker pull, no account pull quota consumed). Probe
-            #      failures are diagnostic and do not skip the pull steps.
-            #   2. GHCR mirror pull (avoids Docker Hub pull quota entirely).
-            #   3. Unauthenticated Docker Hub pull (IP-based anonymous quota).
-            #      Fails visibly if rate-limited; no authenticated fallback —
-            #      Docker Hub credentials are scoped to pushing our own images
-            #      (devpanel/php) only.
-            if [[ -n "${ANON_PHP_TOKEN}" ]]; then
-              _head_tmp="$(mktemp)"
-              _curl_ok=false
-              curl -sf --connect-timeout 5 --max-time 15 \
-                --head \
-                -H "Authorization: Bearer ${ANON_PHP_TOKEN}" \
-                -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
-                -D "${_head_tmp}" \
-                "https://registry-1.docker.io/v2/library/php/manifests/${ver}-apache" \
-                2>/dev/null && _curl_ok=true || true
-              if [[ "${_curl_ok}" == "true" ]]; then
-                _image_digest="$(grep -i '^docker-content-digest:' "${_head_tmp}" 2>/dev/null \
-                  | awk '{print $2}' | tr -d '\r\n')" || _image_digest=""
-                [[ -n "${_image_digest}" ]] \
-                  && echo "  ${image} digest: ${_image_digest} (manifest reachable)" >&2
-              else
-                echo "  Anonymous manifest HEAD failed for ${image}." >&2
-              fi
-              rm -f "${_head_tmp}"
-            fi
-            _GHCR_MIRROR="ghcr.io/$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')/php-base-mirror"
-            _GHCR_MIRROR_IMAGE="${_GHCR_MIRROR}/library/php:${ver}-apache"
-            if docker pull --quiet "${_GHCR_MIRROR_IMAGE}" >/dev/null 2>&1; then
-              echo "  Pulled from GHCR mirror (${_GHCR_MIRROR_IMAGE}); skipping Docker Hub pull." >&2
-              image="${_GHCR_MIRROR_IMAGE}"
-            else
-              # Pull without Docker Hub credentials: Docker Hub credentials are
-              # scoped to pushing our own images (devpanel/php), not pulling
-              # public base images.  Use IP-based anonymous quota; if
-              # rate-limited the error is visible in the log.
-              echo "Pulling ${image} to detect Debian codename (unauthenticated)..." >&2
-              docker pull --quiet "$image" >&2
-            fi
+            # Pull the image using the runner's embedded Docker Hub token
+            # (unlimited pulls on GitHub-hosted runners).
+            echo "Pulling ${image} to detect Debian codename..." >&2
+            docker pull --quiet "$image" >&2
             codename=$(docker run --rm "$image" sh -c \
               '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-}"')
             # Cache the codename by PHP version (stable key, never changes mid-lifecycle).
