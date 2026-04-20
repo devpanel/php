@@ -16,12 +16,12 @@ inputs:
   needed_pulls:
     description: >
       Worst-case number of authenticated Docker Hub pulls needed by the
-      parallel build jobs.  Pass steps.detect.outputs.needed_pulls
-      (currently expected to equal build_matrix_length: one pull per build
-      job for the base PHP image in the worst case where every job misses
-      the GHCR mirror and falls back to an authenticated pull).  This value
-      is validated and logged for consistency with detect-versions output;
-      the authenticated reserve is computed from build_matrix_length.
+      parallel build jobs.  Pass steps.detect.outputs.needed_pulls, and it
+      must equal build_matrix_length: one pull per build job for the base
+      PHP image in the worst case where every job misses the GHCR mirror
+      and falls back to an authenticated pull.  This value is strictly
+      validated against detect-versions output for consistency; the
+      authenticated reserve itself is computed from build_matrix_length.
     required: true
   dockerhub_username:
     description: Docker Hub username for authenticating the pull-rate-limit probe.

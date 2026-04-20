@@ -116,9 +116,10 @@ outputs:
   needed_pulls:
     description: >
       Worst-case number of authenticated Docker Hub pulls needed by the
-      parallel build jobs: one per build job (base PHP image fallback when the
-      GHCR layer cache misses).  Equals build_matrix_length.  Pass directly to
-      the needed_pulls input of wait-pull-quota.
+      parallel build jobs: one per build job when anonymous Docker Hub
+      pre-pulls fail and the GHCR mirror fallback path must authenticate.
+      Equals build_matrix_length.  Pass directly to the needed_pulls input of
+      wait-pull-quota.
     value: ${{ steps.detect.outputs.needed_pulls }}
   tag_suffix:
     description: >
