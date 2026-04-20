@@ -199,7 +199,7 @@ runs:
         # by the resolve-ghcr token-scope check, reuse that result to avoid a
         # redundant network call.
         if [[ "${USING_GHCR_TOKEN}" == "false" && "${GITHUB_TOKEN_WRITABLE}" == "true" ]]; then
-          echo "GHCR write access confirmed for ghcr.io/${REPO_LC} (reusing resolve-ghcr probe result)."
+          echo "GHCR write access confirmed for ghcr.io/${REPO_LC} (reusing resolve-ghcr token-scope check result)."
           echo "writable=true" >> "$GITHUB_OUTPUT"
           echo "ghcr_cred_source=github_token" >> "$GITHUB_OUTPUT"
           echo "✅ **GHCR cache write pre-check:** passed — layer caches will be written to ghcr.io/${REPO_LC} (GHCR is primary)." >> "$GITHUB_STEP_SUMMARY"
