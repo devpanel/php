@@ -164,15 +164,16 @@ runs:
             echo "  ${image} → ${codename} (cached for version ${ver})" >&2
           else
             # ── Cache miss: pull the image and detect codename ─────────────
-            # Attempt flow (best-effort probe → unauthenticated pull →
-            # authenticated fallback):
+            # Attempt flow (GHCR mirror first, then unauthenticated Docker Hub):
             #   1. Best-effort anonymous registry API probe to check manifest
             #      reachability and capture the digest for logging only
             #      (no docker pull, no account pull quota consumed). Probe
             #      failures are diagnostic and do not skip the pull steps.
-            #   2. Unauthenticated docker pull (IP-based anonymous quota).
-            #   3. Authenticated docker pull (per-account quota, only when
-            #      credentials are available and step 2 fails).
+            #   2. GHCR mirror pull (avoids Docker Hub pull quota entirely).
+            #   3. Unauthenticated Docker Hub pull (IP-based anonymous quota).
+            #      Fails visibly if rate-limited; no authenticated fallback —
+            #      Docker Hub credentials are scoped to pushing our own images
+            #      (devpanel/php) only.
             if [[ -n "${ANON_PHP_TOKEN}" ]]; then
               _head_tmp="$(mktemp)"
               _curl_ok=false

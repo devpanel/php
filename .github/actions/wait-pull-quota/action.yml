@@ -66,11 +66,11 @@ runs:
                "'${build_matrix_length}'. It must be a non-negative integer."
           exit 1
         fi
-        if (( build_matrix_length > needed_pulls )); then
+        if (( build_matrix_length != needed_pulls )); then
           echo "::error::Invalid input combination: inputs.build_matrix_length" \
-               "(${build_matrix_length}) cannot be greater than" \
+               "(${build_matrix_length}) must equal" \
                "inputs.needed_pulls (${needed_pulls})." \
-               "inputs.needed_pulls must include the build matrix share."
+               "inputs.needed_pulls must equal the build matrix length."
           exit 1
         fi
 
@@ -86,8 +86,8 @@ runs:
         # ── 1. Source shared quota helpers ────────────────────────────────────
         # Defines refresh_hub_token, hub_pull_remaining, and the convenience
         # wrappers refresh_anon_quota_token, refresh_auth_quota_token,
-        # anon_quota_remaining, auth_quota_remaining.  Also initialises the
-        # internal quota-probe token state and TOKEN_MAX_AGE (240 s default).
+        # auth_quota_remaining.  Also initialises the internal quota-probe
+        # token state and TOKEN_MAX_AGE (240 s default).
         # shellcheck source=.github/scripts/hub-quota-helpers.sh
         source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
 
@@ -101,53 +101,29 @@ runs:
         echo "Docker Hub credentials verified."
 
         echo "Checking Docker Hub pull quota" \
-             "(need ${needed_pulls} pull(s) for pre-seed and parallel build jobs)..."
+             "(need ${needed_pulls} authenticated pull(s) for parallel build jobs)..."
         MAX_WAIT=19800  # 5h30m to stay below common 6h GitHub job timeouts
         POLL_INTERVAL=60
         elapsed=0
 
         # ── 2. (quota probe functions defined in hub-quota-helpers.sh above) ──
 
-        # ── 3. Calculate the number of anonymous pulls to reserve ─────────────
-        # The pre-seeding step runs in THIS job on THIS runner and uses the
-        # IP-based anonymous quota (100 pulls/6 h from this runner's IP).
-        # Build jobs run on OTHER runners; their anonymous buckets are
-        # independent of this runner's IP, so we do NOT reserve anonymous
-        # quota for them here.  Reserve only the preseed pulls (= total needed
-        # minus the build-job share handled by the auth reserve below).
-        _anon_reserve=$(( needed_pulls > build_matrix_length \
-                            ? needed_pulls - build_matrix_length \
-                            : 0 ))
-
-        # ── 4. Calculate the number of authenticated pulls to reserve ─────────
+        # ── 3. Calculate the number of authenticated pulls to reserve ─────────
         # Build jobs share the authenticated (account-based, 200/6 h) quota
         # regardless of which runner they land on.  Each build job may fall
         # back to an authenticated pull when its anonymous pre-pull fails.
         # Reserve one authenticated slot per build job so the auth bucket is
         # not considered "available" until after every build job's potential
-        # fallback has been accounted for.
+        # fallback has been accounted for.  needed_pulls == build_matrix_length.
         _auth_reserve=${build_matrix_length}
 
         while true; do
 
-          # ── 5. Subtract available anonymous quota from the anonymous reserve;
-          #       add the remainder to the authenticated pull requirement. ───────
-          _anon_rem="$(anon_quota_remaining)"
-          if [[ "${_anon_rem}" == "unlimited" ]]; then
-            _anon_display="unlimited"
-            _anon_covers=${_anon_reserve}
-          elif [[ -n "${_anon_rem}" ]]; then
-            _anon_display="${_anon_rem}"
-            _anon_covers=$(( _anon_rem < _anon_reserve ? _anon_rem : _anon_reserve ))
-          else
-            _anon_display="unknown"
-            _anon_covers=0
-          fi
-          _auth_needed=$(( _auth_reserve + (_anon_reserve - _anon_covers) ))
+          # ── 4. Check authenticated pull quota ────────────────────────────────
+          _auth_needed=${_auth_reserve}
 
           if (( _auth_needed == 0 )); then
-            echo "Docker Hub pull quota: ${_anon_display} anonymous remaining" \
-                 "covers all ${needed_pulls} needed pull(s); proceeding."
+            echo "Docker Hub pull quota: no authenticated pulls required; proceeding."
             break
           fi
 
@@ -160,13 +136,11 @@ runs:
 
           if [[ -n "${_auth_rem}" ]] && (( _auth_rem >= _auth_needed )); then
             echo "Docker Hub pull quota: ${_auth_rem} authenticated remaining," \
-                 "${_anon_display} anonymous remaining;" \
-                 "need ${_auth_needed} authenticated (${needed_pulls} total," \
-                 "${_anon_covers} covered by anonymous quota); proceeding."
+                 "need ${_auth_needed} (one per parallel build job); proceeding."
             break
           fi
 
-          # ── 6. Authenticated pull quota insufficient — wait for next cycle ───
+          # ── 5. Authenticated pull quota insufficient — wait for next cycle ───
           if (( elapsed >= MAX_WAIT )); then
             if [[ -z "${_auth_rem}" ]]; then
               echo "::error::Could not verify Docker Hub pull quota after ${elapsed}s." \
@@ -174,8 +148,7 @@ runs:
             else
               echo "::error::Docker Hub pull quota: waited ${elapsed}s but only" \
                    "${_auth_rem}/${_auth_needed} authenticated pull(s) available" \
-                   "(${_anon_display} anonymous remaining," \
-                   "${needed_pulls} total needed)." \
+                   "(need ${_auth_needed} for parallel build jobs)." \
                    "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
             fi
             exit 1
@@ -185,9 +158,8 @@ runs:
                  "Retrying in ${POLL_INTERVAL}s (${elapsed}/${MAX_WAIT}s elapsed)..."
           else
             echo "Docker Hub pull quota insufficient" \
-                 "(${_auth_rem}/${_auth_needed} authenticated available," \
-                 "${_anon_display} anonymous available;" \
-                 "need ${_auth_needed} authenticated, ${needed_pulls} total)." \
+                 "(${_auth_rem}/${_auth_needed} authenticated available;" \
+                 "need ${_auth_needed} for parallel build jobs)." \
                  "Waiting ${POLL_INTERVAL}s (${elapsed}/${MAX_WAIT}s elapsed)..."
           fi
           sleep "${POLL_INTERVAL}"
