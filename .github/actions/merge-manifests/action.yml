@@ -383,44 +383,42 @@ runs:
               IMAGE_SEED="${REPO}:${version}-${stage}${TAG_SUFFIX}"
 
               _seed_status=""  # "ok" | "not_found" | "error"
-              _inspect_out=""
+              _inspect_raw=""
 
-              # ── imagetools inspect ────────────────────────────────────────────
-              # A single non-raw imagetools inspect handles both multi-platform
-              # manifests (sub-entries with Platform and Digest fields) and
-              # single-platform manifests (top-level Platform and Digest fields).
-              if [[ -z "${_seed_status}" ]]; then
-                seed_stderr="$(mktemp)"
-                if _inspect_out="$(docker buildx imagetools inspect \
-                                     "${IMAGE_SEED}" 2>"${seed_stderr}")"; then
-                  _seed_status="ok"
-                  echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
+              # ── imagetools inspect --raw ──────────────────────────────────────
+              # --raw returns the manifest JSON, which is a stable machine-
+              # readable format.  jq then extracts platform/digest pairs from
+              # the manifests array (image index) without relying on the
+              # human-readable text layout that may change across buildx versions.
+              seed_stderr="$(mktemp)"
+              if _inspect_raw="$(docker buildx imagetools inspect --raw \
+                                   "${IMAGE_SEED}" 2>"${seed_stderr}")"; then
+                _seed_status="ok"
+                echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect --raw)."
+              else
+                _inspect_raw=""
+                if grep -qi \
+                     "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
+                     "${seed_stderr}"; then
+                  _seed_status="not_found"
                 else
-                  _inspect_out=""
-                  if grep -qi \
-                       "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
-                       "${seed_stderr}"; then
-                    _seed_status="not_found"
-                  else
-                    seed_err="$(cat "${seed_stderr}" 2>/dev/null || true)"
-                    echo "::warning::${IMAGE_SEED}: imagetools inspect failed" \
-                         "(${seed_err:-unknown error})."
-                    _seed_status="error"
-                  fi
+                  seed_err="$(cat "${seed_stderr}" 2>/dev/null || true)"
+                  echo "::warning::${IMAGE_SEED}: imagetools inspect failed" \
+                       "(${seed_err:-unknown error})."
+                  _seed_status="error"
                 fi
-                rm -f "${seed_stderr}"
               fi
+              rm -f "${seed_stderr}"
 
               # ── Handle inspect result ───────────────────────────────────
               _seeding_succeeded=true
               case "${_seed_status}" in
                 ok)
                   # Fresh manifest obtained; rewrite state file from it.
-                  # Parse non-raw imagetools inspect text with awk.  A single
-                  # non-raw inspect provides Platform and Digest fields for both
-                  # multi-platform manifests (as indented sub-manifest entries)
-                  # and single-platform manifests (as top-level fields) —
-                  # no second inspect call required.
+                  # Parse the raw JSON with jq: .manifests[] covers image-index
+                  # (multi-platform) manifests; single-platform image manifests
+                  # have no .manifests array and produce no output (treated as
+                  # empty, which triggers the warning below).
                   > "${IMG_PLATFORM_DIGESTS[$key]}"
                   while IFS=$'\t' read -r _pf_plat _pf_digest; do
                       IFS='/' read -r _p_os _p_arch _p_var <<< "${_pf_plat}"
@@ -439,54 +437,21 @@ runs:
                       _pf_pkey="${_normalized_plat//\//-}"
                       printf '%s\t%s\n' "${_pf_pkey}" "${_pf_digest}" \
                         >> "${IMG_PLATFORM_DIGESTS[$key]}"
-                    done < <(printf '%s' "${_inspect_out}" | awk '
-                        # Multi-platform: collect indented Platform + Digest pairs
-                        # per sub-manifest.  Digest and Platform may appear in
-                        # either order, so each block checks whether the other
-                        # field is already set and emits the pair immediately when
-                        # both are available.  This avoids buffering all entries.
-                        /^[[:space:]]+Name:[[:space:]]+/ {
-                          # Start of a new sub-manifest block; emit any pending
-                          # partial pair (should not normally occur) and reset.
-                          if (entry_digest != "" && entry_platform != "") {
-                            print entry_platform "\t" entry_digest
-                          }
-                          entry_digest = ""
-                          entry_platform = ""
-                          next
-                        }
-                        /^[[:space:]]+Digest:[[:space:]]+/ {
-                          entry_digest = $2
-                          if (entry_platform != "") {
-                            print entry_platform "\t" entry_digest
-                            entry_digest = ""
-                            entry_platform = ""
-                          }
-                          next
-                        }
-                        /^[[:space:]]+Platform:[[:space:]]+/ {
-                          entry_platform = $2
-                          if (entry_digest != "") {
-                            print entry_platform "\t" entry_digest
-                            entry_digest = ""
-                            entry_platform = ""
-                          }
-                          next
-                        }
-                        # Single-platform: top-level (non-indented) Digest and
-                        # Platform fields.  These patterns are mutually exclusive
-                        # with the indented entry_* patterns above, so entry_* and
-                        # top_* can never both be non-empty at END.
-                        /^Digest:[[:space:]]+/ { top_digest = $2; next }
-                        /^Platform:[[:space:]]+/ { top_platform = $2; next }
-                        END {
-                          if (entry_digest != "" && entry_platform != "") {
-                            print entry_platform "\t" entry_digest
-                          }
-                          if (top_digest != "" && top_platform != "") {
-                            print top_platform "\t" top_digest
-                          }
-                        }
+                    done < <(printf '%s' "${_inspect_raw}" | jq -r '
+                        .manifests[]? |
+                        select(
+                          .platform != null and
+                          (.platform.os // "") != "" and
+                          (.platform.architecture // "") != "" and
+                          (.platform.os // "") != "unknown" and
+                          (.platform.architecture // "") != "unknown"
+                        ) |
+                        [
+                          (.platform.os // "") + "/" + (.platform.architecture // "") +
+                          (if (.platform.variant // "") != ""
+                           then "/" + .platform.variant else "" end),
+                          (.digest // "")
+                        ] | @tsv
                       ')
                   n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
                   if [[ "${n}" -gt 0 ]]; then
@@ -778,20 +743,20 @@ runs:
             # ── Completion checks for this image ──────────────────────────
             digest_merged="${IMG_DIGEST_MERGED[$key]}"
 
-            if [[ "${_img_create_deferred}" == "true" ]]; then
-              # imagetools create was deferred or failed; don't mark done.
-              true
-            elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
-              if [[ "${digest_merged}" -lt "${TOTAL_PLATFORMS}" ]]; then
-                echo "::warning::Only ${digest_merged}/${TOTAL_PLATFORMS}" \
-                     "platform(s) merged for ${IMAGE}; will report at end."
+            if [[ "${_img_create_deferred}" != "true" ]]; then
+              # imagetools create ran; check whether this image is now done.
+              if [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
+                if [[ "${digest_merged}" -lt "${TOTAL_PLATFORMS}" ]]; then
+                  echo "::warning::Only ${digest_merged}/${TOTAL_PLATFORMS}" \
+                       "platform(s) merged for ${IMAGE}; will report at end."
+                fi
+                IMG_DONE[$key]="true"
+                echo "Image ${IMAGE} complete" \
+                     "(${digest_merged}/${TOTAL_PLATFORMS} platform(s) merged)."
+              elif [[ "${digest_merged}" -ge "${TOTAL_PLATFORMS}" ]]; then
+                IMG_DONE[$key]="true"
+                echo "All ${TOTAL_PLATFORMS} platform(s) merged for ${IMAGE}."
               fi
-              IMG_DONE[$key]="true"
-              echo "Image ${IMAGE} complete" \
-                   "(${digest_merged}/${TOTAL_PLATFORMS} platform(s) merged)."
-            elif [[ "${digest_merged}" -ge "${TOTAL_PLATFORMS}" ]]; then
-              IMG_DONE[$key]="true"
-              echo "All ${TOTAL_PLATFORMS} platform(s) merged for ${IMAGE}."
             fi
           done
 
