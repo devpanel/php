@@ -19,7 +19,11 @@ description: >
 
 inputs:
   github_token:
-    description: GitHub token used for authenticated GitHub API calls during version resolution.
+    description: >
+      GitHub token used for authenticated GitHub API calls during version resolution and for
+      best-effort GHCR authentication before the mirror pull.  The token must have at least
+      `packages: read` permission for the mirror pull to succeed; the mirror pull falls back
+      silently to Docker Hub if login or the pull fails.
     required: true
   versions:
     description: >

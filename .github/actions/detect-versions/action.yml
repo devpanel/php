@@ -192,6 +192,7 @@ runs:
         else
           echo "using_ghcr_token=false" >> "$GITHUB_OUTPUT"
         fi
+        echo "github_token_writable=${_can_write}" >> "$GITHUB_OUTPUT"
 
     - name: Check GHCR write access
       id: check-ghcr
@@ -199,6 +200,7 @@ runs:
       env:
         GH_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' && inputs.ghcr_token || inputs.github_token }}
         USING_GHCR_TOKEN: ${{ steps.resolve-ghcr.outputs.using_ghcr_token == 'true' }}
+        GITHUB_TOKEN_WRITABLE: ${{ steps.resolve-ghcr.outputs.github_token_writable }}
         REPO: ${{ github.repository }}
         GHCR_USER: ${{ inputs.ghcr_user }}
         GH_ACTOR: ${{ github.actor }}
@@ -206,6 +208,17 @@ runs:
         set -uo pipefail
         REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
         ORG=$(echo "${REPO}" | cut -d'/' -f1)
+
+        # When GITHUB_TOKEN is being used and its write access was already confirmed
+        # by the resolve-ghcr blob probe, reuse that result to avoid a duplicate
+        # network call and a second abandoned upload session.
+        if [[ "${USING_GHCR_TOKEN}" == "false" && "${GITHUB_TOKEN_WRITABLE}" == "true" ]]; then
+          echo "GHCR write access confirmed for ghcr.io/${REPO_LC} (reusing resolve-ghcr probe result)."
+          echo "writable=true" >> "$GITHUB_OUTPUT"
+          echo "ghcr_cred_source=github_token" >> "$GITHUB_OUTPUT"
+          echo "✅ **GHCR cache write pre-check:** passed — layer caches will be written to ghcr.io/${REPO_LC} (GHCR is primary)." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
 
         # Determine ACTOR and credential name.  When using a PAT (USING_GHCR_TOKEN=true),
         # GHCR_USER must be explicitly set; there is no fallback so that a missing/empty
