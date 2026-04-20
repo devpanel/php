@@ -171,8 +171,6 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           versions: ${{ steps.detect.outputs.all_versions }}
-          ghcr_token: ${{ secrets.GHCR_TOKEN }}
-          ghcr_user: ${{ vars.GHCR_USER }}
 
       - name: Upload preseed bake overrides
         if: steps.versions.outputs.has_versions == 'true'
