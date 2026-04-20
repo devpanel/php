@@ -114,7 +114,7 @@ runs:
       run: |
         set -euo pipefail
         if [[ "${GHCR_TOKEN_SET}" == "true" && -z "${GHCR_USER}" ]]; then
-          echo "::error::ghcr_token is set but ghcr_user is not configured. Set the GHCR_USER repository variable to the username that owns the PAT."
+          echo "::error::ghcr_token is set but the ghcr_user input is not provided. Pass the PAT owner's username via the ghcr_user input (typically vars.GHCR_USER from the calling workflow)."
           exit 1
         fi
         REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')

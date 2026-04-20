@@ -166,9 +166,9 @@ runs:
 
         # Step 1: obtain a push-scoped bearer token for GITHUB_TOKEN.
         TOKEN_RESP=$(umask 0177 && mktemp)
-        curl -s -o "${TOKEN_RESP}" -w "%{http_code}" --netrc-file "${NETRC}" \
+        curl -s -o "${TOKEN_RESP}" --netrc-file "${NETRC}" \
           "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:push" \
-          2>/dev/null > /dev/null || true
+          2>/dev/null || true
         REG_TOKEN=$(jq -r '.token // empty' "${TOKEN_RESP}" 2>/dev/null || true)
         rm -f "${TOKEN_RESP}"
 
