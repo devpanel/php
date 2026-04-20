@@ -41,7 +41,15 @@ inputs:
     description: Docker Hub username for image push authentication.
     required: true
   dockerhub_token:
-    description: Docker Hub token for image push authentication.
+    description: >
+      Docker Hub token for image push authentication.  Must be a Docker Hub
+      fine-grained access token scoped to repository devpanel/php with write
+      access only.  With a repo-scoped token, Docker Hub rejects the token
+      when Docker attempts to pull library/php during bake (wrong repository
+      scope), causing Docker to fall back to anonymous pulls — so only
+      devpanel/php pushes consume the authenticated quota.  A classic PAT
+      with no repository restrictions would allow authenticated pulls of
+      library/php and silently consume the account's pull quota.
     required: true
   github_token:
     description: >
@@ -193,9 +201,13 @@ runs:
         fi
 
     # Docker Hub login is required so that the bake steps below can push
-    # images by digest.  The login token is scoped to write operations on
-    # devpanel/php only; bake pulls of the base library/php image use the
-    # runner's anonymous (IP-based) Docker Hub quota.
+    # images by digest.  dockerhub_token must be a fine-grained Docker Hub
+    # access token restricted to devpanel/php write access.  When bake pulls
+    # library/php, Docker Hub rejects the token (wrong repository scope), so
+    # Docker falls back to an anonymous pull against the runner's IP-based
+    # quota.  Only devpanel/php push operations consume the authenticated
+    # quota.  (docker/login-action has no scope parameter; the restriction
+    # is enforced by the token's own repository scope setting in Docker Hub.)
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
