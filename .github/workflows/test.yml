@@ -121,6 +121,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
       actions: write
     outputs:
       versions: ${{ steps.versions.outputs.versions }}
@@ -137,22 +138,25 @@ jobs:
           REPO: ${{ github.repository }}
         run: echo "repo=ghcr.io/$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      - name: Detect PHP versions for build test
+      - name: Detect PHP versions
+        id: detect
+        uses: ./.github/actions/detect-versions
+        with:
+          before_shas: ${{ needs.prepare.outputs.before_shas || '{}' }}
+          after_sha: ${{ github.sha }}
+          platforms_filter: linux/amd64
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Convert the action's space-separated versions output to the JSON array
+      # that the build matrix expects, and derive the has_versions flag.
+      - name: Build versions list
         id: versions
         env:
-          BEFORE_SHAS: ${{ needs.prepare.outputs.before_shas || '{}' }}
+          VERSIONS: ${{ steps.detect.outputs.versions }}
         run: |
-          before_sha="$(printf '%s' "${BEFORE_SHAS}" \
-            | jq -r '.["linux-amd64"] // ""' 2>/dev/null || echo '')"
-          if [[ -n "$before_sha" ]]; then
-            versions_str=$(bash tests/detect-versions.sh --before "$before_sha" --after "${{ github.sha }}" | sort -V | tr '\n' ' ' | sed 's/ $//')
-          else
-            versions_str=$(bash tests/detect-versions.sh | sort -V | tr '\n' ' ' | sed 's/ $//')
-          fi
-          versions_json=$(printf '%s\n' $versions_str | jq -R -s -c '[split("\n")[] | select(length > 0)]')
+          versions_json=$(printf '%s' "$VERSIONS" | tr ' ' '\n' | jq -R -s -c '[split("\n")[] | select(length > 0)]')
           echo "versions=${versions_json}" >> "$GITHUB_OUTPUT"
-          echo "versions_str=${versions_str}" >> "$GITHUB_OUTPUT"
-          if [[ -n "${versions_str}" ]]; then
+          if [[ -n "${VERSIONS}" ]]; then
             echo "has_versions=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_versions=false" >> "$GITHUB_OUTPUT"
@@ -166,7 +170,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
-          versions: ${{ steps.versions.outputs.versions_str }}
+          versions: ${{ steps.detect.outputs.all_versions }}
 
       - name: Upload preseed bake overrides
         if: steps.versions.outputs.has_versions == 'true'

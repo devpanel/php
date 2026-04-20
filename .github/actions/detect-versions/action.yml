@@ -474,7 +474,7 @@ runs:
         # first element (or {} when empty/null), coerces any non-object value to
         # {}, and outputs compact JSON. If jq fails (truly malformed input),
         # fall back to '{}'.
-        BEFORE_SHAS="$(printf '%s' "${BEFORE_SHAS:-{}}" \
+        BEFORE_SHAS="$(printf '%s' "${BEFORE_SHAS:-}" \
           | jq -sc '((first // {}) | if type == "object" then . else {} end)' 2>/dev/null || echo '{}')"
 
         # Determine whether a non-empty before_shas map was provided.
@@ -506,6 +506,15 @@ runs:
               | jq -r --arg k "${pkey}" '.[$k] // ""' 2>/dev/null || echo '')"
 
             if [[ -n "${plat_before}" ]]; then
+              # Ensure the before SHA is in the local git object database so
+              # the diff inside detect-versions.sh can run even when the commit
+              # is no longer referenced by any branch (e.g. after a force-push).
+              # Ignore fetch errors: if the commit is truly gone, the diff will
+              # fail and detect-versions.sh will exit 1, which is handled below
+              # by the `|| echo ''` fallback.
+              if ! git cat-file -e "${plat_before}^{commit}" 2>/dev/null; then
+                git fetch --no-tags --depth=1 origin "${plat_before}" 2>/dev/null || true
+              fi
               plat_changed="$(bash tests/detect-versions.sh \
                 --before "${plat_before}" --after "${AFTER_SHA}" \
                 | tr '\n' ' ' | xargs || echo '')"
