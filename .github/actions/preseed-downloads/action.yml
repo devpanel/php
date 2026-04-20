@@ -84,6 +84,16 @@ runs:
         path: ${{ runner.temp }}/php-codenames-cache.json
         key: php-codenames-
 
+    # Best-effort GHCR login so the mirror pull below can reach private packages.
+    # continue-on-error keeps the silent-fallback behaviour when login fails.
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v4
+      continue-on-error: true
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.github_token }}
+
     - name: Detect Debian codenames and resolve artifact versions
       id: detect-and-resolve
       shell: bash
