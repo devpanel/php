@@ -146,6 +146,8 @@ jobs:
           after_sha: ${{ github.sha }}
           platforms_filter: linux/amd64
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          ghcr_token: ${{ secrets.GHCR_TOKEN }}
+          ghcr_user: ${{ vars.GHCR_USER }}
 
       # Convert the action's space-separated versions output to the JSON array
       # that the build matrix expects, and derive the has_versions flag.
@@ -171,6 +173,8 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           versions: ${{ steps.detect.outputs.all_versions }}
+          ghcr_token: ${{ secrets.GHCR_TOKEN }}
+          ghcr_user: ${{ vars.GHCR_USER }}
 
       - name: Upload preseed bake overrides
         if: steps.versions.outputs.has_versions == 'true'

@@ -41,6 +41,20 @@ inputs:
       Docker Hub token for authenticated pulls.  Used only as a fallback when an
       unauthenticated pull fails (e.g. due to the anonymous rate limit).
     default: ''
+  ghcr_token:
+    description: >
+      Optional classic Personal Access Token with the read:packages scope (or
+      write:packages if this action should also be able to pull private images).
+      When provided, this token is used instead of github_token for the best-effort
+      GHCR login before the mirror pull.  Required when the organisation's Actions
+      token policy restricts GITHUB_TOKEN from reading packages.
+    default: ''
+  ghcr_user:
+    description: >
+      Username associated with ghcr_token when using a Personal Access Token.
+      Pass the username value as this input, typically from the calling
+      workflow's GHCR_USER repository variable (vars.GHCR_USER).
+    default: ''
   refresh_cache:
     description: >
       When "true", always download fresh artifacts even when a cache entry
@@ -89,14 +103,16 @@ runs:
         key: php-codenames-
 
     # Best-effort GHCR login so the mirror pull below can reach private packages.
+    # Falls back to the PAT (ghcr_token/ghcr_user) when configured, mirroring the
+    # same credential-selection logic used by build-php-images and merge-manifests.
     # continue-on-error keeps the silent-fallback behaviour when login fails.
     - name: Login to GitHub Container Registry
       uses: docker/login-action@v4
       continue-on-error: true
       with:
         registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ inputs.github_token }}
+        username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
+        password: ${{ inputs.ghcr_token || inputs.github_token }}
 
     - name: Detect Debian codenames and resolve artifact versions
       id: detect-and-resolve
