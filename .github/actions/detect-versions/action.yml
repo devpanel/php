@@ -161,27 +161,25 @@ runs:
         set -uo pipefail
         REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
         NETRC=$(umask 0177 && mktemp)
-        trap 'rm -f "${NETRC}"' EXIT
+        TOKEN_RESP=$(umask 0177 && mktemp)
+        CFG=$(umask 0177 && mktemp)
+        trap 'rm -f "${NETRC}" "${TOKEN_RESP}" "${CFG}"' EXIT
         printf 'machine ghcr.io login %s password %s\n' "${ACTOR}" "${GH_TOKEN}" > "${NETRC}"
 
         # Step 1: obtain a push-scoped bearer token for GITHUB_TOKEN.
-        TOKEN_RESP=$(umask 0177 && mktemp)
         curl -s -o "${TOKEN_RESP}" --netrc-file "${NETRC}" \
           "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:push" \
           2>/dev/null || true
         REG_TOKEN=$(jq -r '.token // empty' "${TOKEN_RESP}" 2>/dev/null || true)
-        rm -f "${TOKEN_RESP}"
 
         # Step 2: if a bearer token was issued, probe an actual blob upload to
         # confirm write access.  A 202 (or 201) response means GITHUB_TOKEN can
         # write; anything else (403, 401, …) means it cannot.
         _can_write=false
         if [[ -n "${REG_TOKEN}" ]]; then
-          CFG=$(umask 0177 && mktemp)
           printf 'header = "Authorization: Bearer %s"\n' "${REG_TOKEN}" > "${CFG}"
           BLOB_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST -K "${CFG}" \
             "https://ghcr.io/v2/${REPO_LC}/blobs/uploads/" 2>/dev/null || echo "000")
-          rm -f "${CFG}"
           if [[ "${BLOB_HTTP}" == "202" || "${BLOB_HTTP}" == "201" ]]; then
             _can_write=true
           fi
