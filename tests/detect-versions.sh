@@ -160,15 +160,6 @@ if [[ -n "$BEFORE" && -n "$AFTER" ]]; then
     # Brand-new branch push — treat every version as affected.
     ALL_VERSIONS=true
   else
-    # If BEFORE is not an ancestor of AFTER (e.g. the branch was force-pushed
-    # or rebased), a two-dot diff compares unrelated tree states and can
-    # include spurious changes that would trigger a false full-rebuild.
-    # Exit cleanly with empty output so the caller treats this as "no versions
-    # changed" — the same effective result that occurs when the commit is
-    # inaccessible.
-    if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$BEFORE" "$AFTER" 2>/dev/null; then
-      exit 0
-    fi
     _diff_out="$(cd "$REPO_ROOT" && git diff --name-only "$BEFORE" "$AFTER" 2>&1)" || {
       echo "Error: git diff --name-only $BEFORE $AFTER: $_diff_out" >&2
       exit 1
