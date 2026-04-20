@@ -204,6 +204,8 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          ghcr_token: ${{ steps.detect.outputs.ghcr_cred_source == 'ghcr_token' && secrets.GHCR_TOKEN || '' }}
+          ghcr_user: ${{ vars.GHCR_USER }}
           versions: ${{ steps.detect.outputs.all_versions }}
           # Force a fresh download when no_cache is requested via workflow_dispatch
           # so that subsequent runs pick up refreshed artifacts.
