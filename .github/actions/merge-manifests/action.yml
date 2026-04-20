@@ -101,13 +101,6 @@ inputs:
       Docker Hub token for image push authentication.
       Used for docker login before imagetools inspect and imagetools create.
     required: true
-  run_started_at:
-    description: >
-      Unix epoch seconds captured at the start of the calling workflow's
-      detect job.  Used to measure elapsed run time when enforcing a
-      maximum wait limit.  Pass needs.detect.outputs.run_started_at from
-      the calling workflow.
-    required: true
   ghcr_repo:
     description: >
       GHCR repository for pulling per-platform images pushed by digest (e.g.
@@ -162,16 +155,17 @@ runs:
         # No restore-keys needed: the trailing dash already enables prefix matching.
         key: ${{ steps.cache-key-prefix.outputs.prefix }}
 
-    # Unauthenticated manifest inspection (anonymous token via curl) is tried
-    # first in the polling step to conserve the authenticated-pull quota.
-    # Login is performed here so that the authenticated fallback
-    # (imagetools inspect) and imagetools create both have valid credentials
-    # without requiring the calling workflow to manage docker login separately.
+    # Docker Hub login scoped to push-only on inputs.repo (devpanel/php by
+    # default).  The scope parameter writes credentials to the Buildx
+    # configuration rather than the global Docker config, so imagetools
+    # create can push while the runner's embedded Docker Hub token remains
+    # active for any pulls.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
+        scope: ${{ inputs.repo }}@push
 
     # Login to GHCR so imagetools create can pull per-platform digest refs
     # from GHCR (avoiding Docker Hub authenticated pull quota).  Only needed
@@ -210,7 +204,6 @@ runs:
         DIGESTS_CACHE_DIR:     ${{ runner.temp }}/merge-manifests-digests
         DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
-        RUN_STARTED_AT: ${{ inputs.run_started_at }}
         GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
         GHCR_TOKEN: ${{ inputs.ghcr_token || inputs.github_token }}
@@ -359,21 +352,6 @@ runs:
         echo "(${TOTAL_PLATFORMS} platform(s) expected per image)"
 
         POLL_CYCLE=0
-
-        # Maximum elapsed time (seconds) before the job fails with a timeout
-        # error.  Set to 5h30m to stay below the common 6h GitHub job timeout
-        # so cleanup steps always run.
-        MAX_WAIT=19800
-
-        # Elapsed-time anchor (seconds since epoch) captured at the start of
-        # the detect job and passed in via RUN_STARTED_AT so no GitHub API
-        # call is needed here.  Used to enforce MAX_WAIT and guarantee the
-        # job exits before GitHub's hard job-timeout so cleanup steps run.
-        started_at="${RUN_STARTED_AT}"
-        if [[ -z "${started_at}" || ! "${started_at}" =~ ^[0-9]+$ ]]; then
-          echo "::error::run_started_at input is missing or not a Unix epoch integer: '${started_at}'" >&2
-          exit 1
-        fi
 
         # GHCR Registry API path: GHCR_REPO minus the "ghcr.io/" prefix.
         # Empty when GHCR_REPO is unset; used by get_ghcr_inspect_token and
@@ -749,10 +727,6 @@ runs:
           rm -rf "${CYCLE_DIR}"
           mkdir -p "${CYCLE_DIR}"
 
-          # Tracks whether any imagetools create was deferred (waiting for
-          # seeding) or failed in this cycle so the post-cycle elapsed-time
-          # check can warn and enforce MAX_WAIT when progress is blocked.
-          _any_create_deferred=false
           # Tracks whether any deferral was specifically because seeding had
           # not yet completed and there was no cached baseline.
           _any_seeding_deferred=false
@@ -919,7 +893,6 @@ runs:
                 echo "  [${IMAGE}] Seeding not yet complete and no cached baseline;" \
                      "deferring imagetools create to avoid dropping existing platforms."
                 _img_create_deferred=true
-                _any_create_deferred=true
                 _any_seeding_deferred=true
                 continue
               fi
@@ -1033,9 +1006,8 @@ runs:
             digest_merged="${IMG_DIGEST_MERGED[$key]}"
 
             if [[ "${_img_create_deferred}" == "true" ]]; then
-              # imagetools create failed this cycle; propagate flag so the
-              # post-cycle elapsed-time check can enforce MAX_WAIT.
-              _any_create_deferred=true
+              # imagetools create was deferred or failed; don't mark done.
+              true
             elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
               if [[ "${digest_merged}" -lt "${TOTAL_PLATFORMS}" ]]; then
                 echo "::warning::Only ${digest_merged}/${TOTAL_PLATFORMS}" \
@@ -1050,38 +1022,13 @@ runs:
             fi
           done
 
-          # ── Track create wait and enforce timeout ─────────────────────────
-          # When any pending image's imagetools create was deferred (waiting for
-          # seeding) or failed this cycle, fail the job when total workflow-run
-          # elapsed time since run start exceeds MAX_WAIT so there is always time
-          # for cleanup steps before GitHub's hard job-timeout.
-          if [[ "${_any_create_deferred}" == "true" ]]; then
-            _create_elapsed=$(( $(date +%s) - started_at ))
-            if (( _create_elapsed >= MAX_WAIT )); then
-              if [[ "${_any_seeding_deferred}" == "true" ]]; then
-                echo "::error::imagetools create deferred (waiting for seeding" \
-                     "to complete); total workflow-run elapsed time ${_create_elapsed}s" \
-                     "exceeds MAX_WAIT. Seeding may be stalled or the" \
-                     "existing manifest could not be fetched - re-run the workflow."
-              fi
-              if [[ "${_any_create_failed}" == "true" ]]; then
-                echo "::error::One or more imagetools create operations failed;" \
-                     "total workflow-run elapsed time ${_create_elapsed}s exceeds" \
-                     "MAX_WAIT." \
-                     "Check earlier imagetools create logs for the underlying" \
-                     "failure before re-running this workflow."
-              fi
-              exit 1
-            fi
-            if [[ "${_any_seeding_deferred}" == "true" ]]; then
-              echo "::warning::imagetools create deferred (waiting for seeding" \
-                   "to complete; ${_create_elapsed}s elapsed)."
-            fi
-            if [[ "${_any_create_failed}" == "true" ]]; then
-              echo "::warning::One or more imagetools create operations failed" \
-                   "(${_create_elapsed}s elapsed)." \
-                   "Check earlier imagetools create logs for the underlying failure."
-            fi
+          # ── Log any per-cycle create issues ───────────────────────────────────
+          if [[ "${_any_seeding_deferred}" == "true" ]]; then
+            echo "::warning::imagetools create deferred this cycle (waiting for seeding to complete)."
+          fi
+          if [[ "${_any_create_failed}" == "true" ]]; then
+            echo "::warning::One or more imagetools create operations failed this cycle." \
+                 "Check earlier imagetools create logs for the underlying failure."
           fi
 
           # ── Status summary and sleep ───────────────────────────────────

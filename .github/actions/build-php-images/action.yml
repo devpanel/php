@@ -176,7 +176,7 @@ runs:
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
-        scope: repository:${{ inputs.repo }}:push
+        scope: ${{ inputs.repo }}@push
 
     # ── Build each stage separately ───────────────────────────────────────────────
     # Stages are built sequentially (base → secure → advance).  Each stage's
