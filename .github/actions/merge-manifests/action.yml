@@ -194,17 +194,6 @@ runs:
     # from GHCR (avoiding Docker Hub authenticated pull quota).  Only needed
     # when ghcr_writable is true; skipped otherwise so no unnecessary
     # registry credentials are requested.
-    - name: Validate GHCR credentials for PAT auth
-      if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
-      shell: bash
-      env:
-        GHCR_USER: ${{ inputs.ghcr_user }}
-      run: |
-        if [[ -z "${GHCR_USER}" ]]; then
-          echo "::error::ghcr_token is set but vars.GHCR_USER is not configured. Set the GHCR_USER repository variable to the username that owns the PAT."
-          exit 1
-        fi
-
     - name: Login to GitHub Container Registry
       if: inputs.ghcr_writable == 'true'
       uses: docker/login-action@v4
