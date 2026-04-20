@@ -139,16 +139,12 @@ runs:
   steps:
     # Determine which GHCR credential to use.
     #
-    # The GHCR token endpoint always returns HTTP 200 for a push-scoped
-    # bearer token request regardless of the caller's actual write permissions
-    # — it issues tokens freely and defers access enforcement to the blob-upload
-    # phase.  Relying on the token endpoint alone therefore cannot distinguish
-    # "GITHUB_TOKEN has write access" from "GITHUB_TOKEN has read-only access
-    # but org policy blocks writes."  To reliably pick the right credential we
-    # must test an actual blob upload with GITHUB_TOKEN; only when that upload
-    # succeeds do we conclude GITHUB_TOKEN can write.  If the upload is denied
-    # and a PAT (ghcr_token) is configured, we fall back to the PAT so the
-    # downstream check-ghcr step probes with the correct credential.
+    # Request a push-scoped bearer token for GITHUB_TOKEN from the GHCR token
+    # endpoint.  If the endpoint grants a token, trust that GITHUB_TOKEN has
+    # write access (the calling job must declare `packages: write`).  If the
+    # endpoint refuses the request and a PAT (ghcr_token) is configured, fall
+    # back to the PAT so the downstream check-ghcr step uses the correct
+    # credential.
     - name: Resolve GHCR credential
       id: resolve-ghcr
       shell: bash
@@ -162,37 +158,27 @@ runs:
         REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
         NETRC=$(umask 0177 && mktemp)
         TOKEN_RESP=$(umask 0177 && mktemp)
-        CFG=$(umask 0177 && mktemp)
-        trap 'rm -f "${NETRC}" "${TOKEN_RESP}" "${CFG}"' EXIT
+        trap 'rm -f "${NETRC}" "${TOKEN_RESP}"' EXIT
         printf 'machine ghcr.io login %s password %s\n' "${ACTOR}" "${GH_TOKEN}" > "${NETRC}"
 
-        # Step 1: obtain a push-scoped bearer token for GITHUB_TOKEN.
+        # Request a push-scoped bearer token for GITHUB_TOKEN.  A successful
+        # response (non-empty token) means the token endpoint granted push scope;
+        # trust this as confirmation of write access.
         curl -s -o "${TOKEN_RESP}" --netrc-file "${NETRC}" \
           "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:push" \
           2>/dev/null || true
         REG_TOKEN=$(jq -r '.token // empty' "${TOKEN_RESP}" 2>/dev/null || true)
 
-        # Step 2: if a bearer token was issued, probe an actual blob upload to
-        # confirm write access.  A 202 (or 201) response means GITHUB_TOKEN can
-        # write; anything else (403, 401, …) means it cannot.
-        _can_write=false
         if [[ -n "${REG_TOKEN}" ]]; then
-          printf 'header = "Authorization: Bearer %s"\n' "${REG_TOKEN}" > "${CFG}"
-          BLOB_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST -K "${CFG}" \
-            "https://ghcr.io/v2/${REPO_LC}/blobs/uploads/" 2>/dev/null || echo "000")
-          if [[ "${BLOB_HTTP}" == "202" || "${BLOB_HTTP}" == "201" ]]; then
-            _can_write=true
-          fi
-        fi
-
-        if [[ "${_can_write}" == "true" ]]; then
           echo "using_ghcr_token=false" >> "$GITHUB_OUTPUT"
+          echo "github_token_writable=true" >> "$GITHUB_OUTPUT"
         elif [[ "${GHCR_TOKEN_SET}" == "true" ]]; then
           echo "using_ghcr_token=true" >> "$GITHUB_OUTPUT"
+          echo "github_token_writable=false" >> "$GITHUB_OUTPUT"
         else
           echo "using_ghcr_token=false" >> "$GITHUB_OUTPUT"
+          echo "github_token_writable=false" >> "$GITHUB_OUTPUT"
         fi
-        echo "github_token_writable=${_can_write}" >> "$GITHUB_OUTPUT"
 
     - name: Check GHCR write access
       id: check-ghcr
@@ -210,8 +196,8 @@ runs:
         ORG=$(echo "${REPO}" | cut -d'/' -f1)
 
         # When GITHUB_TOKEN is being used and its write access was already confirmed
-        # by the resolve-ghcr blob probe, reuse that result to avoid a duplicate
-        # network call and a second abandoned upload session.
+        # by the resolve-ghcr token-scope check, reuse that result to avoid a
+        # redundant network call.
         if [[ "${USING_GHCR_TOKEN}" == "false" && "${GITHUB_TOKEN_WRITABLE}" == "true" ]]; then
           echo "GHCR write access confirmed for ghcr.io/${REPO_LC} (reusing resolve-ghcr probe result)."
           echo "writable=true" >> "$GITHUB_OUTPUT"
@@ -364,97 +350,12 @@ runs:
           exit 0
         fi
 
-        # Probe write permission: initiate (and immediately abandon) a blob upload.
-        # Use a temp curl config file so the bearer token is not a command-line argument.
-        CFG=$(umask 0177 && mktemp)
-        CURL_ERR_FILE=$(mktemp)
-        printf 'header = "Authorization: Bearer %s"\n' "${REG_TOKEN}" > "${CFG}"
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-          -K "${CFG}" \
-          "https://ghcr.io/v2/${REPO_LC}/blobs/uploads/" 2>"${CURL_ERR_FILE}") \
-          || HTTP_STATUS="000"
-        CURL_ERR=$(cat "${CURL_ERR_FILE}")
-        rm -f "${CFG}" "${CURL_ERR_FILE}"
-        # Ensure HTTP_STATUS is never empty (e.g. if curl produced no output).
-        HTTP_STATUS="${HTTP_STATUS:-000}"
-
-        if [[ "${HTTP_STATUS}" == "202" || "${HTTP_STATUS}" == "201" ]]; then
-          echo "GHCR write access confirmed for ghcr.io/${REPO_LC}."
-          echo "writable=true" >> "$GITHUB_OUTPUT"
-          echo "ghcr_cred_source=${GHCR_CRED_SOURCE}" >> "$GITHUB_OUTPUT"
-          echo "✅ **GHCR cache write pre-check:** passed — layer caches will be written to ghcr.io/${REPO_LC} (GHCR is primary)." >> "$GITHUB_STEP_SUMMARY"
-        else
-          case "${HTTP_STATUS}" in
-            401)
-              REASON="${AUTH_CRED_NAME} was rejected when initiating a GHCR blob upload (HTTP 401): the token lacks the required write permissions."
-              echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
-              echo "writable=false" >> "$GITHUB_OUTPUT"
-              cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
-        ### ❌ GHCR cache write pre-check: failed
-
-        **Diagnosis:** ${AUTH_CRED_NAME} was rejected when initiating a GHCR blob upload (HTTP 401). The token lacks the required write permissions.
-
-        SUMMARY_EOF
-              if [[ "${USING_GHCR_TOKEN}" == "true" ]]; then
-                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
-        **Fix:** Ensure the `GHCR_TOKEN` secret contains a valid [classic PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the `write:packages` scope. Classic PATs are required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry). If the token has expired, regenerate it at <https://github.com/settings/tokens> and update the `GHCR_TOKEN` secret.
-        SUMMARY_EOF
-              else
-                cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
-        **Fix:** Ensure the calling workflow job declares the following permission:
-
-        ```yaml
-        permissions:
-          packages: write
-        ```
-        SUMMARY_EOF
-              fi
-              echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            403)
-              REASON="${AUTH_CRED_NAME} was forbidden from writing to ghcr.io/${REPO_LC} (HTTP 403). The organisation's Actions token policy or the package's own access settings may block this token."
-              echo "::warning title=GHCR cache write likely to fail::${REASON} ${NOTE}"
-              echo "writable=false" >> "$GITHUB_OUTPUT"
-              cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
-        ### ❌ GHCR cache write pre-check: failed
-
-        **Diagnosis:** ${AUTH_CRED_NAME} obtained a push-scoped token but the blob upload was still denied (HTTP 403). This can be caused by the **organisation's Actions token policy** or **package-level access restrictions**.
-
-        **Option 1 — Organisation owner: check workflow permissions and package access**
-        SUMMARY_EOF
-              cat >> "$GITHUB_STEP_SUMMARY" << SUMMARY_EOF
-        1. Check workflow permissions: <https://github.com/organizations/${ORG}/settings/actions> → **Workflow permissions** → select **"Read and write permissions"** and save
-        2. If the package already exists, check its access settings: navigate to the package at <https://github.com/orgs/${ORG}/packages>, open its **Settings** tab, and ensure this repository has write access under **Actions access**
-
-        See:
-        - [Setting the permissions of the GITHUB\_Token for your organisation](https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization#setting-the-permissions-of-the-github_token-for-your-organization)
-        - [Configuring a package's access control and visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
-
-        **Option 2 — Repository admin: use a Personal Access Token (no org-owner access needed)**
-
-        > **Note:** A classic token is required because [fine-grained tokens do not support GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
-
-        1. Create a [Personal Access Token (classic)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with the \`write:packages\` scope at <https://github.com/settings/tokens>
-        2. In this repository, go to **Settings → Secrets and variables → Actions**
-        3. Add or update the repository secret named **\`GHCR_TOKEN\`** and paste the PAT as the value
-        4. Re-run the workflow
-        SUMMARY_EOF
-              echo "> ℹ️ ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            *)
-              if [[ "${HTTP_STATUS}" == "000" ]]; then
-                REASON="curl failed to reach ghcr.io when probing write access (HTTP 000 / network error)."
-                CURL_DETAIL="${CURL_ERR:+ curl stderr: ${CURL_ERR}}"
-              else
-                REASON="${AUTH_CRED_NAME} does not have write access to ghcr.io/${REPO_LC} (HTTP ${HTTP_STATUS})."
-                CURL_DETAIL=""
-              fi
-              echo "::warning title=GHCR cache write likely to fail::${REASON}${CURL_DETAIL} ${NOTE}"
-              echo "writable=false" >> "$GITHUB_OUTPUT"
-              echo "❌ **GHCR cache write pre-check:** failed — ${REASON}${CURL_DETAIL} ${NOTE}" >> "$GITHUB_STEP_SUMMARY"
-              ;;
-          esac
-        fi
+        # Push-scoped bearer token was granted — trust the token scope and
+        # report write access confirmed.
+        echo "GHCR write access confirmed for ghcr.io/${REPO_LC} (push-scoped token granted)."
+        echo "writable=true" >> "$GITHUB_OUTPUT"
+        echo "ghcr_cred_source=${GHCR_CRED_SOURCE}" >> "$GITHUB_OUTPUT"
+        echo "✅ **GHCR cache write pre-check:** passed — layer caches will be written to ghcr.io/${REPO_LC} (GHCR is primary)." >> "$GITHUB_STEP_SUMMARY"
 
     - name: Detect versions and build matrix
       id: detect

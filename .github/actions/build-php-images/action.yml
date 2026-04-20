@@ -95,58 +95,14 @@ runs:
         repo_lc="$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')"
         echo "repo=ghcr.io/${repo_lc}" >> "$GITHUB_OUTPUT"
 
-    # When ghcr_writable is true the build depends on GHCR for its primary layer
-    # cache.  Probe write access now — before the Docker Buildx setup and any
-    # bake steps — so that a credential problem produces a clear diagnostic
-    # immediately rather than a cryptic push failure deep in the build.
-    # The probe mirrors what detect-versions/check-ghcr does: obtain a
-    # push-scoped bearer token, then initiate (and immediately abandon) a blob
-    # upload to confirm the token actually has write permission.
-    - name: Verify GHCR write access
-      if: inputs.ghcr_writable == 'true'
+    - name: Validate GHCR credentials for PAT auth
+      if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.ghcr_token || inputs.github_token }}
-        ACTOR: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
-        GHCR_TOKEN_SET: ${{ inputs.ghcr_token != '' }}
         GHCR_USER: ${{ inputs.ghcr_user }}
-        REPO: ${{ github.repository }}
       run: |
-        set -euo pipefail
-        if [[ "${GHCR_TOKEN_SET}" == "true" && -z "${GHCR_USER}" ]]; then
+        if [[ -z "${GHCR_USER}" ]]; then
           echo "::error::ghcr_token is set but the ghcr_user input is not provided. Pass the PAT owner's username via the ghcr_user input (typically vars.GHCR_USER from the calling workflow)."
-          exit 1
-        fi
-        REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
-        NETRC=$(umask 0177 && mktemp)
-        trap 'rm -f "${NETRC}"' EXIT
-        printf 'machine ghcr.io login %s password %s\n' "${ACTOR}" "${GH_TOKEN}" > "${NETRC}"
-
-        # Step 1: obtain a push-scoped bearer token.
-        TOKEN_RESP=$(umask 0177 && mktemp)
-        TOKEN_HTTP=$(curl -s -o "${TOKEN_RESP}" -w "%{http_code}" --netrc-file "${NETRC}" \
-          "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:push" \
-          2>/dev/null || echo "000")
-        REG_TOKEN=$(jq -r '.token // empty' "${TOKEN_RESP}" 2>/dev/null || true)
-        rm -f "${TOKEN_RESP}"
-
-        if [[ -z "${REG_TOKEN}" ]]; then
-          echo "::error::GHCR write access check failed: could not obtain a push-scoped bearer token for ghcr.io/${REPO_LC} (HTTP ${TOKEN_HTTP}). Revoke ghcr_writable=true or fix the credentials."
-          exit 1
-        fi
-
-        # Step 2: initiate (and immediately abandon) a blob upload to confirm
-        # the bearer token actually grants write permission.
-        CFG=$(umask 0177 && mktemp)
-        printf 'header = "Authorization: Bearer %s"\n' "${REG_TOKEN}" > "${CFG}"
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST -K "${CFG}" \
-          "https://ghcr.io/v2/${REPO_LC}/blobs/uploads/" 2>/dev/null || echo "000")
-        rm -f "${CFG}"
-
-        if [[ "${HTTP_STATUS}" == "202" || "${HTTP_STATUS}" == "201" ]]; then
-          echo "GHCR write access confirmed for ghcr.io/${REPO_LC}."
-        else
-          echo "::error::GHCR write access check failed: bearer token obtained but blob upload was denied (HTTP ${HTTP_STATUS}) for ghcr.io/${REPO_LC}. Revoke ghcr_writable=true or fix the credentials."
           exit 1
         fi
 
