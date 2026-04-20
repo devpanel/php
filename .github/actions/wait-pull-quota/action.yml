@@ -1,15 +1,13 @@
 name: Wait for Docker Hub pull quota
 description: >
-  Waits until the Docker Hub pull quota has enough remaining capacity for
-  all parallel build jobs.
+  Waits until the Docker Hub authenticated pull quota has enough remaining
+  capacity for all parallel build jobs.
 
   The action performs an authenticated credential/token check during
-  preflight verification.  During each poll cycle, anonymous quota is still
-  probed first.  The total authenticated pulls required is
-  build_matrix_length: one slot per build job that may fall back to an
-  authenticated pull when its anonymous pre-pull misses the GHCR layer
-  cache.  The authenticated probe is skipped only when the computed
-  requirement is 0, which cannot happen while build_matrix_length > 0.
+  preflight verification.  It then polls the authenticated Docker Hub quota
+  until at least build_matrix_length slots are available — one per build job
+  that may fall back to an authenticated pull when its GHCR mirror and
+  anonymous Docker Hub pre-pulls both fail.
 
   Polls every 60 seconds.  Gives up after 5h30m (19800 s) to avoid
   being cancelled by the default 6 h GitHub-hosted job timeout.
@@ -19,12 +17,11 @@ inputs:
     description: >
       Worst-case number of authenticated Docker Hub pulls needed by the
       parallel build jobs.  Pass steps.detect.outputs.needed_pulls
-      (equals build_matrix_length: one pull per build job for the base PHP
-      image in the worst case where every job misses the GHCR layer cache).
-      This value is used as both the authenticated reserve (build_matrix_length
-      slots for build-job fallbacks on separate runners) and as the upper bound
-      on the total quota check.  Pass inputs.build_matrix_length separately so
-      the authenticated reserve is computed correctly.
+      (currently expected to equal build_matrix_length: one pull per build
+      job for the base PHP image in the worst case where every job misses
+      the GHCR mirror and falls back to an authenticated pull).  This value
+      is validated and logged for consistency with detect-versions output;
+      the authenticated reserve is computed from build_matrix_length.
     required: true
   dockerhub_username:
     description: Docker Hub username for authenticating the pull-rate-limit probe.

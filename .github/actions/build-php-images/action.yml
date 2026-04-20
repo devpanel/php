@@ -166,11 +166,12 @@ runs:
         echo "platform_key=${platform_normalized//\//-}" >> "$GITHUB_OUTPUT"
         echo "version=${VERSION}"                         >> "$GITHUB_OUTPUT"
 
-    # Probe the anonymous Docker Hub quota before attempting the unauthenticated
-    # pre-pull below.  When the quota is already at 0 the pre-pull would fail
-    # immediately and waste time, so skip it in that case.  The probe itself is
-    # non-fatal: a probe failure (empty output) is treated as non-zero remaining
-    # so the pre-pull is still attempted.
+    # Probe the anonymous Docker Hub quota before the pre-pull step below.
+    # Used only to decide whether to attempt the anonymous Docker Hub fallback
+    # when the GHCR mirror pull fails.  The GHCR mirror path is always tried
+    # first regardless of this value.  The probe itself is non-fatal: a probe
+    # failure (empty output) is treated as non-zero remaining so the Docker Hub
+    # fallback is still attempted.
     - name: Probe anonymous Docker Hub pull quota
       id: quota-probe
       shell: bash
@@ -182,43 +183,61 @@ runs:
         if [[ "${_anon_rem}" == "0" ]]; then
           echo "anon_remaining=0" >> "$GITHUB_OUTPUT"
           echo "Anonymous Docker Hub quota exhausted (0 remaining);" \
-               "skipping unauthenticated pre-pull."
+               "will not attempt anonymous Docker Hub fallback."
         else
           echo "anon_remaining=${_anon_rem:-unknown}" >> "$GITHUB_OUTPUT"
           if [[ -n "${_anon_rem}" ]]; then
             echo "Anonymous Docker Hub quota: ${_anon_rem} remaining."
           else
             echo "Anonymous Docker Hub quota: unknown (probe failed);" \
-                 "will attempt unauthenticated pre-pull anyway."
+                 "will attempt anonymous Docker Hub fallback if GHCR mirror fails."
           fi
         fi
 
     # Pull the base PHP image into the active Buildx builder's content store
-    # before logging in to Docker Hub so that this pull uses the anonymous
-    # (IP-based) pull quota rather than the shared per-account authenticated
-    # quota (200 pulls/6 h).  Using "docker buildx build" (rather than plain
-    # "docker pull") ensures the layers land in the BuildKit content store of
-    # the builder created by docker/setup-buildx-action, which is the same
+    # before logging in to Docker Hub.  Using "docker buildx build" (rather than
+    # plain "docker pull") ensures the layers land in the BuildKit content store
+    # of the builder created by docker/setup-buildx-action, which is the same
     # builder used by the bake steps below — they therefore find the base image
-    # already cached and do not re-pull it authenticated.  A failure here is
-    # non-fatal: bake will re-pull authenticated if the cache miss occurs.
-    # Skipped when the anonymous quota probe above confirmed 0 remaining.
-    - name: Pre-pull base PHP image (unauthenticated)
-      if: steps.quota-probe.outputs.anon_remaining != '0'
+    # already cached and do not re-pull it.
+    #
+    # Attempt flow:
+    #   1. GHCR mirror pull (primary): avoids all Docker Hub quota.
+    #   2. Anonymous Docker Hub pull (fallback, IP-based quota): only when
+    #      GHCR mirror fails and the anonymous probe above did not confirm 0
+    #      remaining.
+    # A failure of both attempts is non-fatal; bake will re-pull as a last
+    # resort (using the authenticated Docker Hub credentials from the login
+    # below, consuming per-account quota).
+    - name: Pre-pull base PHP image (GHCR mirror, then unauthenticated fallback)
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
         PLATFORM: ${{ steps.platform.outputs.platform }}
+        ANON_REMAINING: ${{ steps.quota-probe.outputs.anon_remaining }}
       run: |
         set -euo pipefail
         _ctx="$(mktemp -d)"
         trap 'rm -rf "${_ctx}"' EXIT
-        printf 'FROM php:%s-apache\n' "${VERSION}" \
-          | docker buildx build --platform "${PLATFORM}" -f - "${_ctx}" || true
+        _owner_lc="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+        _GHCR_MIRROR="ghcr.io/${_owner_lc}/php-base-mirror"
+        _GHCR_MIRROR_IMAGE="${_GHCR_MIRROR}/library/php:${VERSION}-apache"
+        if printf 'FROM %s\n' "${_GHCR_MIRROR_IMAGE}" \
+            | docker buildx build --platform "${PLATFORM}" -f - "${_ctx}" 2>/dev/null; then
+          echo "Pre-pulled base image from GHCR mirror (${_GHCR_MIRROR_IMAGE})."
+        elif [[ "${ANON_REMAINING}" != "0" ]]; then
+          echo "GHCR mirror pull failed; attempting anonymous Docker Hub pull."
+          printf 'FROM php:%s-apache\n' "${VERSION}" \
+            | docker buildx build --platform "${PLATFORM}" -f - "${_ctx}" || true
+        else
+          echo "GHCR mirror pull failed and anonymous Docker Hub quota exhausted;" \
+               "skipping pre-pull."
+        fi
 
     # Docker Hub login is required so that the bake steps below can push
-    # images by digest.  The base image pull above runs before this login
-    # so it uses the anonymous quota rather than the authenticated quota.
+    # images by digest.  The pre-pull above resolves the base PHP image via the
+    # GHCR mirror (primary) or an anonymous Docker Hub pull (fallback), so this
+    # login is scoped to push operations only.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
