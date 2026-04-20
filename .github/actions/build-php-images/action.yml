@@ -139,12 +139,8 @@ runs:
         # the bearer token actually grants write permission.
         CFG=$(umask 0177 && mktemp)
         printf 'header = "Authorization: Bearer %s"\n' "${REG_TOKEN}" > "${CFG}"
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-          -K "${CFG}" \
-          "https://ghcr.io/v2/${REPO_LC}/blobs/uploads/" 2>/dev/null) \
-          || HTTP_STATUS="000"
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST -K "${CFG}" "https://ghcr.io/v2/${REPO_LC}/blobs/uploads/" 2>/dev/null || echo "000")
         rm -f "${CFG}"
-        HTTP_STATUS="${HTTP_STATUS:-000}"
 
         if [[ "${HTTP_STATUS}" == "202" || "${HTTP_STATUS}" == "201" ]]; then
           echo "GHCR write access confirmed for ghcr.io/${REPO_LC}."
