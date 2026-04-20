@@ -31,16 +31,6 @@ inputs:
       Used to pull the actual php:<version>-apache images and detect which Debian
       codename each version runs on, so compatibility tests use the real target image.
     required: true
-  dockerhub_username:
-    description: >
-      Docker Hub username for authenticated pulls.  Used only as a fallback when an
-      unauthenticated pull fails (e.g. due to the anonymous rate limit).
-    default: ''
-  dockerhub_token:
-    description: >
-      Docker Hub token for authenticated pulls.  Used only as a fallback when an
-      unauthenticated pull fails (e.g. due to the anonymous rate limit).
-    default: ''
   ghcr_token:
     description: >
       Optional classic Personal Access Token with the read:packages scope (or
@@ -129,8 +119,6 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
-        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
-        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
       run: |
         set -euo pipefail
         VERSIONS="${{ inputs.versions }}"
@@ -205,47 +193,21 @@ runs:
               fi
               rm -f "${_head_tmp}"
             fi
-            _DOCKERHUB_LOGGED_IN=false
-            # Try the GHCR mirror first to avoid Docker Hub pull quota.
-            # The mirror is populated by the daily mirror-php-images workflow.
-            # On a cache miss (mirror not yet warm or GHCR not accessible) the
-            # pull fails silently and the existing Docker Hub path is used as a
-            # fallback, preserving the existing behaviour exactly.
             _GHCR_MIRROR="ghcr.io/$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')/php-base-mirror"
             _GHCR_MIRROR_IMAGE="${_GHCR_MIRROR}/library/php:${ver}-apache"
             if docker pull --quiet "${_GHCR_MIRROR_IMAGE}" >/dev/null 2>&1; then
               echo "  Pulled from GHCR mirror (${_GHCR_MIRROR_IMAGE}); skipping Docker Hub pull." >&2
               image="${_GHCR_MIRROR_IMAGE}"
             else
+              # Pull without Docker Hub credentials: Docker Hub credentials are
+              # scoped to pushing our own images (devpanel/php), not pulling
+              # public base images.  Use IP-based anonymous quota; if
+              # rate-limited the error is visible in the log.
               echo "Pulling ${image} to detect Debian codename (unauthenticated)..." >&2
-              if ! docker pull --quiet "$image" >/dev/null 2>&1; then
-                if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
-                  echo "  Unauthenticated pull failed; retrying with Docker Hub credentials..." >&2
-                  if echo "${DOCKERHUB_TOKEN}" \
-                    | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin >&2; then
-                    _DOCKERHUB_LOGGED_IN=true
-                    # Install a trap so docker logout always runs on EXIT (including
-                    # on set -e early exit from the pull or docker run below).
-                    trap 'docker logout >&2 2>/dev/null || true' EXIT
-                    docker pull --quiet "$image" >&2
-                  else
-                    echo "  Docker Hub login failed; cannot retry authenticated pull for ${image}." >&2
-                    exit 1
-                  fi
-                else
-                  # Re-run without redirection so the error is visible in the log.
-                  docker pull --quiet "$image" >&2
-                fi
-              fi
+              docker pull --quiet "$image" >&2
             fi
             codename=$(docker run --rm "$image" sh -c \
               '. /etc/os-release && printf "%s" "${VERSION_CODENAME:-}"')
-            # Log out again so subsequent steps start without Docker Hub credentials,
-            # preserving the unauthenticated-first pattern for any later pulls.
-            if [[ "${_DOCKERHUB_LOGGED_IN}" == "true" ]]; then
-              docker logout >&2 2>/dev/null || true
-              trap - EXIT
-            fi
             # Cache the codename by PHP version (stable key, never changes mid-lifecycle).
             if [[ -n "${codename}" ]]; then
               _updated="$(jq --arg v "${ver}" --arg c "${codename}" \

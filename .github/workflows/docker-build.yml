@@ -176,14 +176,12 @@ jobs:
           ghcr_user: ${{ vars.GHCR_USER }}
 
       # Wait here — in the single detect job that runs before the build matrix —
-      # until enough authenticated Docker Hub pulls are available for the
-      # pre-seed step and all parallel build jobs.  The pre-seed action may
-      # need one pull per PHP version to detect its Debian codename (only
-      # when the codenames cache is cold); each build job may also need 1
-      # pull for the base PHP image (the unauthenticated pre-pull is
-      # non-fatal; the GHCR layer cache can miss after a base-image update
-      # or Dockerfile change).  Waiting once here prevents N matrix jobs
-      # from racing each other to use the same pool of available pulls.
+      # until enough authenticated Docker Hub pulls are available for all
+      # parallel build jobs.  Each build job may need one authenticated pull
+      # for the base PHP image (the unauthenticated pre-pull is non-fatal;
+      # the GHCR layer cache can miss after a base-image update or Dockerfile
+      # change).  Waiting once here prevents N matrix jobs from racing each
+      # other to use the same pool of available authenticated pulls.
       - name: Wait for Docker Hub pull quota
         if: steps.detect.outputs.versions != ''
         uses: ./.github/actions/wait-pull-quota
@@ -202,8 +200,6 @@ jobs:
         uses: ./.github/actions/preseed-downloads
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           ghcr_token: ${{ steps.detect.outputs.ghcr_cred_source == 'ghcr_token' && secrets.GHCR_TOKEN || '' }}
           ghcr_user: ${{ vars.GHCR_USER }}
           versions: ${{ steps.detect.outputs.all_versions }}

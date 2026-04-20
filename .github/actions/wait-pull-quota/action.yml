@@ -5,15 +5,11 @@ description: >
 
   The action performs an authenticated credential/token check during
   preflight verification.  During each poll cycle, anonymous quota is still
-  probed first.  The total authenticated pulls required is computed as
-  max(build_matrix_length, needed_pulls − anonymous_remaining): at minimum,
-  build_matrix_length authenticated slots are always reserved because those
-  build jobs run on OTHER runners whose IP-based anonymous quota is
-  independent of this runner.  When anonymous quota on this runner also
-  falls short of covering the pre-seed share, the deficit is added on top
-  of the build-job reservation, giving the conservative formula above.  The
-  authenticated probe is skipped only when the computed requirement is 0,
-  which cannot happen while build_matrix_length > 0.
+  probed first.  The total authenticated pulls required is
+  build_matrix_length: one slot per build job that may fall back to an
+  authenticated pull when its anonymous pre-pull misses the GHCR layer
+  cache.  The authenticated probe is skipped only when the computed
+  requirement is 0, which cannot happen while build_matrix_length > 0.
 
   Polls every 60 seconds.  Gives up after 5h30m (19800 s) to avoid
   being cancelled by the default 6 h GitHub-hosted job timeout.
@@ -21,17 +17,14 @@ description: >
 inputs:
   needed_pulls:
     description: >
-      Worst-case total number of Docker Hub pulls (anonymous + authenticated
-      combined) needed before and by the parallel build jobs.  Pass the sum
-      of build_matrix_length (one pull per build job for the base PHP image
-      in the worst case where every job misses the GHCR layer cache) and
-      all_versions_count (one pull per PHP version that the pre-seed action
-      may need in the worst case where the codenames cache is cold).
-      Internally the action splits this total into an anonymous reserve
-      (needed_pulls - build_matrix_length, for preseed on this runner) and
-      an authenticated reserve (build_matrix_length, for build-job fallbacks
-      on separate runners).  Pass inputs.build_matrix_length separately so
-      the split is computed correctly.
+      Worst-case number of authenticated Docker Hub pulls needed by the
+      parallel build jobs.  Pass steps.detect.outputs.needed_pulls
+      (equals build_matrix_length: one pull per build job for the base PHP
+      image in the worst case where every job misses the GHCR layer cache).
+      This value is used as both the authenticated reserve (build_matrix_length
+      slots for build-job fallbacks on separate runners) and as the upper bound
+      on the total quota check.  Pass inputs.build_matrix_length separately so
+      the authenticated reserve is computed correctly.
     required: true
   dockerhub_username:
     description: Docker Hub username for authenticating the pull-rate-limit probe.

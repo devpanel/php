@@ -111,18 +111,14 @@ outputs:
   all_versions_count:
     description: >
       Total number of PHP versions present in the repository (word count of
-      all_versions).  Used together with build_matrix_length to compute the
-      worst-case Docker Hub pull count passed to wait-pull-quota: the
-      pre-seed action may need one authenticated pull per version when the
-      codenames cache is cold.
+      all_versions).
     value: ${{ steps.detect.outputs.all_versions_count }}
   needed_pulls:
     description: >
-      Worst-case total number of Docker Hub pulls needed: the sum of
-      build_matrix_length (one pull per build job for the base PHP image)
-      and all_versions_count (one pull per PHP version for the pre-seed
-      codename probe when the cache is cold).  Pass directly to the
-      needed_pulls input of wait-pull-quota.
+      Worst-case number of authenticated Docker Hub pulls needed by the
+      parallel build jobs: one per build job (base PHP image fallback when the
+      GHCR layer cache misses).  Equals build_matrix_length.  Pass directly to
+      the needed_pulls input of wait-pull-quota.
     value: ${{ steps.detect.outputs.needed_pulls }}
   tag_suffix:
     description: >
@@ -523,7 +519,7 @@ runs:
           echo "merge_matrix=[]"                    >> "$GITHUB_OUTPUT"
           echo "build_matrix=[]"                    >> "$GITHUB_OUTPUT"
           echo "build_matrix_length=0"              >> "$GITHUB_OUTPUT"
-          echo "needed_pulls=${#_all_vers_arr[@]}"  >> "$GITHUB_OUTPUT"
+          echo "needed_pulls=0"                     >> "$GITHUB_OUTPUT"
         else
           echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
 
@@ -576,7 +572,7 @@ runs:
           echo "build_matrix=${BUILD_MATRIX}" >> "$GITHUB_OUTPUT"
           BUILD_MATRIX_LENGTH="$(printf '%s' "${BUILD_MATRIX}" | jq 'length')"
           echo "build_matrix_length=${BUILD_MATRIX_LENGTH}" >> "$GITHUB_OUTPUT"
-          echo "needed_pulls=$(( BUILD_MATRIX_LENGTH + ${#_all_vers_arr[@]} ))" >> "$GITHUB_OUTPUT"
+          echo "needed_pulls=${BUILD_MATRIX_LENGTH}" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Compute tag suffix

@@ -170,8 +170,6 @@ jobs:
         uses: ./.github/actions/preseed-downloads
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           versions: ${{ steps.detect.outputs.all_versions }}
           ghcr_token: ${{ secrets.GHCR_TOKEN }}
           ghcr_user: ${{ vars.GHCR_USER }}
