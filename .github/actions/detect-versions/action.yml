@@ -507,10 +507,11 @@ runs:
 
             if [[ -n "${plat_before}" ]]; then
               # Ensure the before SHA is in the local git object database so
-              # the ancestor check inside detect-versions.sh can run even when
-              # the commit is no longer referenced by any branch (e.g. after a
-              # force-push on develop).  Ignore fetch errors: if the commit is
-              # truly gone the ancestor check will exit cleanly with empty output.
+              # the diff inside detect-versions.sh can run even when the commit
+              # is no longer referenced by any branch (e.g. after a force-push).
+              # Ignore fetch errors: if the commit is truly gone, the diff will
+              # fail and detect-versions.sh will exit 1, which is handled below
+              # by the `|| echo ''` fallback.
               if ! git cat-file -e "${plat_before}^{commit}" 2>/dev/null; then
                 git fetch --no-tags --depth=1 origin "${plat_before}" 2>/dev/null || true
               fi
