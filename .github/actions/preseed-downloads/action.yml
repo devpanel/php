@@ -106,13 +106,23 @@ runs:
     # Falls back to the PAT (ghcr_token/ghcr_user) when configured, mirroring the
     # same credential-selection logic used by build-php-images and merge-manifests.
     # continue-on-error keeps the silent-fallback behaviour when login fails.
+
+    # Emit a non-fatal warning when a PAT is provided without the required username
+    # so the misconfiguration is visible rather than silently falling back to
+    # GITHUB_TOKEN (which may not have read access to the private mirror).
+    - name: Warn on incomplete GHCR PAT configuration
+      if: inputs.ghcr_token != '' && inputs.ghcr_user == ''
+      shell: bash
+      run: |
+        echo "::warning::ghcr_token is set but ghcr_user is not provided. GHCR login will fall back to GITHUB_TOKEN. Set ghcr_user (typically vars.GHCR_USER) if PAT auth is required for the private mirror pull."
+
     - name: Login to GitHub Container Registry
       uses: docker/login-action@v4
       continue-on-error: true
       with:
         registry: ghcr.io
         username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
-        password: ${{ inputs.ghcr_token || inputs.github_token }}
+        password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
 
     - name: Detect Debian codenames and resolve artifact versions
       id: detect-and-resolve

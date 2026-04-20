@@ -114,7 +114,7 @@ runs:
       with:
         registry: ghcr.io
         username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
-        password: ${{ inputs.ghcr_token || inputs.github_token }}
+        password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v4
