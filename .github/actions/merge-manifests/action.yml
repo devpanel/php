@@ -172,7 +172,11 @@ runs:
 
     - name: Remove runner Docker Hub credential from DOCKER_CONFIG
       shell: bash
-      run: docker logout https://index.docker.io/v1/ || true
+      run: |
+        if ! logout_err="$(docker logout https://index.docker.io/v1/ 2>&1)"; then
+          echo "::warning::docker logout failed; runner credential may still be" \
+               "present in DOCKER_CONFIG: ${logout_err}"
+        fi
 
     - name: Poll and merge manifests
       shell: bash
@@ -437,7 +441,7 @@ runs:
               # .image.{os,architecture,variant}) in one call.
               _seed_raw_file="$(mktemp)"
               seed_stderr="$(mktemp)"
-              if docker --config "${PULL_DOCKER_CONFIG:-${HOME}/.docker}" \
+              if docker --config "${PULL_DOCKER_CONFIG}" \
                    buildx imagetools inspect \
                    --format '{{json .}}' \
                    "${IMAGE_SEED}" > "${_seed_raw_file}" 2>"${seed_stderr}"; then
