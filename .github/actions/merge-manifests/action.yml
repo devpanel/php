@@ -126,14 +126,18 @@ runs:
         # No restore-keys needed: the trailing dash already enables prefix matching.
         key: ${{ steps.cache-key-prefix.outputs.prefix }}
 
-    # Full Docker Hub login (no scope) so that both imagetools inspect and
-    # imagetools create can authenticate to Docker Hub for pull (fetching
-    # source manifests by digest) and push (writing the manifest list tag).
-    # A scoped login (scope: <repo>@push) stores credentials only in the
-    # Buildx alternative config dir which is inaccessible to imagetools
-    # commands that run as Docker CLI commands against the global Docker
-    # config — this would cause 401 Unauthorized on every imagetools create
-    # attempt.
+    # Full Docker Hub login (no scope) for imagetools inspect and create.
+    # GitHub Actions runners have a built-in Docker Hub token in the global
+    # Docker config for anonymous pulls.  When a scoped login (scope:
+    # <repo>@push) is added, imagetools sees TWO credential sets for the same
+    # registry: the embedded token (global config, pull-only) and
+    # DOCKERHUB_TOKEN (buildx alternative config dir, pull+push).  It merges
+    # both sets into a single OAuth token request with duplicate "scope"
+    # parameters for the same repository — once for pull, once for
+    # pull+push — which the Docker Hub auth server rejects with 401.
+    # A full login (no scope) writes DOCKERHUB_TOKEN to the global config,
+    # replacing the embedded token so there is only one credential set for
+    # docker.io and no duplicate scope parameters.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
