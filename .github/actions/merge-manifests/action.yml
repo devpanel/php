@@ -127,41 +127,34 @@ runs:
         # No restore-keys needed: the trailing dash already enables prefix matching.
         key: ${{ steps.cache-key-prefix.outputs.prefix }}
 
-    # Record the DOCKER_CONFIG path before setup-buildx-action overwrites the
-    # env var to point at its alternative config dir.  This pre-Buildx path
-    # is passed to the polling script so that pull-only Docker operations
-    # (manifest inspect) use the runner's embedded Docker Hub token rather
-    # than DOCKERHUB_TOKEN, avoiding any pull-quota consumption on inspects.
-    - name: Record pre-Buildx Docker config path
-      id: pre-buildx-config
-      shell: bash
-      run: |
-        echo "path=${DOCKER_CONFIG:-${HOME}/.docker}" >> "$GITHUB_OUTPUT"
-
     # A Buildx builder is required so that imagetools create routes through
-    # the Buildx credential context (the alternative config dir) rather than
-    # the global Docker config.  This mirrors exactly how docker buildx bake
-    # uses the alternative config dir when pushing multi-platform manifests.
-    # Without a builder, imagetools has no builder context and merges
+    # the Buildx credential context rather than the global Docker config.
+    # Without a builder, imagetools has no builder context and reads
     # credentials from both the global Docker config (the runner's embedded
-    # pull-only token) and the alternative config dir (DOCKERHUB_TOKEN),
+    # pull-only token) and the Buildx credential subdir (DOCKERHUB_TOKEN),
     # producing a malformed token request with duplicate "scope" query
     # parameters that Docker Hub rejects with 401.  With a builder, all
-    # imagetools operations use only the alternative config dir credentials,
+    # imagetools operations use only the Buildx credential subdir,
     # avoiding that conflict.
     #
-    # Manifest inspection (seeding) is performed with plain docker manifest
-    # inspect using the pre-Buildx DOCKER_CONFIG (runner's embedded token)
-    # so that DOCKERHUB_TOKEN pull quota is not consumed for read-only ops.
-    # Only imagetools create (push) goes through the Buildx alt config dir.
+    # docker/login-action with scope writes credentials into a subdir of
+    # DOCKER_CONFIG (${DOCKER_CONFIG}/buildx/config/<registry>/<scope>/)
+    # for the duration of the docker login subprocess only; it does NOT
+    # change the DOCKER_CONFIG env var for this job.  Plain docker commands
+    # (e.g. docker manifest inspect) therefore continue to use the runner's
+    # embedded Docker Hub token from DOCKER_CONFIG, while docker buildx
+    # imagetools routes through the builder and uses the scoped credentials.
+    # No DOCKER_CONFIG override is needed on non-buildx commands.
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v4
 
     # Docker Hub login scoped to push-only on inputs.repo.  The scope
-    # parameter writes credentials to the Buildx alternative config dir
-    # rather than the global Docker config.  Only imagetools create (push)
-    # uses these credentials; manifest inspection (seeding) uses
-    # PULL_DOCKER_CONFIG (the runner's embedded token) instead.
+    # parameter writes credentials into a Buildx credential subdir
+    # (${DOCKER_CONFIG}/buildx/config/registry-1.docker.io/<scope>/) for
+    # the docker login subprocess only; DOCKER_CONFIG itself is unchanged.
+    # Only imagetools create (push) uses these credentials; plain docker
+    # commands (e.g. manifest inspect) continue to use the runner's
+    # embedded token from DOCKER_CONFIG.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
@@ -181,7 +174,6 @@ runs:
         RUN_ID:                ${{ inputs.run_id }}
         GITHUB_REPO:           ${{ inputs.repository }}
         DIGESTS_CACHE_DIR:     ${{ runner.temp }}/merge-manifests-digests
-        PULL_DOCKER_CONFIG: ${{ steps.pre-buildx-config.outputs.path }}
       run: |
         set -euo pipefail
 
@@ -416,9 +408,11 @@ runs:
               _seed_status=""  # "ok" | "not_found" | "error"
 
               # ── Manifest inspect (uses runner embedded token) ────────────────
-              # Use PULL_DOCKER_CONFIG (saved before setup-buildx-action changed
-              # DOCKER_CONFIG) so that this pull-only operation uses the runner's
-              # embedded Docker Hub token rather than DOCKERHUB_TOKEN.
+              # docker/login-action with scope does NOT change DOCKER_CONFIG; it
+              # only writes scoped credentials into a Buildx subdir for the
+              # docker login subprocess.  Plain docker manifest inspect therefore
+              # reads from DOCKER_CONFIG as-is and uses the runner's embedded
+              # Docker Hub token automatically — no override needed.
               #
               # docker manifest inspect returns the raw OCI/Docker V2 manifest
               # JSON.  For manifest lists (multi-arch) the structure is identical
@@ -430,7 +424,7 @@ runs:
               _seed_raw_file="$(mktemp)"
               seed_stderr="$(mktemp)"
               _need_imagetools_inspect=false
-              if DOCKER_CONFIG="${PULL_DOCKER_CONFIG}" docker manifest inspect \
+              if docker manifest inspect \
                    "${IMAGE_SEED}" > "${_seed_raw_file}" 2>"${seed_stderr}"; then
                 if jq -e 'has("manifests")' "${_seed_raw_file}" >/dev/null 2>&1; then
                   # Multi-arch manifest list: structure matches imagetools output.
