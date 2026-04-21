@@ -116,6 +116,21 @@ runs:
         username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
         password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
 
+    # Pull the PHP base image before Buildx and the scoped Docker Hub login
+    # are set up.  At this point DOCKER_CONFIG still points to the runner's
+    # original config (embedded Docker Hub token with higher pull quota), so
+    # the pull does not consume any DOCKERHUB_TOKEN quota.  The GHCR mode=max
+    # layer cache keeps subsequent bake runs from needing to re-pull from
+    # Docker Hub at all, but on a cold-cache first run this pre-pull ensures
+    # the image is available in the local daemon before Buildx takes over.
+    - name: Pre-pull PHP base image using runner token
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        docker pull "php:${VERSION}-apache"
+
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v4
 
@@ -168,9 +183,10 @@ runs:
 
     # Docker Hub login scoped to push-only on inputs.repo (devpanel/php by
     # default).  The scope parameter writes credentials to the Buildx
-    # configuration rather than the global Docker config, so the runner's
-    # embedded Docker Hub token (unlimited pulls) remains active for pulling
-    # library/php during bake.
+    # configuration rather than the global Docker config.  The pre-pull step
+    # above already fetched the PHP base image using the runner's embedded
+    # token; on subsequent builds the GHCR mode=max layer cache (warm after
+    # the first run) prevents Buildx from needing to re-pull from Docker Hub.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
