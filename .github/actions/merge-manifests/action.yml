@@ -404,67 +404,34 @@ runs:
 
               _seed_status=""  # "ok" | "not_found" | "error"
 
-              # ── Manifest inspect (runner embedded token) ─────────────────────────
-              # docker/login-action with scope= does not modify $DOCKER_CONFIG,
-              # so plain docker commands use the runner's embedded token.
-              # docker manifest inspect returns the raw OCI/Docker V2 manifest
-              # JSON.  For manifest lists (multi-arch) the structure is identical
-              # to imagetools inspect --format '{{json .}}':
-              #   .manifests[].{platform,digest}
-              # For single-arch V2 manifests (no .manifests array) the config
-              # blob that carries platform info is not inlined; in that rare case
-              # we fall back to imagetools inspect which does inline it.
+              # ── imagetools inspect (runner embedded token via --config) ──────────
+              # docker/login-action with scope= writes DOCKERHUB_TOKEN into the
+              # buildx alt-config dir (not DOCKER_CONFIG).  Passing --config
+              # routes auth through DOCKER_CONFIG (the runner's embedded token)
+              # instead of the alt-config dir.
+              # imagetools inspect inlines the image config blob into its JSON
+              # output, giving platform info for both multi-arch images (via
+              # .manifests[].platform) and single-arch images (via
+              # .image.{os,architecture,variant}) in one call.
               _seed_raw_file="$(mktemp)"
               seed_stderr="$(mktemp)"
-              _need_imagetools_inspect=false
-              if docker manifest inspect \
+              if docker --config "${DOCKER_CONFIG:=${HOME}/.docker}" \
+                   buildx imagetools inspect \
+                   --format '{{json .}}' \
                    "${IMAGE_SEED}" > "${_seed_raw_file}" 2>"${seed_stderr}"; then
-                if jq -e 'has("manifests")' "${_seed_raw_file}" >/dev/null 2>&1; then
-                  # Multi-arch manifest list: structure matches imagetools output.
-                  _inspect_json="$(cat "${_seed_raw_file}")"
-                  _seed_status="ok"
-                  echo "  ${IMAGE_SEED}: fetched manifest (docker manifest inspect)."
-                else
-                  # Single-arch V2 manifest: config blob not inlined; fall back
-                  # to imagetools inspect to obtain per-platform info.
-                  _need_imagetools_inspect=true
-                fi
+                _inspect_json="$(cat "${_seed_raw_file}")"
+                _seed_status="ok"
+                echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
               else
                 if grep -qi \
                      "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
                      "${seed_stderr}"; then
                   _seed_status="not_found"
                 else
-                  # Transient error: fall back to imagetools inspect for a retry.
-                  _need_imagetools_inspect=true
-                fi
-              fi
-              # ── Fallback: imagetools inspect (single-arch or transient error) ─
-              # Must use the runner's DOCKER_CONFIG (embedded token) for the same
-              # reason as docker manifest inspect above.  docker buildx by default
-              # uses the buildx alt-config dir (which holds DOCKERHUB_TOKEN); the
-              # --config flag overrides that and routes auth through DOCKER_CONFIG.
-              if [[ "${_need_imagetools_inspect}" == "true" ]]; then
-                > "${_seed_raw_file}"
-                > "${seed_stderr}"
-                if docker --config "${DOCKER_CONFIG:=${HOME}/.docker}" \
-                     buildx imagetools inspect \
-                     --format '{{json .}}' \
-                     "${IMAGE_SEED}" > "${_seed_raw_file}" 2>"${seed_stderr}"; then
-                  _inspect_json="$(cat "${_seed_raw_file}")"
-                  _seed_status="ok"
-                  echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
-                else
-                  if grep -qi \
-                       "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
-                       "${seed_stderr}"; then
-                    _seed_status="not_found"
-                  else
-                    seed_err="$(cat "${seed_stderr}" 2>/dev/null || true)"
-                    echo "::warning::${IMAGE_SEED}: imagetools inspect failed" \
-                         "(${seed_err:-unknown error})."
-                    _seed_status="error"
-                  fi
+                  seed_err="$(cat "${seed_stderr}" 2>/dev/null || true)"
+                  echo "::warning::${IMAGE_SEED}: imagetools inspect failed" \
+                       "(${seed_err:-unknown error})."
+                  _seed_status="error"
                 fi
               fi
               rm -f "${_seed_raw_file}" "${seed_stderr}"
