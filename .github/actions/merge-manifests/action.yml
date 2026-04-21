@@ -138,7 +138,12 @@ runs:
     # Writes (imagetools create) use DOCKERHUB_TOKEN.  docker/setup-buildx-action
     # configures buildx to use a separate config directory.  docker/login-action
     # with scope= writes DOCKERHUB_TOKEN into that directory.  All `docker buildx`
-    # commands therefore use DOCKERHUB_TOKEN without any explicit --config flag.
+    # commands therefore use DOCKERHUB_TOKEN by default.
+    #
+    # The seeding fallback (imagetools inspect) is a read, so it must use the
+    # runner's embedded token.  Since buildx defaults to its own config dir, we
+    # explicitly pass --config "${DOCKER_CONFIG}" on that call to override the
+    # default and route auth through DOCKER_CONFIG (runner token).
     #
     # imagetools create is a manifest-only registry operation: it reads each
     # source manifest by digest (GET /v2/{name}/manifests/{digest}) and writes
@@ -435,10 +440,15 @@ runs:
                 fi
               fi
               # ── Fallback: imagetools inspect (single-arch or transient error) ─
+              # Must use the runner's DOCKER_CONFIG (embedded token) for the same
+              # reason as docker manifest inspect above.  docker buildx by default
+              # uses the buildx alt-config dir (which holds DOCKERHUB_TOKEN); the
+              # --config flag overrides that and routes auth through DOCKER_CONFIG.
               if [[ "${_need_imagetools_inspect}" == "true" ]]; then
                 > "${_seed_raw_file}"
                 > "${seed_stderr}"
-                if docker buildx imagetools inspect \
+                if docker --config "${DOCKER_CONFIG:=${HOME}/.docker}" \
+                     buildx imagetools inspect \
                      --format '{{json .}}' \
                      "${IMAGE_SEED}" > "${_seed_raw_file}" 2>"${seed_stderr}"; then
                   _inspect_json="$(cat "${_seed_raw_file}")"
