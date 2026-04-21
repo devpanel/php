@@ -49,7 +49,9 @@ description: >
   For images with no cached state, the existing manifest is seeded via
   docker buildx imagetools inspect.  If inspect fails for a reason other than
   "tag not found", the image remains unseeded and imagetools create is deferred
-  until seeding succeeds in a later polling cycle.
+  until seeding succeeds in a later polling cycle.  If inspect succeeds but no
+  baseline platforms can be derived from the manifest, the action treats that
+  as a terminal error and refuses to continue rather than deferring.
 
 inputs:
   merge_matrix:
@@ -490,9 +492,6 @@ runs:
                   n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
                   if [[ "${n}" -gt 0 ]] && [[ "${_sp_seeded}" == "false" ]]; then
                     echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
-                  elif [[ "${n}" -eq 0 ]]; then
-                    echo "::warning::${IMAGE_SEED}: could not extract platform/digest" \
-                         "from manifest after successful inspect."
                   fi
                   ;;
                 not_found)
