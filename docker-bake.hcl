@@ -31,11 +31,12 @@
 # is preserved for other workflow caches (e.g. dependency caches).  When
 # GHCR_WRITABLE=false, both GHCR and GHA are used as best-effort caches
 # (ignore-error=true for both).  Final images are pushed to Docker Hub only.
-# Intermediate targets (downloader, php-ext, secure-int) carry GHCR tags and
-# are pushed to GHCR when built; when GHCR_WRITABLE=true this push is required
-# (no ignore-error), so GHCR must be reachable for the build to succeed.
-# GHA cache eviction ("cache entry no longer exists") is non-fatal for all
-# targets.
+# Intermediate targets (downloader, php-ext, secure-int) carry GHCR tags so
+# they can be built directly if needed, but when they are built only as named
+# build contexts they are not pushed just because they have tags.  With
+# GHCR_WRITABLE=true, GHCR must still be reachable because registry cache
+# exports are required (no ignore-error).  GHA cache eviction ("cache entry
+# no longer exists") is non-fatal for all targets.
 
 # ─── Default group ───────────────────────────────────────────────────────────
 # Running `docker buildx bake` without arguments builds this group.
