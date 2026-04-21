@@ -116,24 +116,6 @@ runs:
         username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
         password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
 
-    # Pull the PHP base image before Buildx and the scoped Docker Hub login
-    # are set up.  At this point DOCKER_CONFIG still points to the runner's
-    # original config (embedded Docker Hub token with higher pull quota), so
-    # the pull does not consume any DOCKERHUB_TOKEN quota.  The GHCR mode=max
-    # layer cache keeps subsequent bake runs from needing to re-pull from
-    # Docker Hub at all, but on a cold-cache first run this pre-pull ensures
-    # the image is available in the local daemon before Buildx takes over.
-    # Skip the pull if the image is already present in the local daemon
-    # (e.g. reused runner, local testing).
-    - name: Pre-pull PHP base image using runner token
-      shell: bash
-      env:
-        VERSION: ${{ inputs.version }}
-      run: |
-        set -euo pipefail
-        docker image inspect "php:${VERSION}-apache" > /dev/null 2>&1 \
-          || docker pull "php:${VERSION}-apache"
-
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v4
 
@@ -184,12 +166,46 @@ runs:
         echo "platform_key=${platform_normalized//\//-}" >> "$GITHUB_OUTPUT"
         echo "version=${VERSION}"                         >> "$GITHUB_OUTPUT"
 
+    # Pre-warm the BuildKit layer cache before the scoped Docker Hub login.
+    # Running a no-push bake here achieves two goals:
+    #   1. GHCR cache warm  → BuildKit reads all layers (including
+    #      php:VERSION-apache) from GHCR; Docker Hub is never contacted.
+    #   2. GHCR cache cold  → BuildKit pulls php:VERSION-apache from Docker Hub
+    #      using the runner's embedded token (DOCKER_CONFIG, before the scoped
+    #      push-only DOCKERHUB_TOKEN is written into the Buildx alt-config).
+    # After this step every layer is in BuildKit's content-addressable cache, so
+    # the push bakes below just export from cache to Docker Hub without re-pulling.
+    # VERSIONS_BASE='' and PUSH_BY_DIGEST=false ensure no Docker Hub output is
+    # produced here; the php-base target resolves to empty tags and empty output.
+    - name: Pre-warm GHCR layer cache (build php-base without Docker Hub push)
+      uses: docker/bake-action@v7
+      env:
+        TAG_SUFFIX: ${{ inputs.tag_suffix }}
+        VERSIONS: ${{ inputs.version }}
+        VERSIONS_BASE: ''
+        VERSIONS_SECURE: ''
+        PLATFORMS: ${{ steps.platform.outputs.platform }}
+        PLATFORM_KEY: ${{ steps.platform.outputs.platform_key }}
+        REPO: ${{ inputs.repo }}
+        PUSH_BY_DIGEST: 'false'
+        CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
+        GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+        GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
+        DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
+        BUILDX_BAKE_ENTITLEMENTS_FS: 0
+      with:
+        source: .
+        files: |
+          docker-bake.hcl
+          ${{ steps.preseed-paths.outputs.bake_overrides_file }}
+        targets: php-base
+
     # Docker Hub login scoped to push-only on inputs.repo (devpanel/php by
     # default).  The scope parameter writes credentials to the Buildx
-    # configuration rather than the global Docker config.  The pre-pull step
-    # above already fetched the PHP base image using the runner's embedded
-    # token; on subsequent builds the GHCR mode=max layer cache (warm after
-    # the first run) prevents Buildx from needing to re-pull from Docker Hub.
+    # configuration rather than the global Docker config.  The pre-warm bake
+    # above already built all layers (and fetched php:VERSION-apache from
+    # Docker Hub via the runner token when the GHCR cache was cold), so the
+    # push bakes below find everything in BuildKit's cache and never re-pull.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
