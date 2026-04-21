@@ -126,23 +126,33 @@ runs:
         # No restore-keys needed: the trailing dash already enables prefix matching.
         key: ${{ steps.cache-key-prefix.outputs.prefix }}
 
-    # Full Docker Hub login (no scope) for imagetools inspect and create.
-    # GitHub Actions runners have a built-in Docker Hub token in the global
-    # Docker config for anonymous pulls.  When a scoped login (scope:
-    # <repo>@push) is added, imagetools sees TWO credential sets for the same
-    # registry: the embedded token (global config, pull-only) and
-    # DOCKERHUB_TOKEN (buildx alternative config dir, pull+push).  It merges
-    # both sets into a single OAuth token request with duplicate "scope"
-    # parameters for the same repository — once for pull, once for
-    # pull+push — which the Docker Hub auth server rejects with 401.
-    # A full login (no scope) writes DOCKERHUB_TOKEN to the global config,
-    # replacing the embedded token so there is only one credential set for
-    # docker.io and no duplicate scope parameters.
+    # A Buildx builder is required so that imagetools inspect/create route
+    # through the Buildx credential context (the alternative config dir)
+    # rather than the global Docker config.  This mirrors exactly how
+    # docker buildx bake uses the alternative config dir when pushing
+    # multi-platform manifests.  Without a builder, imagetools has no
+    # builder context and merges credentials from both the global Docker
+    # config (the runner's embedded pull-only token) and the alternative
+    # config dir (DOCKERHUB_TOKEN), producing a malformed token request
+    # with duplicate "scope" query parameters that Docker Hub rejects
+    # with 401.  With a builder, all imagetools operations use only the
+    # alternative config dir credentials, avoiding that conflict.
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    # Docker Hub login scoped to push-only on inputs.repo.  The scope
+    # parameter writes credentials to the Buildx alternative config dir
+    # rather than the global Docker config, so the runner's embedded
+    # Docker Hub token (unlimited pulls) remains active for non-Buildx
+    # operations.  imagetools inspect and create use the Buildx builder
+    # set up above, so they read credentials exclusively from the
+    # alternative config dir.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
+        scope: ${{ inputs.repo }}@push
 
     - name: Poll and merge manifests
       shell: bash
