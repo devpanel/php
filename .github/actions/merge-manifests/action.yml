@@ -127,40 +127,35 @@ runs:
         # No restore-keys needed: the trailing dash already enables prefix matching.
         key: ${{ steps.cache-key-prefix.outputs.prefix }}
 
-    # A Buildx builder is required so that imagetools create routes through
-    # the Buildx credential context rather than the global Docker config.
-    # Without a builder, imagetools has no builder context and reads
-    # credentials from both the global Docker config (the runner's embedded
-    # pull-only token) and the Buildx credential subdir (DOCKERHUB_TOKEN),
-    # producing a malformed token request with duplicate "scope" query
-    # parameters that Docker Hub rejects with 401.  With a builder, all
-    # imagetools operations use only the Buildx credential subdir,
-    # avoiding that conflict.
+    # Merged-credential login: no scope restriction.
     #
-    # docker/login-action with scope writes credentials into a subdir of
-    # DOCKER_CONFIG (${DOCKER_CONFIG}/buildx/config/<registry>/<scope>/)
-    # for the duration of the docker login subprocess only; it does NOT
-    # change the DOCKER_CONFIG env var for this job.  Plain docker commands
-    # (e.g. docker manifest inspect) therefore continue to use the runner's
-    # embedded Docker Hub token from DOCKER_CONFIG, while docker buildx
-    # imagetools routes through the builder and uses the scoped credentials.
-    # No DOCKER_CONFIG override is needed on non-buildx commands.
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v4
-
-    # Docker Hub login scoped to push-only on inputs.repo.  The scope
-    # parameter writes credentials into a Buildx credential subdir
-    # (${DOCKER_CONFIG}/buildx/config/registry-1.docker.io/<scope>/) for
-    # the docker login subprocess only; DOCKER_CONFIG itself is unchanged.
-    # Only imagetools create (push) uses these credentials; plain docker
-    # commands (e.g. manifest inspect) continue to use the runner's
-    # embedded token from DOCKER_CONFIG.
+    # docker/login-action with scope= writes credentials into a subdir of
+    # the Buildx config dir (${DOCKER_CONFIG}/buildx/config/<registry>/<scope>/).
+    # When imagetools resolve credentials, they look in DOCKER_CONFIG first and
+    # the Buildx subdir second.  If BOTH contain credentials for docker.io,
+    # imagetools constructs a token request with duplicate "scope" query
+    # parameters that Docker Hub rejects with 401.
+    #
+    # By omitting the scope parameter the login writes directly to DOCKER_CONFIG
+    # (standard `docker login`), overwriting the runner's embedded token for
+    # docker.io.  The Buildx credential subdir is then empty.  imagetools finds
+    # exactly one credential → no conflict → no 401.
+    #
+    # No setup-buildx-action or dedicated builder is required: imagetools create
+    # is a pure registry-side operation.  It resolves auth via
+    #   builder.ImageOpt() → storeutil.GetImageConfig(dockerCli, ng)
+    #     → dockerconfig.LoadAuthConfig(dockerCli)
+    # which reads from DOCKER_CONFIG.  ubuntu-latest runners ship with docker
+    # buildx pre-installed and the default docker-context builder is sufficient.
+    #
+    # The merge job only performs manifest API calls — it never pulls image
+    # layers — so using DOCKERHUB_TOKEN for both reads (seeding inspects) and
+    # writes (imagetools create) does not meaningfully affect pull-rate quotas.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
-        scope: ${{ inputs.repo }}@push
 
     - name: Poll and merge manifests
       shell: bash
