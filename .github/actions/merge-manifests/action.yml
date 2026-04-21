@@ -95,13 +95,14 @@ inputs:
   dockerhub_username:
     description: >
       Docker Hub username for image push authentication.
-      Used for docker login before imagetools inspect and imagetools create.
+      Used only for imagetools create (push).
     required: true
   dockerhub_token:
     description: >
       Docker Hub token for image push authentication.
-      Used for docker login before imagetools create (push operations only;
-      manifest inspection uses the runner's embedded token instead).
+      Used only for imagetools create (push).  Manifest inspection (read)
+      uses the runner's embedded Docker Hub token so pull quota is not
+      attributed to this token.
     required: true
 
 runs:
@@ -127,58 +128,37 @@ runs:
         # No restore-keys needed: the trailing dash already enables prefix matching.
         key: ${{ steps.cache-key-prefix.outputs.prefix }}
 
-    # Merged-credential login: no scope restriction.
+    # Two-config authentication design:
     #
-    # docker/login-action with scope= writes credentials into a subdir of
-    # the Buildx config dir (${DOCKER_CONFIG}/buildx/config/<registry>/<scope>/).
-    # When imagetools resolve credentials, they look in DOCKER_CONFIG first and
-    # the Buildx subdir second.  If BOTH contain credentials for docker.io,
-    # imagetools constructs a token request with duplicate "scope" query
-    # parameters that Docker Hub rejects with 401.
+    # Reads (manifest inspect / imagetools inspect) use the runner's embedded
+    # Docker Hub token stored in DOCKER_CONFIG.  GitHub-hosted runners have an
+    # enterprise/team agreement with Docker Hub that makes these reads free and
+    # unlimited, so they never consume the project's pull quota.
     #
-    # By omitting the scope parameter the login writes directly to DOCKER_CONFIG
-    # (standard `docker login`), overwriting the runner's embedded token for
-    # docker.io.  The Buildx credential subdir is then empty.  imagetools finds
-    # exactly one credential → no conflict → no 401.
+    # Writes (imagetools create) use a separate, isolated docker config
+    # directory (PUSH_DOCKER_CONFIG) that contains only DOCKERHUB_TOKEN.
+    # The --config flag on each imagetools create invocation points the CLI at
+    # that directory, ensuring DOCKERHUB_TOKEN is used exclusively for pushing
+    # and is never mixed in with DOCKER_CONFIG.
     #
-    # No setup-buildx-action or dedicated builder is required: imagetools create
-    # is a pure registry-side operation.  It resolves auth via
-    #   builder.ImageOpt() → storeutil.GetImageConfig(dockerCli, ng)
-    #     → dockerconfig.LoadAuthConfig(dockerCli)
-    # which reads from DOCKER_CONFIG.  ubuntu-latest runners ship with docker
-    # buildx pre-installed and the default docker-context builder is sufficient.
-    #
-    # Pull-quota proof: the merge job never downloads image layers.
-    #
-    # docker manifest inspect / imagetools inspect: these are manifest-only
-    # HTTP GET requests (GET /v2/{name}/manifests/{ref}).  No layer blobs are
-    # fetched.  Docker Hub counts each manifest GET as one "pull" for
-    # rate-limit purposes.
-    #
-    # docker buildx imagetools create: resolves each source by digest
-    # (one manifest GET per platform), then calls contentutil.CopyChain
-    # which dispatches an images.Handler over the manifest graph.  The
-    # filterHandler in CopyChain returns images.ErrStopHandler on every
-    # manifest media type, preventing traversal into config or layer
-    # children.  Only manifest JSON blobs are read from the source and
-    # written to the destination.  Layer blobs are never fetched.
-    #
-    # Docker Hub rate-limit attribution (docs.docker.com/docker-hub/usage/pulls/):
-    #   - Unauthenticated (IP-based):       100 pulls / 6 h
-    #   - Personal (authenticated):         200 pulls / 6 h
-    #   - Pro / Team / Business:            unlimited
-    # All merge-job requests are authenticated with DOCKERHUB_TOKEN (merged
-    # credential in DOCKER_CONFIG) → never touching the anonymous IP quota.
-    # On a Pro/Team/Business account the rate limit is unlimited.
-    # Even on a free Personal account: seeding makes at most one manifest
-    # GET per image (~15 images total), and imagetools create makes one
-    # manifest GET per platform ref per invocation; the total is well within
-    # the 200/6 h personal limit.
-    - name: Login to Docker Hub
-      uses: docker/login-action@v4
-      with:
-        username: ${{ inputs.dockerhub_username }}
-        password: ${{ inputs.dockerhub_token }}
+    # imagetools create is a manifest-only registry operation: it reads each
+    # source manifest by digest (GET /v2/{name}/manifests/{digest}) and writes
+    # the merged manifest list (PUT /v2/{name}/manifests/{tag}).  Image layer
+    # blobs are never downloaded or uploaded.  The source reads during create
+    # also use PUSH_DOCKER_CONFIG; because no layer data is transferred these
+    # manifest GETs do not count as pulls under Docker Hub's pull-rate quota.
+    - name: Set up push credentials
+      shell: bash
+      env:
+        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
+        DOCKERHUB_TOKEN:    ${{ inputs.dockerhub_token }}
+      run: |
+        PUSH_DOCKER_CONFIG="${{ runner.temp }}/push-docker-config"
+        mkdir -p "${PUSH_DOCKER_CONFIG}"
+        printf '%s' "${DOCKERHUB_TOKEN}" \
+          | docker --config "${PUSH_DOCKER_CONFIG}" login \
+              --username "${DOCKERHUB_USERNAME}" \
+              --password-stdin
 
     - name: Poll and merge manifests
       shell: bash
@@ -192,6 +172,7 @@ runs:
         RUN_ID:                ${{ inputs.run_id }}
         GITHUB_REPO:           ${{ inputs.repository }}
         DIGESTS_CACHE_DIR:     ${{ runner.temp }}/merge-manifests-digests
+        PUSH_DOCKER_CONFIG:    ${{ runner.temp }}/push-docker-config
       run: |
         set -euo pipefail
 
