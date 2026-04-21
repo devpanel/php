@@ -157,7 +157,7 @@ runs:
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
-        scope: "repository:${{ inputs.repo }}:pull,push"
+        scope: ${{ inputs.repo }}@push
 
     - name: Poll and merge manifests
       shell: bash
