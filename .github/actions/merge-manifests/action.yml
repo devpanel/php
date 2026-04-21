@@ -149,8 +149,6 @@ runs:
         RUN_ID:                ${{ inputs.run_id }}
         GITHUB_REPO:           ${{ inputs.repository }}
         DIGESTS_CACHE_DIR:     ${{ runner.temp }}/merge-manifests-digests
-        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
-        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
       run: |
         set -euo pipefail
 
