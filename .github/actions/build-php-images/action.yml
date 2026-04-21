@@ -123,13 +123,16 @@ runs:
     # layer cache keeps subsequent bake runs from needing to re-pull from
     # Docker Hub at all, but on a cold-cache first run this pre-pull ensures
     # the image is available in the local daemon before Buildx takes over.
+    # Skip the pull if the image is already present in the local daemon
+    # (e.g. reused runner, local testing).
     - name: Pre-pull PHP base image using runner token
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        docker pull "php:${VERSION}-apache"
+        docker image inspect "php:${VERSION}-apache" > /dev/null 2>&1 \
+          || docker pull "php:${VERSION}-apache"
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v4
