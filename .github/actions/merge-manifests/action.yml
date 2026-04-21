@@ -148,9 +148,32 @@ runs:
     # which reads from DOCKER_CONFIG.  ubuntu-latest runners ship with docker
     # buildx pre-installed and the default docker-context builder is sufficient.
     #
-    # The merge job only performs manifest API calls — it never pulls image
-    # layers — so using DOCKERHUB_TOKEN for both reads (seeding inspects) and
-    # writes (imagetools create) does not meaningfully affect pull-rate quotas.
+    # Pull-quota proof: the merge job never downloads image layers.
+    #
+    # docker manifest inspect / imagetools inspect: these are manifest-only
+    # HTTP GET requests (GET /v2/{name}/manifests/{ref}).  No layer blobs are
+    # fetched.  Docker Hub counts each manifest GET as one "pull" for
+    # rate-limit purposes.
+    #
+    # docker buildx imagetools create: resolves each source by digest
+    # (one manifest GET per platform), then calls contentutil.CopyChain
+    # which dispatches an images.Handler over the manifest graph.  The
+    # filterHandler in CopyChain returns images.ErrStopHandler on every
+    # manifest media type, preventing traversal into config or layer
+    # children.  Only manifest JSON blobs are read from the source and
+    # written to the destination.  Layer blobs are never fetched.
+    #
+    # Docker Hub rate-limit attribution (docs.docker.com/docker-hub/usage/pulls/):
+    #   - Unauthenticated (IP-based):       100 pulls / 6 h
+    #   - Personal (authenticated):         200 pulls / 6 h
+    #   - Pro / Team / Business:            unlimited
+    # All merge-job requests are authenticated with DOCKERHUB_TOKEN (merged
+    # credential in DOCKER_CONFIG) → never touching the anonymous IP quota.
+    # On a Pro/Team/Business account the rate limit is unlimited.
+    # Even on a free Personal account: seeding makes at most one manifest
+    # GET per image (~15 images total), and imagetools create makes one
+    # manifest GET per platform ref per invocation; the total is well within
+    # the 200/6 h personal limit.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
@@ -402,12 +425,12 @@ runs:
 
               _seed_status=""  # "ok" | "not_found" | "error"
 
-              # ── Manifest inspect (uses runner embedded token) ────────────────
-              # docker/login-action with scope does NOT change DOCKER_CONFIG; it
-              # only writes scoped credentials into a Buildx subdir for the
-              # docker login subprocess.  Plain docker manifest inspect therefore
-              # reads from DOCKER_CONFIG as-is and uses the runner's embedded
-              # Docker Hub token automatically — no override needed.
+              # ── Manifest inspect (authenticated with DOCKERHUB_TOKEN) ───────────
+              # With the merged-credential login (no scope), DOCKERHUB_TOKEN is
+              # written directly to DOCKER_CONFIG (standard docker login), which
+              # overwrites the runner's embedded token for docker.io.  All
+              # docker commands — including plain docker manifest inspect — use
+              # DOCKER_CONFIG and therefore authenticate with DOCKERHUB_TOKEN.
               #
               # docker manifest inspect returns the raw OCI/Docker V2 manifest
               # JSON.  For manifest lists (multi-arch) the structure is identical
