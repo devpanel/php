@@ -130,34 +130,28 @@ runs:
 
     # Authentication design:
     #
-    # docker/login-action WITHOUT scope= writes DOCKERHUB_TOKEN directly into
-    # $DOCKER_CONFIG/config.json, overwriting the runner's embedded token.
-    # This ensures there is exactly one docker.io credential entry.
+    # We need DOCKERHUB_TOKEN for imagetools create (push) but want to leave
+    # the runner's embedded Docker Hub token in DOCKER_CONFIG untouched so
+    # that manifest inspection (reads) continues to use it.
     #
-    # Using scope= instead writes DOCKERHUB_TOKEN into a subdirectory of the
-    # Buildx config dir (~/.docker/buildx/config/registry-1.docker.io/<scope>/).
-    # The runner's embedded token remains in DOCKER_CONFIG.  When
-    # docker buildx imagetools runs, it reads credentials from BOTH
-    # DOCKER_CONFIG and the Buildx alt-config dir, finding two entries for
-    # docker.io and sending two scope= parameters in a single token request:
-    #   scope=repository:repo:pull&scope=repository:repo:pull,push
-    # Docker Hub rejects this malformed duplicate-scope request with 401.
+    # Approach: create a fresh, isolated Docker config directory (PUSH_DOCKER_CONFIG)
+    # inside the script and log DOCKERHUB_TOKEN into it.  Pass
+    # --config "${PUSH_DOCKER_CONFIG}" only on "docker buildx imagetools create".
+    # Plain "docker buildx imagetools inspect" calls use the default DOCKER_CONFIG
+    # (runner token) — no extra flag needed.
     #
-    # With a single unscoped credential (DOCKERHUB_TOKEN replacing the runner
-    # token in DOCKER_CONFIG), all imagetools operations — manifest inspection
-    # (reads) and imagetools create (reads + write) — use the same token.
+    # Why not docker/login-action?
+    # - Unscoped login writes to DOCKER_CONFIG directly, overwriting the runner token.
+    # - Scoped login writes DOCKERHUB_TOKEN into the Buildx alt-config dir; buildx
+    #   imagetools then reads credentials from BOTH DOCKER_CONFIG and the alt-config
+    #   dir, finding two docker.io entries and sending two scope= params in one token
+    #   request — Docker Hub rejects this with 401.
     #
     # docker/setup-buildx-action is not needed here: imagetools create is a
     # pure registry client-side operation (no builder required).  It reads each
     # source manifest by digest (GET /v2/{name}/manifests/{digest}) and writes
     # the merged manifest list (PUT /v2/{name}/manifests/{tag}); image layer
     # blobs are never downloaded or uploaded.
-
-    - name: Login to Docker Hub
-      uses: docker/login-action@v4
-      with:
-        username: ${{ inputs.dockerhub_username }}
-        password: ${{ inputs.dockerhub_token }}
 
     - name: Poll and merge manifests
       shell: bash
@@ -171,11 +165,23 @@ runs:
         RUN_ID:                ${{ inputs.run_id }}
         GITHUB_REPO:           ${{ inputs.repository }}
         DIGESTS_CACHE_DIR:     ${{ runner.temp }}/merge-manifests-digests
+        DOCKERHUB_USERNAME:    ${{ inputs.dockerhub_username }}
+        DOCKERHUB_TOKEN:       ${{ inputs.dockerhub_token }}
       run: |
         set -euo pipefail
 
         WORK_DIR="$(mktemp -d)"
-        trap 'rm -rf "${WORK_DIR}"' EXIT
+        PUSH_DOCKER_CONFIG="$(mktemp -d)"
+        trap 'rm -rf "${WORK_DIR}" "${PUSH_DOCKER_CONFIG}"' EXIT
+
+        # Log DOCKERHUB_TOKEN into the isolated push-only config dir.
+        # This keeps the runner's embedded Docker Hub token in DOCKER_CONFIG
+        # completely untouched; reads (imagetools inspect) continue to use it.
+        printf '%s' "${DOCKERHUB_TOKEN}" \
+          | docker --config "${PUSH_DOCKER_CONFIG}" login \
+              --username "${DOCKERHUB_USERNAME}" \
+              --password-stdin \
+              docker.io
 
         # Stable directory for per-image platform-digest state files.
         # Pre-populated by the cache restore step; persisted by the cache
@@ -405,8 +411,8 @@ runs:
               _seed_status=""  # "ok" | "not_found" | "error"
 
               # ── imagetools inspect ───────────────────────────────────────────────
-              # DOCKERHUB_TOKEN was written directly to DOCKER_CONFIG by the
-              # unscoped login, so no --config override is needed here.
+              # No --config override: the runner's embedded token in DOCKER_CONFIG
+              # is used for these read-only manifest inspection calls.
               # imagetools inspect inlines the image config blob into its JSON
               # output, giving platform info for both multi-arch images (via
               # .manifests[].platform) and single-arch images (via
@@ -747,7 +753,7 @@ runs:
 
               if [[ ${#REFS[@]} -gt 0 ]]; then
                 _create_err_file="$(mktemp)"
-                if docker buildx imagetools create \
+                if docker --config "${PUSH_DOCKER_CONFIG}" buildx imagetools create \
                      --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}"; then
                   rm -f "${_create_err_file}"
                   echo "  Updated ${IMAGE} with ${#REFS[@]} platform ref(s)."
