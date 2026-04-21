@@ -381,20 +381,26 @@ runs:
               IMAGE_SEED="${REPO}:${version}-${stage}${TAG_SUFFIX}"
 
               _seed_status=""  # "ok" | "not_found" | "error"
-              _inspect_raw=""
+              _inspect_json=""
 
-              # ── imagetools inspect --raw ──────────────────────────────────────
-              # --raw returns the manifest JSON, which is a stable machine-
-              # readable format.  jq then extracts platform/digest pairs from
-              # the manifests array (image index) without relying on the
-              # human-readable text layout that may change across buildx versions.
+              # ── imagetools inspect ────────────────────────────────────────────
+              # Use --format '{{json .}}' so that both image-index (multi-
+              # platform) and single-platform manifests are handled as JSON:
+              # - image index:        .manifests[].{platform,digest}
+              # - single-platform:    .image.{os,architecture,variant}  (buildx
+              #                       fetches the config blob and inlines it) and
+              #                       .digest (from the manifest descriptor).
+              # Using --raw would also work for image indexes but does NOT
+              # include the image config, so platform info would be absent for
+              # single-platform manifests — that is why --format is used here.
               seed_stderr="$(mktemp)"
-              if _inspect_raw="$(docker buildx imagetools inspect --raw \
-                                   "${IMAGE_SEED}" 2>"${seed_stderr}")"; then
+              if _inspect_json="$(docker buildx imagetools inspect \
+                                    --format '{{json .}}' \
+                                    "${IMAGE_SEED}" 2>"${seed_stderr}")"; then
                 _seed_status="ok"
-                echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect --raw)."
+                echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect --format json)."
               else
-                _inspect_raw=""
+                _inspect_json=""
                 if grep -qi \
                      "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
                      "${seed_stderr}"; then
@@ -413,10 +419,10 @@ runs:
               case "${_seed_status}" in
                 ok)
                   # Fresh manifest obtained; rewrite state file from it.
-                  # Parse the raw JSON with jq: .manifests[] covers image-index
-                  # (multi-platform) manifests; single-platform image manifests
-                  # have no .manifests array and produce no output (treated as
-                  # empty, which triggers the warning below).
+                  # image index: extract per-platform digests from .manifests[].
+                  # single-platform (no .manifests key): extract platform from
+                  # .image.{os,architecture,variant} (inlined by buildx from the
+                  # config blob) and the manifest digest from .digest.
                   > "${IMG_PLATFORM_DIGESTS[$key]}"
                   while IFS=$'\t' read -r _pf_plat _pf_digest; do
                       IFS='/' read -r _p_os _p_arch _p_var <<< "${_pf_plat}"
@@ -435,7 +441,7 @@ runs:
                       _pf_pkey="${_normalized_plat//\//-}"
                       printf '%s\t%s\n' "${_pf_pkey}" "${_pf_digest}" \
                         >> "${IMG_PLATFORM_DIGESTS[$key]}"
-                    done < <(printf '%s' "${_inspect_raw}" | jq -r '
+                    done < <(printf '%s' "${_inspect_json}" | jq -r '
                         .manifests[]? |
                         select(
                           .platform != null and
@@ -451,10 +457,43 @@ runs:
                           (.digest // "")
                         ] | @tsv
                       ')
+                  # Single-platform path: .manifests is absent so the loop above
+                  # produced 0 entries.  Extract platform from .image (the inlined
+                  # OCI image config, populated by buildx from the config blob) and
+                  # digest from .digest (the manifest descriptor digest).
+                  _sp_seeded=false
+                  if [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
+                    while IFS=$'\t' read -r _pf_plat _pf_digest; do
+                        IFS='/' read -r _p_os _p_arch _p_var <<< "${_pf_plat}"
+                        [[ -n "${_pf_digest}" && -n "${_p_os}" && -n "${_p_arch}" ]] || continue
+                        _sp_norm="${_p_os}/${_p_arch}"
+                        if [[ -n "${_p_var:-}" ]] && \
+                           ! [[ "${_p_arch}" == "arm64" && "${_p_var}" == "v8" ]] && \
+                           ! [[ "${_p_arch}" == "amd64" && "${_p_var}" == "v1" ]]; then
+                          _sp_norm="${_p_os}/${_p_arch}/${_p_var}"
+                        fi
+                        _sp_pkey="${_sp_norm//\//-}"
+                        printf '%s\t%s\n' "${_sp_pkey}" "${_pf_digest}" \
+                          >> "${IMG_PLATFORM_DIGESTS[$key]}"
+                        echo "  ${IMAGE_SEED}: seeded 1 platform from" \
+                             "single-arch manifest (${_sp_norm})."
+                        _sp_seeded=true
+                      done < <(printf '%s' "${_inspect_json}" | jq -r '
+                          select(has("manifests") | not) |
+                          [
+                            ((.image.os // "") + "/" + (.image.architecture // "") +
+                             (if (.image.variant // "") != ""
+                              then "/" + .image.variant else "" end)),
+                            (.digest // "")
+                          ] |
+                          select(.[0] != "/" and .[0] != "" and .[1] != "") |
+                          @tsv
+                        ')
+                  fi
                   n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
-                  if [[ "${n}" -gt 0 ]]; then
+                  if [[ "${n}" -gt 0 ]] && [[ "${_sp_seeded}" == "false" ]]; then
                     echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
-                  else
+                  elif [[ "${n}" -eq 0 ]]; then
                     echo "::warning::${IMAGE_SEED}: could not extract platform/digest" \
                          "from manifest; starting with empty state."
                   fi
