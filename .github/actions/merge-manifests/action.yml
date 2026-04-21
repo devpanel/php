@@ -415,7 +415,7 @@ runs:
               # .image.{os,architecture,variant}) in one call.
               _seed_raw_file="$(mktemp)"
               seed_stderr="$(mktemp)"
-              if docker --config "${DOCKER_CONFIG:=${HOME}/.docker}" \
+              if docker --config "${DOCKER_CONFIG:-${HOME}/.docker}" \
                    buildx imagetools inspect \
                    --format '{{json .}}' \
                    "${IMAGE_SEED}" > "${_seed_raw_file}" 2>"${seed_stderr}"; then
