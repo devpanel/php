@@ -126,17 +126,19 @@ runs:
         # No restore-keys needed: the trailing dash already enables prefix matching.
         key: ${{ steps.cache-key-prefix.outputs.prefix }}
 
-    # Docker Hub login scoped to push-only on inputs.repo (devpanel/php by
-    # default).  The scope parameter writes credentials to the Buildx
-    # configuration rather than the global Docker config, so imagetools
-    # create can push while the runner's embedded Docker Hub token remains
-    # active for any pulls.
+    # Full Docker Hub login (no scope) so that both imagetools inspect and
+    # imagetools create can authenticate to Docker Hub for pull (fetching
+    # source manifests by digest) and push (writing the manifest list tag).
+    # A scoped login (scope: <repo>@push) stores credentials only in the
+    # Buildx alternative config dir which is inaccessible to imagetools
+    # commands that run as Docker CLI commands against the global Docker
+    # config — this would cause 401 Unauthorized on every imagetools create
+    # attempt.
     - name: Login to Docker Hub
       uses: docker/login-action@v4
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
-        scope: ${{ inputs.repo }}@push
 
     - name: Poll and merge manifests
       shell: bash
