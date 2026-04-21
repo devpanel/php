@@ -386,12 +386,20 @@ runs:
               # cases, parsed with jq:
               # - image index:     .manifests[].{platform,digest} (all info
               #                    is present in the raw manifest list JSON).
-              # - single-platform: .manifests is absent; the manifest contains
-              #                    only .config.digest (a reference to the image
-              #                    config blob).  A second --raw call fetches
-              #                    the config blob where os/architecture/variant
-              #                    live.  The manifest digest is computed from
-              #                    the sha256 of the raw manifest bytes.
+              # - single-platform: .manifests is absent in the raw manifest
+              #                    (both Docker v2 and OCI image manifests
+              #                    omit the .manifests array; its presence is
+              #                    the authoritative distinction between an
+              #                    image index and an image manifest).  The
+              #                    manifest contains only .config.digest (a
+              #                    reference to the config blob).  A second
+              #                    --raw call fetches the config blob where
+              #                    os/architecture/variant live.  The manifest
+              #                    digest is computed from the sha256 of the
+              #                    raw manifest bytes: OCI/Docker content-
+              #                    addressing hashes the exact stored bytes
+              #                    (not canonical JSON), so sha256sum on the
+              #                    raw file matches the registry digest.
               _seed_raw_file="$(mktemp)"
               seed_stderr="$(mktemp)"
               if docker buildx imagetools inspect \
