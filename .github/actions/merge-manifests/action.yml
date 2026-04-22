@@ -49,9 +49,11 @@ inputs:
       per Docker Hub image that needs a manifest merge.  expected_platforms is
       the number of build-matrix entries expected to produce a digest artifact
       for that image; the merge loop uses it as the per-image completion
-      threshold.  Pass needs.detect.outputs.merge_matrix from the calling
-      workflow.
-      Example: [{"version":"8.3","stage":"base","expected_platforms":2}]
+      threshold.  Every version must have an "advance" entry because advance
+      expected_platforms drives the per-version build-done threshold.
+      Pass needs.detect.outputs.merge_matrix from the calling workflow.
+      Example: [{"version":"8.3","stage":"base","expected_platforms":2},
+                {"version":"8.3","stage":"advance","expected_platforms":2}]
     required: true
   repo:
     description: Docker Hub repository (e.g. devpanel/php)
@@ -189,6 +191,19 @@ runs:
             echo "::error::merge-matrix entry '${_val_key}' has" \
                  "expected_platforms=${_val_ep:-<unset>};" \
                  "every entry must have a positive expected_platforms value." \
+                 "This is a bug in detect-versions; please report it."
+            exit 1
+          fi
+        done
+
+        # Validate that every version has an "advance" entry.  VER_EXPECTED_PLATFORMS
+        # is only set from advance entries; without it the per-version build-done
+        # threshold is undefined, causing numeric comparisons to fail later.
+        for _val_vs in "${VERSIONS_STAGES[@]}"; do
+          _val_ver="${_val_vs%%:*}"
+          if [[ -z "${VER_EXPECTED_PLATFORMS[${_val_ver}]+x}" ]]; then
+            echo "::error::version '${_val_ver}' has no 'advance' entry in the" \
+                 "merge matrix; every version must include an advance entry." \
                  "This is a bug in detect-versions; please report it."
             exit 1
           fi
