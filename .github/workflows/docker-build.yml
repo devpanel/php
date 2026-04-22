@@ -123,13 +123,17 @@ jobs:
       versions_secure: ${{ steps.detect.outputs.versions_secure }}
       latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
       tag_suffix: ${{ steps.detect.outputs.tag_suffix }}
-      # Total number of distinct platforms — used by each merge job to know
-      # when all per-platform digest artifacts have been collected.
+      # Total number of distinct platforms — passed to the merge job for
+      # logging and as a fallback; per-image completion thresholds are now
+      # derived from the expected_platforms field in each merge_matrix entry.
       total_platforms: ${{ steps.detect.outputs.total_platforms }}
-      # JSON array of {version, stage} objects — one entry per Docker Hub
-      # image that needs a manifest merge.  The downstream single merge job
-      # consumes the full array and passes it to the merge-manifests action,
-      # which iterates over entries internally to merge each image's tag.
+      # JSON array of {version, stage, expected_platforms} objects — one entry
+      # per Docker Hub image that needs a manifest merge.  expected_platforms
+      # is the number of build-matrix entries that will produce a digest
+      # artifact for that (version, stage), used as the per-image completion
+      # threshold.  The downstream single merge job consumes the full array
+      # and passes it to the merge-manifests action, which iterates over
+      # entries internally to merge each image's tag.
       merge_matrix: ${{ steps.detect.outputs.merge_matrix }}
       # JSON array of {version, platform, versions_base, versions_secure}
       # objects — one entry per PHP-version × platform combination.  Each

@@ -73,8 +73,11 @@ outputs:
     value: ${{ steps.detect.outputs.total_platforms }}
   merge_matrix:
     description: >
-      JSON array of {version, stage} objects — one entry per Docker Hub image
-      that needs a manifest merge.
+      JSON array of {version, stage, expected_platforms} objects — one entry
+      per Docker Hub image that needs a manifest merge.  expected_platforms is
+      the number of build-matrix entries that will produce a digest artifact
+      for that (version, stage), used by merge-manifests as the per-image
+      completion threshold.
     value: ${{ steps.detect.outputs.merge_matrix }}
   build_matrix:
     description: >
@@ -519,14 +522,40 @@ runs:
           MERGE_MATRIX="$(
             {
               for v in ${VERSIONS_OUT}; do
+                # Count expected platforms per stage for version v.  The
+                # expected platform count for a (version, stage) is the number
+                # of build-matrix entries for that version whose per-platform
+                # stage list includes v; the merge job uses these counts as
+                # per-image completion thresholds instead of the global
+                # TOTAL_PLATFORMS so that (version, platform) pairs
+                # intentionally omitted from the build matrix do not cause
+                # the merge loop to poll indefinitely.
+                _advance_ep=0
+                _base_ep=0
+                _secure_ep=0
+                for p in "${PLATFORM_LIST[@]}"; do
+                  pkey="${p//\//-}"
+                  [[ " ${PLAT_VERSIONS[${pkey}]} " == *" ${v} "* ]] \
+                    && _advance_ep=$(( _advance_ep + 1 ))
+                  [[ " ${PLAT_VERSIONS_BASE[${pkey}]} " == *" ${v} "* ]] \
+                    && _base_ep=$(( _base_ep + 1 ))
+                  [[ " ${PLAT_VERSIONS_SECURE[${pkey}]} " == *" ${v} "* ]] \
+                    && _secure_ep=$(( _secure_ep + 1 ))
+                done
                 [[ " ${VERSIONS_BASE_OUT} " == *" ${v} "* ]] \
-                  && jq -nc --arg version "${v}" --arg stage "base" \
-                       '{"version":$version,"stage":$stage}'
+                  && jq -nc \
+                       --arg version "${v}" --arg stage "base" \
+                       --argjson expected_platforms "${_base_ep}" \
+                       '{"version":$version,"stage":$stage,"expected_platforms":$expected_platforms}'
                 [[ " ${VERSIONS_SECURE_OUT} " == *" ${v} "* ]] \
-                  && jq -nc --arg version "${v}" --arg stage "secure" \
-                       '{"version":$version,"stage":$stage}'
-                jq -nc --arg version "${v}" --arg stage "advance" \
-                  '{"version":$version,"stage":$stage}'
+                  && jq -nc \
+                       --arg version "${v}" --arg stage "secure" \
+                       --argjson expected_platforms "${_secure_ep}" \
+                       '{"version":$version,"stage":$stage,"expected_platforms":$expected_platforms}'
+                jq -nc \
+                  --arg version "${v}" --arg stage "advance" \
+                  --argjson expected_platforms "${_advance_ep}" \
+                  '{"version":$version,"stage":$stage,"expected_platforms":$expected_platforms}'
               done
             } | jq -sc '.'
           )"

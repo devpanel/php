@@ -18,9 +18,10 @@ description: >
      encoded run_attempt is compared against GITHUB_RUN_ATTEMPT (which is the
      same for every job in a workflow run) so that stale markers from a
      previous failed attempt are not treated as completion signals when the job
-     is re-run.  When the count of verified markers equals total_platforms all
-     builds for that version are done and the merge loop can exit for all
-     stages of that version.
+     is re-run.  When the count of verified markers equals the per-version
+     expected platform count (from the merge matrix) all builds for that
+     version are done and the merge loop can exit for all stages of that
+     version.
 
   Batching multiple completions into one create call per image avoids
   unnecessary intermediate manifest states.  A single job (not a matrix) is
@@ -44,10 +45,13 @@ description: >
 inputs:
   merge_matrix:
     description: >
-      JSON array of {version, stage} objects — one entry per Docker Hub image
-      that needs a manifest merge. Pass needs.detect.outputs.merge_matrix from
-      the calling workflow.
-      Example: [{"version":"8.3","stage":"base"},{"version":"8.3","stage":"secure"}]
+      JSON array of {version, stage, expected_platforms} objects — one entry
+      per Docker Hub image that needs a manifest merge.  expected_platforms is
+      the number of build-matrix entries expected to produce a digest artifact
+      for that image; the merge loop uses it as the per-image completion
+      threshold.  Pass needs.detect.outputs.merge_matrix from the calling
+      workflow.
+      Example: [{"version":"8.3","stage":"base","expected_platforms":2}]
     required: true
   repo:
     description: Docker Hub repository (e.g. devpanel/php)
@@ -57,10 +61,11 @@ inputs:
     required: true
   total_platforms:
     description: >
-      Number of distinct target platforms expected for each image.  The merge
-      loop for an image exits as soon as it has successfully merged this many
-      platform digests, or as soon as this many "build-done-{VERSION}-*"
-      markers have been observed for the version.
+      Total number of distinct target platforms.  Used only as a logging
+      reference and as a fallback when a merge-matrix entry is missing the
+      expected_platforms field.  Per-image completion thresholds are now
+      derived from the expected_platforms field embedded in each merge-matrix
+      entry by detect-versions, so this value does not drive the merge loop.
     required: true
   poll_interval_seconds:
     description: Seconds to wait between polling cycles.
@@ -152,9 +157,29 @@ runs:
 
         # ── Parse merge matrix into parallel arrays ────────────────────────
         # VERSIONS_STAGES[i] = "VERSION:STAGE"
-        readarray -t VERSIONS_STAGES < <(
+        # IMG_EXPECTED_PLATFORMS["VERSION:STAGE"] = expected platform count
+        #   (number of (version, platform) build-matrix entries that will
+        #   upload a digest artifact for this image; used as the per-image
+        #   completion threshold instead of the global TOTAL_PLATFORMS so
+        #   that intentionally-omitted (version, platform) pairs do not
+        #   cause the merge loop to poll indefinitely).
+        # VER_EXPECTED_PLATFORMS["VERSION"] = expected build-done count
+        #   (advance expected_platforms; advance is always present per version)
+        declare -A IMG_EXPECTED_PLATFORMS
+        declare -A VER_EXPECTED_PLATFORMS
+        VERSIONS_STAGES=()
+        while IFS=$'\t' read -r _vs _ep; do
+          [[ -z "${_vs}" ]] && continue
+          VERSIONS_STAGES+=("${_vs}")
+          IMG_EXPECTED_PLATFORMS["${_vs}"]="${_ep}"
+          _vs_stage="${_vs##*:}"
+          _vs_ver="${_vs%%:*}"
+          if [[ "${_vs_stage}" == "advance" ]]; then
+            VER_EXPECTED_PLATFORMS["${_vs_ver}"]="${_ep}"
+          fi
+        done < <(
           printf '%s' "${MERGE_MATRIX_JSON}" \
-            | jq -r '.[] | .version + ":" + .stage'
+            | jq -r '.[] | (.version + ":" + .stage) + "\t" + (.expected_platforms // 0 | tostring)'
         )
 
         if [[ ${#VERSIONS_STAGES[@]} -eq 0 ]]; then
@@ -205,12 +230,11 @@ runs:
           touch "${IMG_PROCESSED[$key]}"
           touch "${IMG_MERGED_PKEYS[$key]}"
           touch "${IMG_PLATFORM_DIGESTS[$key]}"
-          echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
+          echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX} (${IMG_EXPECTED_PLATFORMS[$key]:-${TOTAL_PLATFORMS}} platform(s) expected)"
           if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
             VER_BUILD_DONE[$version]=0
           fi
         done
-        echo "(${TOTAL_PLATFORMS} platform(s) expected per image)"
 
         POLL_CYCLE=0
 
@@ -273,13 +297,13 @@ runs:
           # On a partial re-run ("Re-run failed jobs"), successful jobs from the
           # previous attempt are not re-run and therefore do not upload new
           # current-attempt build-done markers.  In that case
-          # VER_BUILD_DONE[$version] will never reach TOTAL_PLATFORMS for the
-          # version; the merge still completes because the image's completion
-          # check has a second condition: digest_merged >= TOTAL_PLATFORMS.
+          # VER_BUILD_DONE[$version] will never reach the per-version expected
+          # count; the merge still completes because the image's completion
+          # check has a second condition: digest_merged >= per-image expected.
           # Non-re-run platforms match the already-live fast-path (their
           # existing digest artifacts are matched against the seeded Docker Hub
           # manifest) so they are counted as merged without a new imagetools
-          # create, and digest_merged reaches TOTAL_PLATFORMS normally.
+          # create, and digest_merged reaches the per-image expected count.
           while IFS=$'\t' read -r aname _; do
             [[ -z "${aname}" ]] && continue
             [[ "${aname}" == "build-done-a${GITHUB_RUN_ATTEMPT}-"* ]] || continue
@@ -295,7 +319,7 @@ runs:
                 BUILD_DONE_SEEN[$aname]=1
                 VER_BUILD_DONE[$version]=$(( VER_BUILD_DONE[$version] + 1 ))
                 echo "  Build-done marker: ${aname}" \
-                     "(${VER_BUILD_DONE[$version]}/${TOTAL_PLATFORMS} for v${version})"
+                     "(${VER_BUILD_DONE[$version]}/${VER_EXPECTED_PLATFORMS[$version]:-${TOTAL_PLATFORMS}} for v${version})"
                 break
               fi
             done
@@ -501,6 +525,8 @@ runs:
             _img_create_deferred=false
 
             build_done="${VER_BUILD_DONE[$version]}"
+            ver_expected="${VER_EXPECTED_PLATFORMS[$version]:-${TOTAL_PLATFORMS}}"
+            img_expected="${IMG_EXPECTED_PLATFORMS[$key]:-${TOTAL_PLATFORMS}}"
             img_dir="${CYCLE_DIR}/${safe_key}"
             mkdir -p "${img_dir}/platforms"
 
@@ -571,7 +597,7 @@ runs:
                       NEW_PDIGESTS+=("${DIGEST}")
                       NEW_ARTIFACT_IDS+=("${aid}")
                     fi
-                  elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
+                  elif [[ "${build_done}" -ge "${ver_expected}" ]]; then
                     echo "::warning::${aname}: key '${DIGEST_KEY}' empty;" \
                          "all builds complete, skipping."
                     echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
@@ -579,7 +605,7 @@ runs:
                     echo "::warning::${aname}: key '${DIGEST_KEY}' empty;" \
                          "will retry next cycle."
                   fi
-                elif [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
+                elif [[ "${build_done}" -ge "${ver_expected}" ]]; then
                   echo "::warning::${aname}: missing ${platform_key}.json;" \
                        "all builds complete, skipping."
                   echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
@@ -599,7 +625,7 @@ runs:
             # imagetools create has not yet succeeded must not be marked here —
             # they are still in NEW_PKEYS and must remain unprocessed so they
             # can be retried if imagetools create fails (e.g. Docker rate limit).
-            if [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
+            if [[ "${build_done}" -ge "${ver_expected}" ]]; then
               # Build a set of platform keys downloaded this cycle for O(1) lookup.
               declare -A _new_pkeys_set=()
               for _k in "${NEW_PKEYS[@]+"${NEW_PKEYS[@]}"}"; do
@@ -691,7 +717,7 @@ runs:
                     # platform_key has not been counted before.  A retried
                     # build re-uploads the artifact with the same platform_key
                     # but a new artifact id; without this guard the counter
-                    # would exceed TOTAL_PLATFORMS and mark the image done
+                    # would exceed img_expected and mark the image done
                     # prematurely.
                     pkey="${NEW_PKEYS[$i]}"
                     if ! grep -qxF "${pkey}" "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
@@ -723,17 +749,17 @@ runs:
 
             if [[ "${_img_create_deferred}" != "true" ]]; then
               # imagetools create ran; check whether this image is now done.
-              if [[ "${build_done}" -ge "${TOTAL_PLATFORMS}" ]]; then
-                if [[ "${digest_merged}" -lt "${TOTAL_PLATFORMS}" ]]; then
-                  echo "::warning::Only ${digest_merged}/${TOTAL_PLATFORMS}" \
+              if [[ "${build_done}" -ge "${ver_expected}" ]]; then
+                if [[ "${digest_merged}" -lt "${img_expected}" ]]; then
+                  echo "::warning::Only ${digest_merged}/${img_expected}" \
                        "platform(s) merged for ${IMAGE}; will report at end."
                 fi
                 IMG_DONE[$key]="true"
                 echo "Image ${IMAGE} complete" \
-                     "(${digest_merged}/${TOTAL_PLATFORMS} platform(s) merged)."
-              elif [[ "${digest_merged}" -ge "${TOTAL_PLATFORMS}" ]]; then
+                     "(${digest_merged}/${img_expected} platform(s) merged)."
+              elif [[ "${digest_merged}" -ge "${img_expected}" ]]; then
                 IMG_DONE[$key]="true"
-                echo "All ${TOTAL_PLATFORMS} platform(s) merged for ${IMAGE}."
+                echo "All ${img_expected} platform(s) merged for ${IMAGE}."
               fi
             fi
           done
@@ -773,7 +799,8 @@ runs:
           stage="${vs##*:}"
           key="${version}:${stage}"
           digest_merged="${IMG_DIGEST_MERGED[$key]}"
-          if [[ "${digest_merged}" -lt "${TOTAL_PLATFORMS}" ]]; then
+          img_expected="${IMG_EXPECTED_PLATFORMS[$key]:-${TOTAL_PLATFORMS}}"
+          if [[ "${digest_merged}" -lt "${img_expected}" ]]; then
             INCOMPLETE_KEYS+=("${key}")
           fi
         done
@@ -785,7 +812,8 @@ runs:
             stage="${key##*:}"
             IMAGE="${REPO}:${version}-${stage}${TAG_SUFFIX}"
             digest_merged="${IMG_DIGEST_MERGED[$key]}"
-            echo "::error::  ${IMAGE} (${digest_merged}/${TOTAL_PLATFORMS} platform(s) merged)"
+            img_expected="${IMG_EXPECTED_PLATFORMS[$key]:-${TOTAL_PLATFORMS}}"
+            echo "::error::  ${IMAGE} (${digest_merged}/${img_expected} platform(s) merged)"
             last_err="${IMG_LAST_ERROR[$key]:-}"
             if [[ -n "${last_err}" ]]; then
               # Sanitize for use in a GHA annotation: collapse newlines to spaces
