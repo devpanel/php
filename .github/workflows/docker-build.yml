@@ -123,10 +123,6 @@ jobs:
       versions_secure: ${{ steps.detect.outputs.versions_secure }}
       latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
       tag_suffix: ${{ steps.detect.outputs.tag_suffix }}
-      # Total number of distinct platforms — passed to the merge job for
-      # logging and as a fallback; per-image completion thresholds are now
-      # derived from the expected_platforms field in each merge_matrix entry.
-      total_platforms: ${{ steps.detect.outputs.total_platforms }}
       # JSON array of {version, stage, expected_platforms} objects — one entry
       # per Docker Hub image that needs a manifest merge.  expected_platforms
       # is the number of build-matrix entries that will produce a digest
@@ -301,7 +297,6 @@ jobs:
           merge_matrix: ${{ needs.detect.outputs.merge_matrix }}
           repo: ${{ vars.DOCKERHUB_REPO || 'devpanel/php' }}
           tag_suffix: ${{ needs.detect.outputs.tag_suffix }}
-          total_platforms: ${{ needs.detect.outputs.total_platforms }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           run_id: ${{ github.run_id }}
           repository: ${{ github.repository }}

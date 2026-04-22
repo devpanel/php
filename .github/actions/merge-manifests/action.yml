@@ -59,14 +59,6 @@ inputs:
   tag_suffix:
     description: Image tag suffix appended to every tag (e.g. '' or '-rc')
     required: true
-  total_platforms:
-    description: >
-      Total number of distinct target platforms.  Used only as a logging
-      reference and as a fallback when a merge-matrix entry is missing the
-      expected_platforms field.  Per-image completion thresholds are now
-      derived from the expected_platforms field embedded in each merge-matrix
-      entry by detect-versions, so this value does not drive the merge loop.
-    required: true
   poll_interval_seconds:
     description: Seconds to wait between polling cycles.
     default: '60'
@@ -132,7 +124,6 @@ runs:
         MERGE_MATRIX_JSON:     ${{ inputs.merge_matrix }}
         REPO:                  ${{ inputs.repo }}
         TAG_SUFFIX:            ${{ inputs.tag_suffix }}
-        TOTAL_PLATFORMS:       ${{ inputs.total_platforms }}
         POLL_INTERVAL_SECONDS: ${{ inputs.poll_interval_seconds }}
         GH_TOKEN:              ${{ inputs.github_token }}
         RUN_ID:                ${{ inputs.run_id }}
@@ -160,9 +151,9 @@ runs:
         # IMG_EXPECTED_PLATFORMS["VERSION:STAGE"] = expected platform count
         #   (number of (version, platform) build-matrix entries that will
         #   upload a digest artifact for this image; used as the per-image
-        #   completion threshold instead of the global TOTAL_PLATFORMS so
-        #   that intentionally-omitted (version, platform) pairs do not
-        #   cause the merge loop to poll indefinitely).
+        #   completion threshold so that intentionally-omitted
+        #   (version, platform) pairs do not cause the merge loop to poll
+        #   indefinitely).
         # VER_EXPECTED_PLATFORMS["VERSION"] = expected build-done count
         #   (advance expected_platforms; advance is always present per version)
         declare -A IMG_EXPECTED_PLATFORMS
@@ -186,6 +177,22 @@ runs:
           echo "No images in merge matrix; nothing to do."
           exit 0
         fi
+
+        # Validate that every merge-matrix entry has a positive expected_platforms
+        # value.  A zero means detect-versions did not compute the count, which
+        # would make every completion check immediately true (0 >= 0) and silently
+        # produce empty manifests.  Fail early with a clear message instead.
+        for _val_vs in "${VERSIONS_STAGES[@]}"; do
+          _val_key="${_val_vs%%:*}:${_val_vs##*:}"
+          _val_ep="${IMG_EXPECTED_PLATFORMS[$_val_key]}"
+          if [[ -z "${_val_ep}" || "${_val_ep}" -le 0 ]]; then
+            echo "::error::merge-matrix entry '${_val_key}' has" \
+                 "expected_platforms=${_val_ep:-<unset>};" \
+                 "every entry must have a positive expected_platforms value." \
+                 "This is a bug in detect-versions; please report it."
+            exit 1
+          fi
+        done
 
         # Per-image state (keyed by "VERSION:STAGE", colons replaced with _ for
         # filenames).
@@ -230,7 +237,7 @@ runs:
           touch "${IMG_PROCESSED[$key]}"
           touch "${IMG_MERGED_PKEYS[$key]}"
           touch "${IMG_PLATFORM_DIGESTS[$key]}"
-          echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX} (${IMG_EXPECTED_PLATFORMS[$key]:-${TOTAL_PLATFORMS}} platform(s) expected)"
+          echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX} (${IMG_EXPECTED_PLATFORMS[$key]} platform(s) expected)"
           if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
             VER_BUILD_DONE[$version]=0
           fi
@@ -319,7 +326,7 @@ runs:
                 BUILD_DONE_SEEN[$aname]=1
                 VER_BUILD_DONE[$version]=$(( VER_BUILD_DONE[$version] + 1 ))
                 echo "  Build-done marker: ${aname}" \
-                     "(${VER_BUILD_DONE[$version]}/${VER_EXPECTED_PLATFORMS[$version]:-${TOTAL_PLATFORMS}} for v${version})"
+                     "(${VER_BUILD_DONE[$version]}/${VER_EXPECTED_PLATFORMS[$version]} for v${version})"
                 break
               fi
             done
@@ -525,8 +532,8 @@ runs:
             _img_create_deferred=false
 
             build_done="${VER_BUILD_DONE[$version]}"
-            ver_expected="${VER_EXPECTED_PLATFORMS[$version]:-${TOTAL_PLATFORMS}}"
-            img_expected="${IMG_EXPECTED_PLATFORMS[$key]:-${TOTAL_PLATFORMS}}"
+            ver_expected="${VER_EXPECTED_PLATFORMS[$version]}"
+            img_expected="${IMG_EXPECTED_PLATFORMS[$key]}"
             img_dir="${CYCLE_DIR}/${safe_key}"
             mkdir -p "${img_dir}/platforms"
 
@@ -799,7 +806,7 @@ runs:
           stage="${vs##*:}"
           key="${version}:${stage}"
           digest_merged="${IMG_DIGEST_MERGED[$key]}"
-          img_expected="${IMG_EXPECTED_PLATFORMS[$key]:-${TOTAL_PLATFORMS}}"
+          img_expected="${IMG_EXPECTED_PLATFORMS[$key]}"
           if [[ "${digest_merged}" -lt "${img_expected}" ]]; then
             INCOMPLETE_KEYS+=("${key}")
           fi
@@ -812,7 +819,7 @@ runs:
             stage="${key##*:}"
             IMAGE="${REPO}:${version}-${stage}${TAG_SUFFIX}"
             digest_merged="${IMG_DIGEST_MERGED[$key]}"
-            img_expected="${IMG_EXPECTED_PLATFORMS[$key]:-${TOTAL_PLATFORMS}}"
+            img_expected="${IMG_EXPECTED_PLATFORMS[$key]}"
             echo "::error::  ${IMAGE} (${digest_merged}/${img_expected} platform(s) merged)"
             last_err="${IMG_LAST_ERROR[$key]:-}"
             if [[ -n "${last_err}" ]]; then

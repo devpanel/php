@@ -68,9 +68,6 @@ outputs:
   latest_php_version:
     description: The highest PHP version present in the repository.
     value: ${{ steps.detect.outputs.latest_php_version }}
-  total_platforms:
-    description: Total number of distinct build platforms.
-    value: ${{ steps.detect.outputs.total_platforms }}
   merge_matrix:
     description: >
       JSON array of {version, stage, expected_platforms} objects — one entry
@@ -509,13 +506,10 @@ runs:
         echo "all_versions_count=${#_all_vers_arr[@]}"       >> "$GITHUB_OUTPUT"
 
         if [[ -z "${VERSIONS_OUT}" ]]; then
-          echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
           echo "merge_matrix=[]"                    >> "$GITHUB_OUTPUT"
           echo "build_matrix=[]"                    >> "$GITHUB_OUTPUT"
           echo "build_matrix_length=0"              >> "$GITHUB_OUTPUT"
         else
-          echo "total_platforms=${TOTAL_PLATFORMS}" >> "$GITHUB_OUTPUT"
-
           # Build merge matrix: one {version, stage} entry per Docker Hub image
           # to be merged.  base/secure entries are included only for versions
           # that actually changed at that stage (union across all platforms).
@@ -526,8 +520,7 @@ runs:
                 # expected platform count for a (version, stage) is the number
                 # of build-matrix entries for that version whose per-platform
                 # stage list includes v; the merge job uses these counts as
-                # per-image completion thresholds instead of the global
-                # TOTAL_PLATFORMS so that (version, platform) pairs
+                # per-image completion thresholds so that (version, platform) pairs
                 # intentionally omitted from the build matrix do not cause
                 # the merge loop to poll indefinitely.
                 _advance_ep=0
