@@ -4,14 +4,6 @@ description: >
   for every image in the merge matrix.  Runs as a single job alongside every
   per-platform build job.
 
-  Images with a non-empty cached platform-digest state file (restored from
-  a previous run's Actions cache) are marked pre-seeded and require no
-  Docker Hub manifest inspection.  For images with no cached state (first
-  push or cold cache), the existing manifest is inspected lazily inside the
-  polling loop to seed the platform-digest state file.  This captures any
-  platforms already published so they are preserved in every subsequent
-  imagetools create call.
-
   On every polling cycle it fetches the full artifact list for the run once and
   uses it for all images:
 
@@ -34,24 +26,20 @@ description: >
   unnecessary intermediate manifest states.  A single job (not a matrix) is
   used for all images to avoid race conditions when pushing manifests.
 
-  When the platform-digest state files produce a new cache key, that state is
-  saved/updated in the Actions cache at the end of the run (including failed
-  runs), even if some restored files are still empty placeholders.  On the
-  next run, only images whose restored cache file is already non-empty are
-  considered pre-seeded and require no Docker Hub manifest inspection at all.
+  The existing manifest is seeded lazily on the first polling cycle via
+  docker buildx imagetools inspect (using the runner's embedded token).  This
+  captures any platforms already published so they are preserved in every
+  subsequent imagetools create call.  If inspect fails for a reason other than
+  "tag not found", the image remains unseeded and imagetools create is deferred
+  until seeding succeeds in a later polling cycle.  If inspect succeeds but no
+  baseline platforms can be derived from the manifest, the action treats that
+  as a terminal error and refuses to continue rather than deferring.
 
   After seeding, each digest artifact is compared against the seeded state.
   If the platform+digest is already live on Docker Hub (exact match), the
   artifact is marked processed and counted without calling imagetools create.
   This prevents redundant pushes when manifests completed in a previous run
   or attempt are re-encountered.
-
-  For images with no cached state, the existing manifest is seeded via
-  docker buildx imagetools inspect.  If inspect fails for a reason other than
-  "tag not found", the image remains unseeded and imagetools create is deferred
-  until seeding succeeds in a later polling cycle.  If inspect succeeds but no
-  baseline platforms can be derived from the manifest, the action treats that
-  as a terminal error and refuses to continue rather than deferring.
 
 inputs:
   merge_matrix:
@@ -108,26 +96,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Compute digests cache key prefix
-      id: cache-key-prefix
-      shell: bash
-      run: |
-        # Sanitize inputs.repo: replace "/" with "-" (GHA cache keys must not
-        # contain "/" or other special characters).
-        safe_repo="${{ inputs.repo }}"
-        safe_repo="${safe_repo//\//-}"
-        echo "prefix=merge-manifests-${safe_repo}-${{ inputs.tag_suffix }}-" >> "$GITHUB_OUTPUT"
-
-    - name: Restore digests cache
-      id: restore-cache
-      uses: actions/cache/restore@v5
-      with:
-        path: ${{ runner.temp }}/merge-manifests-digests
-        # Key ends with "-" so GHA's built-in prefix matching finds the
-        # most-recently saved entry for this repo+tag_suffix combination.
-        # No restore-keys needed: the trailing dash already enables prefix matching.
-        key: ${{ steps.cache-key-prefix.outputs.prefix }}
-
     # Authentication design:
     #
     # We need DOCKERHUB_TOKEN for imagetools create (push) but want to leave
@@ -164,7 +132,6 @@ runs:
         GH_TOKEN:              ${{ inputs.github_token }}
         RUN_ID:                ${{ inputs.run_id }}
         GITHUB_REPO:           ${{ inputs.repository }}
-        DIGESTS_CACHE_DIR:     ${{ runner.temp }}/merge-manifests-digests
         DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
       run: |
@@ -182,11 +149,6 @@ runs:
               --username "${DOCKERHUB_USERNAME}" \
               --password-stdin \
               docker.io
-
-        # Stable directory for per-image platform-digest state files.
-        # Pre-populated by the cache restore step; persisted by the cache
-        # save step that runs after this step (even on failure).
-        mkdir -p "${DIGESTS_CACHE_DIR}"
 
         # ── Parse merge matrix into parallel arrays ────────────────────────
         # VERSIONS_STAGES[i] = "VERSION:STAGE"
@@ -210,9 +172,9 @@ runs:
         declare -A IMG_PLATFORM_DIGESTS # image_key → path to platform-digest state file
         declare -A IMG_LAST_ERROR       # image_key → last imagetools create error text
         #   State file format: one "platform_key<TAB>sha256:digest" per line.
-        #   Seeded from the existing manifest during the first polling cycle;
-        #   updated after each successful imagetools create.  Provides within-run
-        #   preservation without relying on a per-cycle inspect.
+        #   Seeded from the existing manifest during the first polling cycle via
+        #   imagetools inspect; updated after each successful imagetools create.
+        #   Provides within-run preservation without a per-cycle inspect.
 
         # Per-version build-done state.  A single "build-done-a{N}-{VERSION}-*"
         # marker covers all stages (base/secure/advance) for that version,
@@ -235,59 +197,15 @@ runs:
 
           IMG_PROCESSED[$key]="${WORK_DIR}/processed-${safe_key}.txt"
           IMG_MERGED_PKEYS[$key]="${WORK_DIR}/merged-pkeys-${safe_key}.txt"
-          IMG_PLATFORM_DIGESTS[$key]="${DIGESTS_CACHE_DIR}/digests-${safe_key}.txt"
+          IMG_PLATFORM_DIGESTS[$key]="${WORK_DIR}/digests-${safe_key}.txt"
           IMG_DIGEST_MERGED[$key]=0
           IMG_DONE[$key]="false"
           IMG_SEEDED[$key]="false"
           IMG_LAST_ERROR[$key]=""
           touch "${IMG_PROCESSED[$key]}"
           touch "${IMG_MERGED_PKEYS[$key]}"
-          # Only create the digests file if it wasn't pre-populated by the
-          # cache restore step.
-          [[ -f "${IMG_PLATFORM_DIGESTS[$key]}" ]] || touch "${IMG_PLATFORM_DIGESTS[$key]}"
-          # Sanitize the restored cache file: keep only well-formed
-          # "platform_key<TAB>sha256:..." lines so that any truncated,
-          # partially-written, or otherwise corrupted entries are stripped
-          # before they can reach imagetools create.  Duplicate entries for
-          # the same platform_key are collapsed to the last occurrence.
-          # The filtered content replaces the file in place; if no valid
-          # lines remain the file is left empty and the image falls back to
-          # manifest-inspection seeding.  If grep itself fails with an I/O
-          # error (exit code ≥2), the invalid file is cleared/recreated as
-          # an empty placeholder and the image is forced to re-seed.
-          _pdigest_file="${IMG_PLATFORM_DIGESTS[$key]}"
-          if [[ -s "${_pdigest_file}" ]]; then
-            _grep_status=0
-            _clean_content=$(grep -E $'^[^[:space:]]+\tsha256:[[:xdigit:]]{64}$' \
-              "${_pdigest_file}" \
-              | awk -F'\t' '{ lines[$1]=$0 } END { for (k in lines) print lines[k] }' \
-              | sort -t $'\t' -k1,1) \
-              || _grep_status=$?
-            if [[ ${_grep_status} -eq 0 || ${_grep_status} -eq 1 ]]; then
-              if [[ -n "${_clean_content}" ]]; then
-                printf '%s\n' "${_clean_content}" > "${_pdigest_file}"
-              else
-                : > "${_pdigest_file}"
-              fi
-              _preseed_n=$(wc -l < "${_pdigest_file}")
-              if (( _preseed_n > 0 )); then
-                echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
-                     "pre-seeded from cache (${_preseed_n} platform(s))."
-                IMG_SEEDED[$key]="true"
-              else
-                echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
-                     "discarding invalid cached digest state; re-seeding."
-              fi
-            else
-              : > "${_pdigest_file}"
-              echo "  WARNING: ${REPO}:${version}-${stage}${TAG_SUFFIX}:" \
-                   "failed to sanitize cached digest state;" \
-                   "cleared the cached baseline and forcing re-seeding."
-              echo "::warning::${REPO}:${version}-${stage}${TAG_SUFFIX}: failed to sanitize cached digest state; cleared the baseline so manifest creation stays deferred until re-seeding succeeds."
-            fi
-          else
-            echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
-          fi
+          touch "${IMG_PLATFORM_DIGESTS[$key]}"
+          echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX}"
           if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
             VER_BUILD_DONE[$version]=0
           fi
@@ -881,26 +799,3 @@ runs:
           echo "::error::To retry: click 'Re-run failed jobs' on this workflow run's summary page."
           exit 1
         fi
-
-    - name: Compute digests cache key
-      if: always()
-      id: digests-cache-key
-      shell: bash
-      run: |
-        # Hash the content of every state file so the cache key only changes
-        # when the platform-digest state actually changes.  This avoids creating
-        # a new cache entry on every run when nothing has been updated.
-        digests_dir="${{ runner.temp }}/merge-manifests-digests"
-        if [[ -d "$digests_dir" ]] && [[ -n "$(ls -A "$digests_dir" 2>/dev/null)" ]]; then
-          hash="$(find "$digests_dir" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
-          echo "key=${{ steps.cache-key-prefix.outputs.prefix }}${hash}" >> "$GITHUB_OUTPUT"
-        else
-          echo "key=" >> "$GITHUB_OUTPUT"
-        fi
-
-    - name: Save digests cache
-      if: always() && steps.digests-cache-key.outputs.key != '' && steps.restore-cache.outputs.cache-matched-key != steps.digests-cache-key.outputs.key
-      uses: actions/cache/save@v5
-      with:
-        path: ${{ runner.temp }}/merge-manifests-digests
-        key: ${{ steps.digests-cache-key.outputs.key }}
