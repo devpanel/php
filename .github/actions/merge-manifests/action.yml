@@ -455,6 +455,7 @@ runs:
                   if [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
                     while IFS=$'\t' read -r _pf_plat _pf_digest; do
                         IFS='/' read -r _p_os _p_arch _p_var <<< "${_pf_plat}"
+                        [[ "${_p_os}" == "unknown" || "${_p_arch}" == "unknown" ]] && continue
                         [[ -n "${_pf_digest}" && -n "${_p_os}" && -n "${_p_arch}" ]] || continue
                         _sp_norm="${_p_os}/${_p_arch}"
                         if [[ -n "${_p_var:-}" ]] && \
@@ -470,13 +471,19 @@ runs:
                         _sp_seeded=true
                       done < <(printf '%s' "${_inspect_json}" | jq -r '
                           select(.manifest | has("manifests") | not) |
+                          select(
+                            (.image.os // "") != "" and
+                            (.image.architecture // "") != "" and
+                            (.image.os // "") != "unknown" and
+                            (.image.architecture // "") != "unknown"
+                          ) |
                           [
                             ((.image.os // "") + "/" + (.image.architecture // "") +
                              (if (.image.variant // "") != ""
                               then "/" + .image.variant else "" end)),
                             (.manifest.digest // "")
                           ] |
-                          select(.[0] != "/" and .[0] != "" and .[1] != "") |
+                          select(.[1] != "") |
                           @tsv
                         ')
                   fi
