@@ -490,6 +490,9 @@ runs:
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
+        # scope format: "<repo>@<access>" — the same format used by
+        # build-php-images/action.yml.  Push-only scope is sufficient because
+        # all imagetools create source refs come from GHCR.
         scope: ${{ inputs.repo }}@push
 
     - name: Login to GHCR (for reading source manifests)
