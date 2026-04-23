@@ -27,14 +27,19 @@ description: >
   unnecessary intermediate manifest states.  A single job (not a matrix) is
   used for all images to avoid race conditions when pushing manifests.
 
-  The existing manifest is seeded lazily on the first polling cycle via
-  docker buildx imagetools inspect.  This captures any platforms already
-  published so they are preserved in every subsequent imagetools create call.
-  If inspect fails for a reason other than "tag not found", the image remains
-  unseeded and imagetools create is deferred until seeding succeeds in a later
-  polling cycle.  If inspect succeeds but no baseline platforms can be derived
-  from the manifest, the action treats that as a terminal error and refuses to
-  continue rather than deferring.
+  In GHCR mode, the existing manifest is seeded before the polling loop starts:
+  a dedicated "Seed image manifests" step (before docker-login) reads the
+  existing Docker Hub manifest using the runner's embedded token and writes the
+  per-image platform-digest baseline.  This step hard-fails on any seed error,
+  so if the polling loop starts in GHCR mode, all images are guaranteed to be
+  seeded.
+
+  In fallback mode, seeding happens lazily on the first polling cycle via
+  docker buildx imagetools inspect.  If inspect fails for a reason other than
+  "tag not found", the image remains unseeded and imagetools create is deferred
+  until seeding succeeds in a later polling cycle.  If inspect succeeds but no
+  baseline platforms can be derived from the manifest, the action treats that
+  as a terminal error and refuses to continue.
 
   After seeding, each digest artifact is compared against the seeded state.
   If the platform+digest is already live on Docker Hub (exact match), the
@@ -154,18 +159,15 @@ runs:
     #    platform-digest state files to a tmpdir whose path is exported via
     #    $GITHUB_ENV (MERGE_MANIFESTS_WORK_DIR).  Logs in to GHCR and probes
     #    each seeded digest; any digest absent from GHCR (e.g. from a build run
-    #    before GHCR was enabled) is mirrored from Docker Hub using imagetools
-    #    create, which pushes the per-platform manifest and any missing blobs to
-    #    GHCR so the digest becomes accessible at ghcr.io/…@sha256:<digest>.
-    #    A temporary migration tag (…:migrate-{version}-{stage}-{pkey}) is
-    #    created for each mirrored platform; it may be deleted once all
-    #    platforms have been rebuilt with GHCR enabled.
+    #    before GHCR was enabled) is mirrored from Docker Hub using `skopeo
+    #    copy`, which pushes the per-platform manifest bytes and any missing
+    #    blobs to GHCR addressed only by their content digest — no tag is
+    #    created.  After the copy the digest is accessible at
+    #    ghcr.io/…@sha256:<digest>.
     #
     # 2. "Login to Docker Hub" (push scope only — no pull scope needed because
-    #    all imagetools create source refs use GHCR).  Scoping to push avoids
-    #    granting unnecessary pull access and is safe because source (ghcr.io)
-    #    and destination (docker.io) are different registries so the dual-scope
-    #    401 bug does not arise.
+    #    all imagetools create source refs use GHCR).  Uses the same scope
+    #    format as build-php-images: ${{ inputs.repo }}@push.
     #
     # 3. "Login to GHCR" — for reading source manifests in the poll step.
     #
@@ -398,13 +400,11 @@ runs:
         # was enabled the digest exists only on Docker Hub; the poll step's
         # imagetools create would fail when fetching ghcr.io/…@sha256:<digest>.
         #
-        # Fix: probe each seeded digest at GHCR; if absent, mirror it using
-        # imagetools create.  imagetools create pushes the per-platform manifest
-        # bytes (and any missing blobs) to GHCR before writing the manifest
-        # index, so after the call the original per-platform digest is
-        # accessible at ghcr.io/…@sha256:<digest>.  A temporary migration tag
-        # (…:migrate-{version}-{stage}-{pkey}) is created in GHCR; it may be
-        # removed once all platforms have been rebuilt with GHCR enabled.
+        # Fix: probe each seeded digest at GHCR; if absent, copy it from Docker
+        # Hub using `skopeo copy`.  skopeo copies the per-platform manifest
+        # bytes and any missing blobs to GHCR and addresses them only by their
+        # content digest — no tag is created in GHCR.  After the copy the
+        # digest is accessible at ghcr.io/…@sha256:<digest>.
         #
         # Docker Hub reads use the runner's embedded token (no quota cost).
         # GHCR writes use GITHUB_TOKEN / GHCR_TOKEN (packages:write).
@@ -441,6 +441,7 @@ runs:
           state_file="${WORK_DIR}/digests-${safe_key}.txt"
           [[ -s "${state_file}" ]] || continue
 
+          _mirror_stderr="$(mktemp)"
           while IFS=$'\t' read -r _pkey _pdigest; do
             [[ -n "${_pkey}" && -n "${_pdigest}" ]] || continue
             _ghcr_ref="${GHCR_REPO}@${_pdigest}"
@@ -454,25 +455,24 @@ runs:
 
             echo "  ${_pkey//-/\/} (${_pdigest:0:19}…): absent from GHCR;" \
                  "mirroring from Docker Hub..."
-            # imagetools create copies the per-platform manifest and its blobs
-            # to GHCR under a temporary tag.  Because the manifest bytes are
-            # identical, the original digest becomes accessible at GHCR after
-            # the push without needing a separate digest-copy tool.
-            _mirror_tag="${GHCR_REPO}:migrate-${version}-${stage}-${_pkey}"
-            _mirror_stderr="$(mktemp)"
-            if docker buildx imagetools create \
-                 --tag "${_mirror_tag}" \
-                 "${REPO}@${_pdigest}" \
+            # Use skopeo copy to push the per-platform manifest and its blobs
+            # to GHCR by digest without creating any tag.  The source ref uses
+            # the Docker Hub digest; the destination is the GHCR repo addressed
+            # by the same digest.  After the copy the digest becomes accessible
+            # at ghcr.io/…@sha256:<digest> without leaving a human-visible tag.
+            if skopeo copy \
+                 "docker://${REPO}@${_pdigest}" \
+                 "docker://${GHCR_REPO}@${_pdigest}" \
                  2>"${_mirror_stderr}"; then
-              echo "  Mirrored ${_pkey//-/\/} to ${_mirror_tag}."
+              echo "  Mirrored ${_pkey//-/\/} (${_pdigest:0:19}…) to GHCR by digest."
             else
               _mirror_err="$(cat "${_mirror_stderr}" 2>/dev/null || true)"
               echo "::error::Failed to mirror ${_pkey//-/\/}" \
                    "(${_pdigest:0:19}…) to GHCR: ${_mirror_err:-unknown error}"
               _MIRROR_ERRORS=$(( _MIRROR_ERRORS + 1 ))
             fi
-            rm -f "${_mirror_stderr}"
           done < "${state_file}"
+          rm -f "${_mirror_stderr}"
         done
 
         if [[ "${_MIRROR_ERRORS}" -gt 0 ]]; then
@@ -490,7 +490,7 @@ runs:
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
-        scope: repository:${{ inputs.repo }}:push
+        scope: ${{ inputs.repo }}@push
 
     - name: Login to GHCR (for reading source manifests)
       if: inputs.ghcr_writable == 'true'
@@ -877,19 +877,19 @@ runs:
             done
           done <<< "${ALL_ARTIFACTS}"
 
-          # ── Seed unseeded images ──────────────────────────────────────────
-          # In GHCR mode, all images are pre-seeded by the "Seed image
-          # manifests" step (which ran before docker-login) and marked
-          # IMG_SEEDED=true during init.  This block is therefore a no-op in
-          # the normal GHCR code path; it only runs in fallback mode (all
-          # images) or for any image that the pre-seeding step could not seed.
+          # ── Seed unseeded images (fallback mode only) ────────────────────
+          # In GHCR mode all images were seeded by the "Seed image manifests"
+          # step before docker-login (IMG_SEEDED=true set at init via sentinel
+          # marker files).  If any image is still unseeded in GHCR mode, the
+          # seeding step must have failed but did not abort the job — which
+          # should never happen (the step calls exit 1 on any seed failure).
+          # Guard anyway: hard-fail rather than silently dropping platforms.
           #
-          # Use docker buildx imagetools inspect to read the existing manifest
-          # and populate the platform-digest state file.
+          # In fallback mode the pre-seeding step is skipped entirely; seeding
+          # happens here using the runner's embedded Docker Hub token.
           #
-          # If the tag does not exist → empty state (first push).
           # If inspect fails → leave the image unseeded and defer
-          # imagetools create until seeding succeeds later.
+          # imagetools create until seeding succeeds in a later cycle.
           _unseeded=()
           for vs in "${VERSIONS_STAGES[@]}"; do
             key="${vs%%:*}:${vs##*:}"
@@ -897,6 +897,17 @@ runs:
           done
 
           if [[ ${#_unseeded[@]} -gt 0 ]]; then
+            if [[ "${GHCR_WRITABLE}" == "true" ]]; then
+              # Should never happen: seeding step runs with set -e and exits 1
+              # on any failure, so reaching here means a bug in the seeding
+              # step logic.  Fail hard to avoid publishing incomplete manifests.
+              echo "::error::${#_unseeded[@]} image(s) not seeded in GHCR mode:" \
+                   "this is a bug in the 'Seed image manifests' step." \
+                   "The seeding step must have exited 0 without seeding all" \
+                   "images.  Please investigate and re-run."
+              exit 1
+            fi
+
             echo "Seeding platform-digest state from existing manifests..."
             for vs in "${_unseeded[@]}"; do
               version="${vs%%:*}"
@@ -907,12 +918,7 @@ runs:
               _seed_status=""  # "ok" | "not_found" | "error"
 
               # ── imagetools inspect ───────────────────────────────────────────────
-              # Uses the default DOCKER_CONFIG.
-              # In fallback mode DOCKER_CONFIG has the runner's embedded token.
-              # In GHCR mode this path is only reached if the pre-seeding step
-              # failed; DOCKER_CONFIG then has DOCKERHUB_TOKEN with push-only
-              # scope, so seeding inspect may fail — the image stays unseeded
-              # and imagetools create is deferred until the next cycle.
+              # Fallback mode: DOCKER_CONFIG has the runner's embedded token.
               # imagetools inspect inlines the image config blob into its JSON
               # output, giving platform info for both multi-arch images (via
               # .manifest.manifests[].platform) and single-arch images (via
