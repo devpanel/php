@@ -145,6 +145,9 @@ jobs:
       # pass for GHCR authentication (only ghcr_token is passed when the PAT
       # was required; github_token is used via the job's GITHUB_TOKEN otherwise).
       ghcr_cred_source: ${{ steps.detect.outputs.ghcr_cred_source }}
+      # Lowercase ghcr.io/<org>/<repo> name, computed once in check-ghcr and
+      # passed to build and merge jobs via needs.detect.outputs.ghcr_repo.
+      ghcr_repo: ${{ steps.detect.outputs.ghcr_repo }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
