@@ -45,22 +45,25 @@ description: >
   GHCR mode (ghcr_writable=true, preferred):
     Build jobs push each platform image to both Docker Hub and GHCR.  The
     merge job uses GHCR as the source for imagetools create so all manifest
-    reads use GITHUB_TOKEN (free) rather than DOCKERHUB_TOKEN.  Because source
-    (ghcr.io) and destination (docker.io) are different registries, the
-    dual-scope 401 problem does not arise and standard docker/login-action
-    steps are used — no isolated PUSH_DOCKER_CONFIG needed.  Blobs are already
-    present on Docker Hub (pushed by the build job), so imagetools create only
-    needs to write the manifest index and performs only HEAD blob-existence
-    checks (not counted as pulls) against Docker Hub.
+    reads use GITHUB_TOKEN (free) rather than DOCKERHUB_TOKEN.  Blobs are
+    already present on Docker Hub (pushed by the build job), so imagetools
+    create only needs to write the manifest index and performs only HEAD
+    blob-existence checks (not counted as pulls) against Docker Hub.
 
   Docker Hub fallback mode (ghcr_writable=false):
-    Build jobs push only to Docker Hub.  Source refs point to Docker Hub.  To
-    avoid the dual-scope 401 bug (fetcher and pusher against the same
-    docker.io registry accumulating scope= params), DOCKERHUB_TOKEN is written
-    into an isolated PUSH_DOCKER_CONFIG tmpdir and passed via --config to
-    imagetools create.  Seeding inspect uses the runner's embedded Docker Hub
-    token (default DOCKER_CONFIG) so DOCKERHUB_TOKEN pull quota is not
-    consumed for reads.
+    Build jobs push only to Docker Hub.  Source refs point to Docker Hub.
+
+  Both modes use the same isolated PUSH_DOCKER_CONFIG approach to avoid the
+  dual-scope 401 bug: even when source and destination are on different
+  registries, imagetools create makes both pull and push requests against
+  docker.io (blob-existence HEAD checks plus manifest push), causing
+  containerd to accumulate separate "repo:pull" and "repo:pull,push" scope
+  params when the runner's embedded Docker Hub pull token is also present.
+  DOCKERHUB_TOKEN (and, in GHCR mode, the GHCR credential) are written into
+  an isolated tmpdir and passed via --config to imagetools create, ensuring
+  only one docker.io credential is visible.  Seeding inspect uses the
+  runner's embedded Docker Hub token (default DOCKER_CONFIG) so no
+  DOCKERHUB_TOKEN pull quota is consumed for reads.
 
 inputs:
   merge_matrix:
@@ -111,14 +114,10 @@ inputs:
     description: >
       Docker Hub token for image push authentication.
       Used for imagetools create (push).
-      When ghcr_writable is false, DOCKERHUB_TOKEN is written to an isolated
-      PUSH_DOCKER_CONFIG tmpdir; the runner's embedded Docker Hub token stays
-      in DOCKER_CONFIG so seeding reads (imagetools inspect) do not consume
-      DOCKERHUB_TOKEN pull quota.
-      When ghcr_writable is true, DOCKERHUB_TOKEN is written to DOCKER_CONFIG
-      via docker/login-action (no PUSH_DOCKER_CONFIG isolation needed, since
-      source (GHCR) and destination (Docker Hub) are different registries so
-      the dual-scope 401 bug does not apply).
+      In both GHCR and fallback modes, DOCKERHUB_TOKEN is written to an
+      isolated PUSH_DOCKER_CONFIG tmpdir; the runner's embedded Docker Hub
+      token stays in DOCKER_CONFIG so seeding reads (imagetools inspect) do
+      not consume DOCKERHUB_TOKEN pull quota.
     required: true
   ghcr_writable:
     description: >
@@ -173,16 +172,17 @@ runs:
     # ghcr.io/…@sha256:<digest>.
     #
     # ── Authentication ───────────────────────────────────────────────────────
-    # GHCR mode:
-    #   "Login to Docker Hub" — push-only scope (${{ inputs.repo }}@push,
-    #   same format as build-php-images).  No pull scope needed because all
-    #   imagetools create source refs come from GHCR.
-    #   "Login to GHCR" — for reading source manifests in the poll step.
+    # Both GHCR mode and fallback mode use the same isolated PUSH_DOCKER_CONFIG
+    # approach: the poll step logs DOCKERHUB_TOKEN (and, in GHCR mode, the GHCR
+    # credential) into a tmpdir and passes --config to every imagetools create
+    # call.  No docker/login-action steps are used for this purpose.
     #
-    # Fallback mode:
-    #   The poll step logs DOCKERHUB_TOKEN into an isolated PUSH_DOCKER_CONFIG
-    #   tmpdir and passes --config to imagetools create to prevent the
-    #   dual-scope 401 bug.
+    # Isolation prevents the dual-scope 401 bug: if both the runner's embedded
+    # Docker Hub pull token and DOCKERHUB_TOKEN are visible to imagetools create,
+    # containerd accumulates separate "repo:pull" and "repo:pull,push" scope
+    # params for the same docker.io resource, and Docker Hub rejects the token
+    # request with 401.  Isolating credentials to PUSH_DOCKER_CONFIG ensures
+    # only one docker.io credential is present.
     #
     # docker/setup-buildx-action is not needed: imagetools create is a pure
     # registry client-side operation (no builder required).
@@ -519,24 +519,6 @@ runs:
 
         echo "GHCR mirror check complete."
 
-    - name: Login to Docker Hub
-      if: inputs.ghcr_writable == 'true'
-      uses: docker/login-action@v4
-      with:
-        username: ${{ inputs.dockerhub_username }}
-        password: ${{ inputs.dockerhub_token }}
-        # scope format: "<repo>@<access>" — the same format used by
-        # build-php-images/action.yml.  Push-only scope is sufficient because
-        # all imagetools create source refs come from GHCR.
-        scope: ${{ inputs.repo }}@push
-
-    - name: Login to GHCR (for reading source manifests)
-      if: inputs.ghcr_writable == 'true'
-      uses: docker/login-action@v4
-      with:
-        registry: ghcr.io
-        username: ${{ inputs.ghcr_token != '' && inputs.ghcr_user || github.actor }}
-        password: ${{ inputs.ghcr_token != '' && inputs.ghcr_token || inputs.github_token }}
 
     - name: Poll and merge manifests
       shell: bash
@@ -551,6 +533,8 @@ runs:
         DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
+        GHCR_TOKEN_INPUT: ${{ inputs.ghcr_token }}
+        GHCR_USER_INPUT: ${{ inputs.ghcr_user }}
       run: |
         set -euo pipefail
 
@@ -560,28 +544,43 @@ runs:
         WORK_DIR="${MERGE_MANIFESTS_WORK_DIR}"
         trap 'rm -rf "${WORK_DIR}"' EXIT
 
-        # ── Authentication: Docker Hub fallback mode (GHCR_WRITABLE != true) ──
-        # When GHCR is not available as a source, log DOCKERHUB_TOKEN into an
-        # isolated PUSH_DOCKER_CONFIG tmpdir and pass --config to imagetools
-        # create.  This prevents the dual-scope 401 bug (containerd accumulates
-        # "repo:pull" and "repo:pull,push" scope params for the same docker.io
-        # resource when two credentials are present, causing Docker Hub to reject
-        # the token request).
+        # ── Authentication: isolated PUSH_DOCKER_CONFIG (both modes) ────────────
+        # Both GHCR mode and fallback mode write credentials into an isolated
+        # PUSH_DOCKER_CONFIG tmpdir and pass --config to every imagetools create
+        # call.  This prevents the dual-scope 401 bug: if both the runner's
+        # embedded Docker Hub pull token and DOCKERHUB_TOKEN are visible to
+        # imagetools create, containerd accumulates separate "repo:pull" and
+        # "repo:pull,push" scope params for the same docker.io resource, and
+        # Docker Hub rejects the token request with 401.  Only one docker.io
+        # credential should be present in the config used by imagetools create.
         #
-        # In GHCR mode (GHCR_WRITABLE=true) the docker/login-action step above
-        # has written DOCKERHUB_TOKEN to the default DOCKER_CONFIG with push-only
-        # scope (repository:{repo}:push).  All imagetools create source refs
-        # come from GHCR, so no Docker Hub pull scope is needed.
-        # PUSH_DOCKER_CONFIG is left empty and the --config flag is omitted.
-        PUSH_DOCKER_CONFIG=""
-        if [[ "${GHCR_WRITABLE}" != "true" ]]; then
-          PUSH_DOCKER_CONFIG="$(mktemp -d)"
-          trap 'rm -rf "${WORK_DIR}" "${PUSH_DOCKER_CONFIG}"' EXIT
-          printf '%s' "${DOCKERHUB_TOKEN}" \
+        # In GHCR mode the GHCR credential is also added to PUSH_DOCKER_CONFIG
+        # so that imagetools create can fetch source manifests from ghcr.io.
+        PUSH_DOCKER_CONFIG="$(mktemp -d)"
+        trap 'rm -rf "${WORK_DIR}" "${PUSH_DOCKER_CONFIG}"' EXIT
+        printf '%s' "${DOCKERHUB_TOKEN}" \
+          | docker --config "${PUSH_DOCKER_CONFIG}" login \
+              --username "${DOCKERHUB_USERNAME}" \
+              --password-stdin \
+              docker.io
+
+        if [[ "${GHCR_WRITABLE}" == "true" ]]; then
+          # Add GHCR credential so imagetools create can read source manifests.
+          if [[ -n "${GHCR_TOKEN_INPUT:-}" ]]; then
+            _ghcr_login_user="${GHCR_USER_INPUT}"
+            _ghcr_login_token="${GHCR_TOKEN_INPUT}"
+          else
+            _ghcr_login_user="${GITHUB_ACTOR}"
+            _ghcr_login_token="${GH_TOKEN}"
+          fi
+          printf '%s' "${_ghcr_login_token}" \
             | docker --config "${PUSH_DOCKER_CONFIG}" login \
-                --username "${DOCKERHUB_USERNAME}" \
+                --username "${_ghcr_login_user}" \
                 --password-stdin \
-                docker.io
+                ghcr.io
+        fi
+
+        if [[ "${GHCR_WRITABLE}" != "true" ]]; then
           # ── Docker Hub quota probe helpers (fallback mode only) ────────────
           # Probes the Docker Hub pull rate limit using a HEAD request to the
           # ratelimitpreview/test endpoint (HEAD requests are not counted
@@ -1176,18 +1175,12 @@ runs:
                   _any_quota_deferred=true
                 else
                   _create_err_file="$(mktemp)"
-                  # In GHCR mode PUSH_DOCKER_CONFIG is empty and we omit --config;
-                  # DOCKER_CONFIG already has both DOCKERHUB_TOKEN and GHCR
-                  # credentials from the login-action steps.  In fallback mode
-                  # PUSH_DOCKER_CONFIG holds DOCKERHUB_TOKEN in isolation to
-                  # prevent the dual-scope 401 bug.
-                  if [[ -n "${PUSH_DOCKER_CONFIG}" ]]; then
-                    docker --config "${PUSH_DOCKER_CONFIG}" buildx imagetools create \
-                      --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}" && _create_ok=true || _create_ok=false
-                  else
-                    docker buildx imagetools create \
-                      --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}" && _create_ok=true || _create_ok=false
-                  fi
+                  # PUSH_DOCKER_CONFIG always holds an isolated set of credentials
+                  # (DOCKERHUB_TOKEN for docker.io, and in GHCR mode the GHCR
+                  # credential too).  Passing --config prevents the dual-scope
+                  # 401 bug by ensuring only one docker.io credential is visible.
+                  docker --config "${PUSH_DOCKER_CONFIG}" buildx imagetools create \
+                    --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}" && _create_ok=true || _create_ok=false
                   if [[ "${_create_ok}" == "true" ]]; then
                     rm -f "${_create_err_file}"
                     echo "  Updated ${IMAGE} with ${#REFS[@]} platform ref(s)."
