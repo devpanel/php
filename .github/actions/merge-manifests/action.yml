@@ -451,11 +451,16 @@ runs:
         fi
 
         echo "Logging in to GHCR to check/mirror platform digests..."
-        _GHCR_AUTH_TOKEN="${GHCR_TOKEN_INPUT:-${GITHUB_TOKEN_INPUT}}"
         if [[ -n "${GHCR_TOKEN_INPUT:-}" ]]; then
-          _GHCR_AUTH_USER="${GHCR_USER_INPUT:-token}"
+          if [[ -z "${GHCR_USER_INPUT:-}" ]]; then
+            echo "Error: ghcr_user must be set when ghcr_token is provided." >&2
+            exit 1
+          fi
+          _GHCR_AUTH_USER="${GHCR_USER_INPUT}"
+          _GHCR_AUTH_TOKEN="${GHCR_TOKEN_INPUT}"
         else
           _GHCR_AUTH_USER="${GITHUB_ACTOR}"
+          _GHCR_AUTH_TOKEN="${GITHUB_TOKEN_INPUT}"
         fi
         printf '%s' "${_GHCR_AUTH_TOKEN}" \
           | docker login ghcr.io \
