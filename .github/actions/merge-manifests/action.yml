@@ -507,8 +507,31 @@ runs:
 
               if [[ "${_seed_status}" == "ok" ]] \
                   && [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
-                echo "::error::${IMAGE_SEED}: manifest inspection succeeded but no baseline could be derived from the fetched manifest; refusing to continue because doing so could publish an incomplete manifest list and drop previously published platforms. Re-run later or investigate the Docker Hub manifest response."
-                exit 1
+                # The inspect succeeded but yielded 0 real platforms.  Determine
+                # whether this is because ALL manifest entries are
+                # attestation/unknown-platform (safe — no real platforms to
+                # preserve) or something genuinely unexpected (hard fail).
+                _total_mf="$(printf '%s' "${_inspect_json}" | \
+                  jq 'if .manifests then (.manifests | length) else -1 end')"
+                _real_mf="$(printf '%s' "${_inspect_json}" | \
+                  jq '[ .manifests[]? | select(
+                      .platform != null and
+                      (.platform.os  // "") != "" and
+                      (.platform.architecture // "") != "" and
+                      (.platform.os  // "") != "unknown" and
+                      (.platform.architecture // "") != "unknown"
+                    ) ] | length')"
+                if [[ "${_total_mf}" -gt 0 && "${_real_mf}" -eq 0 ]]; then
+                  # All entries are attestation/unknown — no real published
+                  # platforms to protect.  Treat the tag as if it doesn't
+                  # exist yet so the current build can proceed.
+                  echo "  ${IMAGE_SEED}: existing manifest has only" \
+                       "attestation/unknown-platform entries;" \
+                       "treating as no prior published platforms."
+                else
+                  echo "::error::${IMAGE_SEED}: manifest inspection succeeded but no baseline could be derived from the fetched manifest; refusing to continue because doing so could publish an incomplete manifest list and drop previously published platforms. Re-run later or investigate the Docker Hub manifest response."
+                  exit 1
+                fi
               fi
 
               if [[ "${_seeding_succeeded}" == "true" ]]; then
