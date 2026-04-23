@@ -230,11 +230,112 @@ runs:
                 --username "${DOCKERHUB_USERNAME}" \
                 --password-stdin \
                 docker.io
-          # Source shared Docker Hub quota helpers (refresh_hub_token,
-          # hub_pull_remaining, auth_quota_remaining, …).  These are used in
-          # the per-cycle quota probe and the imagetools create gate below.
-          # shellcheck source=.github/scripts/hub-quota-helpers.sh
-          source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
+          # ── Docker Hub quota probe helpers (fallback mode only) ────────────
+          # Probes the Docker Hub pull rate limit using a HEAD request to the
+          # ratelimitpreview/test endpoint (HEAD requests are not counted
+          # against quota).  Used by the per-cycle quota gate below.
+          #
+          # Token state (managed only by the functions below).
+          _HUB_QUOTA_AUTH_TOKEN=""
+          _HUB_QUOTA_AUTH_TOKEN_TIME=0
+          _HUB_QUOTA_TOKEN_MAX_AGE=240  # seconds before cached token is refreshed
+
+          # hub_pull_remaining TOKEN
+          # Sends a HEAD request to the Docker Hub rate-limit probe endpoint.
+          # Prints the numeric remaining pull count, "unlimited" (no header),
+          # or "" on failure.  Always returns 0 so it is safe under set -e.
+          # Uses --head (not -X HEAD) to avoid curl exit 28 on HTTP/1.1
+          # downgrade by MITM proxies on GitHub-hosted runners.
+          hub_pull_remaining() {
+            local _token="$1"
+            [[ -z "${_token}" ]] && { echo ""; return 0; }
+            local _tmpheaders _http_code _headers _remaining
+            _tmpheaders="$(mktemp)"
+            _http_code="$(curl -s --connect-timeout 5 --max-time 15 \
+              -H "Authorization: Bearer ${_token}" \
+              --head -D "${_tmpheaders}" -o /dev/null \
+              -w '%{http_code}' \
+              "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
+              2>/dev/null)" || _http_code=""
+            _headers="$(cat "${_tmpheaders}" 2>/dev/null || true)"
+            rm -f "${_tmpheaders}"
+            if [[ "${_http_code:0:1}" == "2" ]]; then
+              _remaining="$(printf '%s' "${_headers}" \
+                | grep -i '^ratelimit-remaining:' \
+                | grep -oE '[0-9]+' | head -1)" || _remaining=""
+              echo "${_remaining:-unlimited}"
+            fi
+            return 0
+          }
+
+          # refresh_auth_quota_token
+          # Fetches (or reuses a cached) authenticated Docker Hub token for
+          # the ratelimitpreview/test:pull scope using DOCKERHUB_USERNAME and
+          # DOCKERHUB_TOKEN.  Skips the fetch when the cached token is still
+          # fresh.  Returns 0 when a valid token is available, 1 on failure.
+          # On failure, emits a categorised ::error:: annotation.
+          refresh_auth_quota_token() {
+            local _now
+            _now="$(date +%s)"
+            if [[ -n "${_HUB_QUOTA_AUTH_TOKEN}" ]] \
+                && (( _now - _HUB_QUOTA_AUTH_TOKEN_TIME < _HUB_QUOTA_TOKEN_MAX_AGE )); then
+              return 0
+            fi
+            local _rc=0 _body _http_code _curl_err _token _tmpbody _tmpstderr
+            _tmpbody="$(mktemp)"
+            _tmpstderr="$(mktemp)"
+            _http_code="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+              --user "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}" \
+              --output "${_tmpbody}" \
+              --write-out '%{http_code}' \
+              "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+              2>"${_tmpstderr}")" || _rc=$?
+            _body="$(cat "${_tmpbody}" 2>/dev/null || true)"
+            _curl_err="$(cat "${_tmpstderr}" 2>/dev/null || true)"
+            rm -f "${_tmpbody}" "${_tmpstderr}"
+            _token="$(printf '%s' "${_body}" | jq -r '.token // ""' 2>/dev/null)" \
+              || _token=""
+            if [[ -n "${_token}" ]]; then
+              _HUB_QUOTA_AUTH_TOKEN="${_token}"
+              _HUB_QUOTA_AUTH_TOKEN_TIME="${_now}"
+              return 0
+            fi
+            if (( _rc != 0 )); then
+              echo "::error::Network/TLS/DNS failure contacting the Docker Hub auth" \
+                   "endpoint (curl exit ${_rc}). Check runner connectivity and Docker" \
+                   "Hub status before retrying." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
+            elif [[ "${_http_code}" == "401" ]] || [[ "${_http_code}" == "403" ]]; then
+              echo "::error::Docker Hub rejected the credentials (HTTP ${_http_code})." \
+                   "Verify that the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are" \
+                   "set and valid." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
+            else
+              echo "::error::Could not obtain a Docker Hub auth token" \
+                   "(HTTP ${_http_code:-unknown}). Verify that DOCKERHUB_USERNAME and" \
+                   "DOCKERHUB_TOKEN are set and valid, and that the Docker Hub auth" \
+                   "endpoint is reachable." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
+            fi
+            local _debug_info="${_curl_err}"
+            [[ -n "${_debug_info}" ]] && [[ -n "${_body}" ]] && _debug_info+=$'\n'
+            _debug_info+="${_body}"
+            if [[ -n "${_debug_info}" ]]; then
+              local _safe_debug="${_debug_info//'%'/'%25'}"
+              _safe_debug="${_safe_debug//$'\r'/'%0D'}"
+              _safe_debug="${_safe_debug//$'\n'/'%0A'}"
+              echo "::debug::Docker Hub auth response: ${_safe_debug}" >&2
+            fi
+            return 1
+          }
+
+          # auth_quota_remaining
+          # Refreshes the cached token if needed, then prints the authenticated
+          # Docker Hub pull quota remaining (integer, "unlimited", or "").
+          auth_quota_remaining() {
+            refresh_auth_quota_token || true
+            hub_pull_remaining "${_HUB_QUOTA_AUTH_TOKEN}"
+          }
         fi
 
         # SOURCE_REPO: registry used as the source for imagetools create refs.
