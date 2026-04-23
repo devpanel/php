@@ -65,9 +65,6 @@ outputs:
   versions_secure:
     description: Space-separated list of versions where the secure stage changed.
     value: ${{ steps.detect.outputs.versions_secure }}
-  latest_php_version:
-    description: The highest PHP version present in the repository.
-    value: ${{ steps.detect.outputs.latest_php_version }}
   merge_matrix:
     description: >
       JSON array of {version, stage, expected_platforms} objects — one entry
@@ -354,12 +351,6 @@ runs:
       run: |
         set -euo pipefail
 
-        LATEST_PHP_VERSION=""
-        while IFS= read -r VER; do
-          LATEST_PHP_VERSION="$VER"
-        done < <(find . -maxdepth 1 -mindepth 1 -type d -name '[0-9]*.[0-9]*' \
-                   | sed 's|./||' | sort -V)
-
         # Always compute all_versions (full repo list, unfiltered) so callers
         # can run preseed with the complete set.  This ensures the newest
         # Debian codename is always treated as primary when running preseed,
@@ -493,7 +484,6 @@ runs:
           done
         fi
 
-        echo "latest_php_version=${LATEST_PHP_VERSION}"     >> "$GITHUB_OUTPUT"
         echo "versions=${VERSIONS_OUT}"                     >> "$GITHUB_OUTPUT"
         echo "versions_base=${VERSIONS_BASE_OUT}"           >> "$GITHUB_OUTPUT"
         echo "versions_secure=${VERSIONS_SECURE_OUT}"       >> "$GITHUB_OUTPUT"

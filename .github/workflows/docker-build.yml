@@ -121,7 +121,6 @@ jobs:
       versions: ${{ steps.detect.outputs.versions }}
       versions_base: ${{ steps.detect.outputs.versions_base }}
       versions_secure: ${{ steps.detect.outputs.versions_secure }}
-      latest_php_version: ${{ steps.detect.outputs.latest_php_version }}
       tag_suffix: ${{ steps.detect.outputs.tag_suffix }}
       # JSON array of {version, stage, expected_platforms} objects — one entry
       # per Docker Hub image that needs a manifest merge.  expected_platforms
@@ -214,7 +213,7 @@ jobs:
   #   - workflow_dispatch with no_cache=false uses the cache as normal.
   build:
     needs: detect
-    if: needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != ''
+    if: needs.detect.outputs.versions != ''
     name: build (${{ matrix.version }}, ${{ matrix.platform }})
     strategy:
       fail-fast: false
@@ -282,7 +281,7 @@ jobs:
   # and reduces the number of runners consumed during the build.
   merge:
     needs: detect
-    if: needs.detect.outputs.versions != '' && needs.detect.outputs.latest_php_version != ''
+    if: needs.detect.outputs.versions != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
