@@ -27,19 +27,12 @@ description: >
   unnecessary intermediate manifest states.  A single job (not a matrix) is
   used for all images to avoid race conditions when pushing manifests.
 
-  In GHCR mode, the existing manifest is seeded before the polling loop starts:
-  a dedicated "Seed image manifests" step (before docker-login) reads the
-  existing Docker Hub manifest using the runner's embedded token and writes the
-  per-image platform-digest baseline.  This step hard-fails on any seed error,
-  so if the polling loop starts in GHCR mode, all images are guaranteed to be
-  seeded.
-
-  In fallback mode, seeding happens lazily on the first polling cycle via
-  docker buildx imagetools inspect.  If inspect fails for a reason other than
-  "tag not found", the image remains unseeded and imagetools create is deferred
-  until seeding succeeds in a later polling cycle.  If inspect succeeds but no
-  baseline platforms can be derived from the manifest, the action treats that
-  as a terminal error and refuses to continue.
+  The "Seed image manifests" step always runs before docker-login (both GHCR
+  and fallback modes).  It reads the existing Docker Hub manifest using the
+  runner's embedded token (no DOCKERHUB_TOKEN pull quota consumed) and writes
+  the per-image platform-digest baseline.  This step hard-fails on any seed
+  error, so if the polling loop starts, all images are guaranteed to be seeded.
+  There is no lazy/fallback seeding inside the poll loop.
 
   After seeding, each digest artifact is compared against the seeded state.
   If the platform+digest is already live on Docker Hub (exact match), the
@@ -150,34 +143,38 @@ inputs:
 runs:
   using: composite
   steps:
-    # ── Authentication: GHCR mode (ghcr_writable=true) ──────────────────────
-    # When GHCR is available as the source registry:
+    # ── Pre-login seeding (always runs, both modes) ──────────────────────────
+    # The "Seed image manifests" step always runs before the docker-login steps.
+    # It reads the existing Docker Hub manifest using the runner's embedded
+    # token (no DOCKERHUB_TOKEN pull quota consumed), writes per-image
+    # platform-digest state files to a tmpdir, and exports the path as
+    # MERGE_MANIFESTS_WORK_DIR via $GITHUB_ENV so the poll step can reuse it.
+    # The step hard-fails on any seed error, so if the poll loop starts, all
+    # images are guaranteed to be seeded — there is no fallback seeding in the
+    # poll loop.
     #
-    # 1. "Seed image manifests" step (before docker-login):
-    #    Runs imagetools inspect against Docker Hub using the runner's embedded
-    #    token — no DOCKERHUB_TOKEN pull quota consumed.  Writes per-image
-    #    platform-digest state files to a tmpdir whose path is exported via
-    #    $GITHUB_ENV (MERGE_MANIFESTS_WORK_DIR).  Logs in to GHCR and probes
-    #    each seeded digest; any digest absent from GHCR (e.g. from a build run
-    #    before GHCR was enabled) is mirrored from Docker Hub using `skopeo
-    #    copy`, which pushes the per-platform manifest bytes and any missing
-    #    blobs to GHCR addressed only by their content digest — no tag is
-    #    created.  After the copy the digest is accessible at
-    #    ghcr.io/…@sha256:<digest>.
+    # In GHCR mode (ghcr_writable=true) the seeding step additionally logs in
+    # to GHCR and probes each seeded digest; any digest absent from GHCR (e.g.
+    # from a build run before GHCR was enabled) is mirrored from Docker Hub
+    # using `skopeo copy`, which pushes the per-platform manifest bytes and any
+    # missing blobs to GHCR addressed only by their content digest — no tag is
+    # created.  After the copy the digest is accessible at
+    # ghcr.io/…@sha256:<digest>.
     #
-    # 2. "Login to Docker Hub" (push scope only — no pull scope needed because
-    #    all imagetools create source refs use GHCR).  Uses the same scope
-    #    format as build-php-images: ${{ inputs.repo }}@push.
+    # ── Authentication ───────────────────────────────────────────────────────
+    # GHCR mode:
+    #   "Login to Docker Hub" — push-only scope (${{ inputs.repo }}@push,
+    #   same format as build-php-images).  No pull scope needed because all
+    #   imagetools create source refs come from GHCR.
+    #   "Login to GHCR" — for reading source manifests in the poll step.
     #
-    # 3. "Login to GHCR" — for reading source manifests in the poll step.
+    # Fallback mode:
+    #   The poll step logs DOCKERHUB_TOKEN into an isolated PUSH_DOCKER_CONFIG
+    #   tmpdir and passes --config to imagetools create to prevent the
+    #   dual-scope 401 bug.
     #
     # docker/setup-buildx-action is not needed: imagetools create is a pure
-    # registry client-side operation (no builder required).  It reads each
-    # source manifest by digest from GHCR (GET /v2/{name}/manifests/{digest})
-    # and writes the merged manifest list to Docker Hub
-    # (PUT /v2/{name}/manifests/{tag}); image layer blobs are already present
-    # on Docker Hub (pushed by the build job), so only HEAD blob-existence
-    # checks are performed — no blob transfer occurs.
+    # registry client-side operation (no builder required).
 
     - name: Validate ghcr_user when ghcr_token is set
       if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
@@ -193,12 +190,12 @@ runs:
         fi
 
     - name: Seed image manifests from existing Docker Hub tags
-      if: inputs.ghcr_writable == 'true'
       shell: bash
       env:
         MERGE_MATRIX_JSON: ${{ inputs.merge_matrix }}
         REPO: ${{ inputs.repo }}
         TAG_SUFFIX: ${{ inputs.tag_suffix }}
+        GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
         GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
         GHCR_TOKEN_INPUT: ${{ inputs.ghcr_token }}
         GHCR_USER_INPUT: ${{ inputs.ghcr_user }}
@@ -395,12 +392,17 @@ runs:
         echo "Seeding complete."
 
         # ── Mirror Docker Hub digests that are absent from GHCR ───────────
-        # In GHCR mode the poll step sources every platform ref from GHCR by
-        # digest (SOURCE_REPO=ghcr.io/…).  For platforms published before GHCR
-        # was enabled the digest exists only on Docker Hub; the poll step's
-        # imagetools create would fail when fetching ghcr.io/…@sha256:<digest>.
-        #
-        # Fix: probe each seeded digest at GHCR; if absent, copy it from Docker
+        # Only needed in GHCR mode: the poll step sources every platform ref
+        # from GHCR by digest (SOURCE_REPO=ghcr.io/…).  For platforms published
+        # before GHCR was enabled the digest exists only on Docker Hub; the poll
+        # step's imagetools create would fail when fetching
+        # ghcr.io/…@sha256:<digest>.
+        if [[ "${GHCR_WRITABLE}" != "true" ]]; then
+          echo "Not in GHCR mode; skipping GHCR mirror check."
+          exit 0
+        fi
+
+        # Probe each seeded digest at GHCR; if absent, copy it from Docker
         # Hub using `skopeo copy`.  skopeo copies the per-platform manifest
         # bytes and any missing blobs to GHCR and addresses them only by their
         # content digest — no tag is created in GHCR.  After the copy the
@@ -519,17 +521,10 @@ runs:
       run: |
         set -euo pipefail
 
-        # In GHCR mode the "Seed image manifests" step has already populated the
-        # per-image state files and exported the tmpdir path as
-        # MERGE_MANIFESTS_WORK_DIR.  Reuse it so the poll loop can skip seeding
-        # for pre-seeded images (detected via the *.marker sentinel files).
-        # In fallback mode the env var is unset; create a fresh tmpdir.
-        if [[ -n "${MERGE_MANIFESTS_WORK_DIR:-}" && \
-              -d "${MERGE_MANIFESTS_WORK_DIR}" ]]; then
-          WORK_DIR="${MERGE_MANIFESTS_WORK_DIR}"
-        else
-          WORK_DIR="$(mktemp -d)"
-        fi
+        # The "Seed image manifests" step always runs before this step and
+        # exports the tmpdir path as MERGE_MANIFESTS_WORK_DIR.  Reuse it so
+        # the poll loop can read the pre-seeded state files and sentinel markers.
+        WORK_DIR="${MERGE_MANIFESTS_WORK_DIR}"
         trap 'rm -rf "${WORK_DIR}"' EXIT
 
         # Compute the GHCR repository name (lowercase) from GITHUB_REPOSITORY.
@@ -880,217 +875,20 @@ runs:
             done
           done <<< "${ALL_ARTIFACTS}"
 
-          # ── Seed unseeded images (fallback mode only) ────────────────────
-          # In GHCR mode all images were seeded by the "Seed image manifests"
-          # step before docker-login (IMG_SEEDED=true set at init via sentinel
-          # marker files).  If any image is still unseeded in GHCR mode, the
-          # seeding step must have failed but did not abort the job — which
-          # should never happen (the step calls exit 1 on any seed failure).
-          # Guard anyway: hard-fail rather than silently dropping platforms.
-          #
-          # In fallback mode the pre-seeding step is skipped entirely; seeding
-          # happens here using the runner's embedded Docker Hub token.
-          #
-          # If inspect fails → leave the image unseeded and defer
-          # imagetools create until seeding succeeds in a later cycle.
-          _unseeded=()
+          # ── Assert all images are seeded ──────────────────────────────────
+          # The "Seed image manifests" step always runs before this step and
+          # hard-fails on any seed error.  If any image is still unseeded here
+          # it indicates a bug in the seeding step that allowed it to exit 0
+          # without seeding all images.  Fail hard rather than silently
+          # dropping previously-published platforms.
           for vs in "${VERSIONS_STAGES[@]}"; do
             key="${vs%%:*}:${vs##*:}"
-            [[ "${IMG_SEEDED[$key]}" == "false" ]] && _unseeded+=("${vs}")
-          done
-
-          if [[ ${#_unseeded[@]} -gt 0 ]]; then
-            if [[ "${GHCR_WRITABLE}" == "true" ]]; then
-              # Should never happen: seeding step runs with set -e and exits 1
-              # on any failure, so reaching here means a bug in the seeding
-              # step logic.  Fail hard to avoid publishing incomplete manifests.
-              echo "::error::${#_unseeded[@]} image(s) not seeded in GHCR mode:" \
-                   "this is a bug in the 'Seed image manifests' step." \
-                   "The seeding step must have exited 0 without seeding all" \
-                   "images.  Please investigate and re-run."
+            if [[ "${IMG_SEEDED[$key]}" != "true" ]]; then
+              echo "::error::${key}: image not seeded before poll loop — this is" \
+                   "a bug in the 'Seed image manifests' step. Re-run the workflow."
               exit 1
             fi
-
-            echo "Seeding platform-digest state from existing manifests..."
-            for vs in "${_unseeded[@]}"; do
-              version="${vs%%:*}"
-              stage="${vs##*:}"
-              key="${version}:${stage}"
-              IMAGE_SEED="${REPO}:${version}-${stage}${TAG_SUFFIX}"
-
-              _seed_status=""  # "ok" | "not_found" | "error"
-
-              # ── imagetools inspect ───────────────────────────────────────────────
-              # Fallback mode: DOCKER_CONFIG has the runner's embedded token.
-              # imagetools inspect inlines the image config blob into its JSON
-              # output, giving platform info for both multi-arch images (via
-              # .manifest.manifests[].platform) and single-arch images (via
-              # .image.{os,architecture,variant}) in one call.
-              _seed_raw_file="$(mktemp)"
-              seed_stderr="$(mktemp)"
-              if docker buildx imagetools inspect \
-                   --format '{{json .}}' \
-                   "${IMAGE_SEED}" > "${_seed_raw_file}" 2>"${seed_stderr}"; then
-                _inspect_json="$(cat "${_seed_raw_file}")"
-                _seed_status="ok"
-                echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
-              else
-                if grep -qi \
-                     "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
-                     "${seed_stderr}"; then
-                  _seed_status="not_found"
-                else
-                  seed_err="$(cat "${seed_stderr}" 2>/dev/null || true)"
-                  echo "::warning::${IMAGE_SEED}: imagetools inspect failed" \
-                       "(${seed_err:-unknown error})."
-                  _seed_status="error"
-                fi
-              fi
-              rm -f "${_seed_raw_file}" "${seed_stderr}"
-
-              # ── Handle inspect result ───────────────────────────────────
-              _seeding_succeeded=true
-              case "${_seed_status}" in
-                ok)
-                  # Fresh manifest obtained; rewrite state file from it.
-                  # image index: extract per-platform digests from .manifest.manifests[].
-                  # single-platform (.manifest.manifests absent): extract platform info
-                  # from .image.{os,architecture,variant} + .manifest.digest (buildx
-                  # inlines the config blob into the --format '{{json .}}'
-                  # output, so no second request is needed).
-                  > "${IMG_PLATFORM_DIGESTS[$key]}"
-                  while IFS=$'\t' read -r _pf_plat _pf_digest; do
-                      IFS='/' read -r _p_os _p_arch _p_var <<< "${_pf_plat}"
-                      # Skip attestation / unknown-platform entries.
-                      [[ "${_p_os}" == "unknown" || "${_p_arch}" == "unknown" ]] && continue
-                      # Skip entries with empty digest, os, or architecture.
-                      [[ -n "${_pf_digest}" && -n "${_p_os}" && -n "${_p_arch}" ]] || continue
-                      # Normalize platform key: strip default variants (arm64/v8,
-                      # amd64/v1) so keys match build-job artifact names.
-                      _normalized_plat="${_p_os}/${_p_arch}"
-                      if [[ -n "${_p_var:-}" ]] && \
-                         ! [[ "${_p_arch}" == "arm64" && "${_p_var}" == "v8" ]] && \
-                         ! [[ "${_p_arch}" == "amd64" && "${_p_var}" == "v1" ]]; then
-                        _normalized_plat="${_p_os}/${_p_arch}/${_p_var}"
-                      fi
-                      _pf_pkey="${_normalized_plat//\//-}"
-                      printf '%s\t%s\n' "${_pf_pkey}" "${_pf_digest}" \
-                        >> "${IMG_PLATFORM_DIGESTS[$key]}"
-                    done < <(printf '%s' "${_inspect_json}" | jq -r '
-                        .manifest.manifests[]? |
-                        select(
-                          .platform != null and
-                          (.platform.os // "") != "" and
-                          (.platform.architecture // "") != "" and
-                          (.platform.os // "") != "unknown" and
-                          (.platform.architecture // "") != "unknown"
-                        ) |
-                        [
-                          (.platform.os // "") + "/" + (.platform.architecture // "") +
-                          (if (.platform.variant // "") != ""
-                           then "/" + .platform.variant else "" end),
-                          (.digest // "")
-                        ] | @tsv
-                      ')
-                  # Single-platform path: .manifest.manifests is absent so the loop above
-                  # produced 0 entries.  Extract platform from
-                  # .image.{os,architecture,variant} and manifest digest from
-                  # .manifest.digest (both inlined by buildx in --format '{{json .}}').
-                  _sp_seeded=false
-                  if [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
-                    while IFS=$'\t' read -r _pf_plat _pf_digest; do
-                        IFS='/' read -r _p_os _p_arch _p_var <<< "${_pf_plat}"
-                        [[ "${_p_os}" == "unknown" || "${_p_arch}" == "unknown" ]] && continue
-                        [[ -n "${_pf_digest}" && -n "${_p_os}" && -n "${_p_arch}" ]] || continue
-                        _sp_norm="${_p_os}/${_p_arch}"
-                        if [[ -n "${_p_var:-}" ]] && \
-                           ! [[ "${_p_arch}" == "arm64" && "${_p_var}" == "v8" ]] && \
-                           ! [[ "${_p_arch}" == "amd64" && "${_p_var}" == "v1" ]]; then
-                          _sp_norm="${_p_os}/${_p_arch}/${_p_var}"
-                        fi
-                        _sp_pkey="${_sp_norm//\//-}"
-                        printf '%s\t%s\n' "${_sp_pkey}" "${_pf_digest}" \
-                          >> "${IMG_PLATFORM_DIGESTS[$key]}"
-                        echo "  ${IMAGE_SEED}: seeded 1 platform from" \
-                             "single-arch manifest (${_sp_norm})."
-                        _sp_seeded=true
-                      done < <(printf '%s' "${_inspect_json}" | jq -r '
-                          select(.manifest | has("manifests") | not) |
-                          select(
-                            (.image.os // "") != "" and
-                            (.image.architecture // "") != "" and
-                            (.image.os // "") != "unknown" and
-                            (.image.architecture // "") != "unknown"
-                          ) |
-                          [
-                            ((.image.os // "") + "/" + (.image.architecture // "") +
-                             (if (.image.variant // "") != ""
-                              then "/" + .image.variant else "" end)),
-                            (.manifest.digest // "")
-                          ] |
-                          select(.[1] != "") |
-                          @tsv
-                        ')
-                  fi
-                  n=$(wc -l < "${IMG_PLATFORM_DIGESTS[$key]}")
-                  if [[ "${n}" -gt 0 ]] && [[ "${_sp_seeded}" == "false" ]]; then
-                    echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
-                  fi
-                  ;;
-                not_found)
-                  # Tag doesn't exist yet — start fresh.
-                  > "${IMG_PLATFORM_DIGESTS[$key]}"
-                  echo "  ${IMAGE_SEED}: no existing manifest (first push)."
-                  ;;
-                error)
-                  # All manifest inspection methods failed; leave the image
-                  # unseeded so imagetools create is deferred until seeding
-                  # succeeds (or the image is pre-seeded from cache on the
-                  # next run).  Setting IMG_SEEDED=true here when there is no
-                  # baseline would silently drop previously-published
-                  # platforms on a cold-cache run.  (Images with cached state
-                  # were already pre-seeded in init and never reach this
-                  # path.)
-                  echo "::warning::${IMAGE_SEED}: inspect failed;" \
-                       "image will remain unseeded this cycle."
-                  _seeding_succeeded=false
-                  ;;
-              esac
-
-              if [[ "${_seed_status}" == "ok" ]] \
-                  && [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
-                # The inspect succeeded but yielded 0 real platforms.  Determine
-                # whether this is because ALL manifest entries are
-                # attestation/unknown-platform (safe — no real platforms to
-                # preserve) or something genuinely unexpected (hard fail).
-                _total_mf="$(printf '%s' "${_inspect_json}" | \
-                  jq 'if .manifest.manifests then (.manifest.manifests | length) else -1 end')"
-                _real_mf="$(printf '%s' "${_inspect_json}" | \
-                  jq '[ .manifest.manifests[]? | select(
-                      .platform != null and
-                      (.platform.os  // "") != "" and
-                      (.platform.architecture // "") != "" and
-                      (.platform.os  // "") != "unknown" and
-                      (.platform.architecture // "") != "unknown"
-                    ) ] | length')"
-                if [[ "${_total_mf}" -gt 0 && "${_real_mf}" -eq 0 ]]; then
-                  # All entries are attestation/unknown — no real published
-                  # platforms to protect.  Treat the tag as if it doesn't
-                  # exist yet so the current build can proceed.
-                  echo "  ${IMAGE_SEED}: existing manifest has only" \
-                       "attestation/unknown-platform entries;" \
-                       "treating as no prior published platforms."
-                else
-                  echo "::error::${IMAGE_SEED}: manifest inspection succeeded but no baseline could be derived from the fetched manifest; refusing to continue because doing so could publish an incomplete manifest list and drop previously published platforms. Re-run later or investigate the Docker Hub manifest response."
-                  exit 1
-                fi
-              fi
-
-              if [[ "${_seeding_succeeded}" == "true" ]]; then
-                IMG_SEEDED[$key]="true"
-              fi
-            done
-          fi
+          done
 
           # ── Process each pending image ─────────────────────────────────
           CYCLE_DIR="${WORK_DIR}/cycle"
@@ -1128,9 +926,6 @@ runs:
             fi
           fi
 
-          # Tracks whether any deferral was specifically because seeding had
-          # not yet completed and there was no cached baseline.
-          _any_seeding_deferred=false
           # Tracks whether any imagetools create was deferred this cycle
           # because the Docker Hub pull quota was insufficient.
           _any_quota_deferred=false
@@ -1289,18 +1084,16 @@ runs:
             # No per-cycle inspect is needed — within-run state is always
             # up-to-date and cross-run state was captured at startup.
             if [[ ${#NEW_PKEYS[@]} -gt 0 ]]; then
-              # If this image has not yet been seeded from the existing manifest
-              # and the state file has no cached baseline, creating the manifest
-              # now would publish only the newly built platforms and silently
-              # drop any platforms that already exist for this tag.  Defer until
-              # seeding has completed or a non-empty cached state is confirmed.
-              if [[ "${IMG_SEEDED[$key]}" != "true" ]] && \
-                 [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
-                echo "  [${IMAGE}] Seeding not yet complete and no cached baseline;" \
-                     "deferring imagetools create to avoid dropping existing platforms."
-                _img_create_deferred=true
-                _any_seeding_deferred=true
-                continue
+              # Seeding is guaranteed to have completed before the poll loop
+              # (the "Seed image manifests" step hard-fails otherwise), so
+              # IMG_SEEDED is always true here.  If the state file is somehow
+              # empty for an image that had no prior published platforms, that
+              # is safe: imagetools create publishes only the newly built
+              # platforms, which is the correct first-push behaviour.
+              if [[ "${IMG_SEEDED[$key]}" != "true" ]]; then
+                echo "::error::${IMAGE}: not seeded before poll loop — this is" \
+                     "a bug. Re-run the workflow."
+                exit 1
               fi
               echo "Merging ${#NEW_PKEYS[@]} new platform(s) into ${IMAGE}..."
 
@@ -1440,9 +1233,6 @@ runs:
           done
 
           # ── Log any per-cycle create issues ───────────────────────────────────
-          if [[ "${_any_seeding_deferred}" == "true" ]]; then
-            echo "::warning::imagetools create deferred this cycle (waiting for seeding to complete)."
-          fi
           if [[ "${_any_quota_deferred}" == "true" ]]; then
             echo "::warning::imagetools create deferred this cycle: Docker Hub pull quota" \
                  "insufficient (${_auth_rem:-unknown} authenticated remaining)." \
