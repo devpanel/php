@@ -294,10 +294,18 @@ target "php-base" {
   # Normal mode (default): push directly to the named tag on Docker Hub.
   # Digest mode (CI): push by content-hash only (no tag); a separate merge
   # step creates / updates the tagged multi-arch manifest list.
+  # When GHCR_WRITABLE=true the same image is also pushed to GHCR by digest so
+  # that the merge job can read source manifests from GHCR (via GITHUB_TOKEN)
+  # rather than from Docker Hub, eliminating DOCKERHUB_TOKEN pull-quota
+  # consumption.  Blobs are already present in Docker Hub from the first output,
+  # so imagetools create only needs to write the manifest index (no layer
+  # transfer).  The digest is identical in both registries (same content →
+  # same sha256).
   tags   = PUSH_BY_DIGEST != "true" && should_push(VERSIONS_BASE, version) ? ["${REPO}:${version}-base${TAG_SUFFIX}"] : []
-  output = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_BASE, version) ? [
-    "type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"
-  ] : []
+  output = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_BASE, version) ? concat(
+    ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"],
+    GHCR_WRITABLE == "true" ? ["type=image,name=${GHCR_REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  ) : []
   cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-base${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-base${plat_sfx()}")
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-base${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-base${plat_sfx()}")
 }
@@ -352,10 +360,12 @@ target "php-secure" {
   # Normal mode (default): push directly to the named tag on Docker Hub.
   # Digest mode (CI): push by content-hash only (no tag); a separate merge
   # step creates / updates the tagged multi-arch manifest list.
+  # When GHCR_WRITABLE=true, also push to GHCR by digest (see php-base comment).
   tags   = PUSH_BY_DIGEST != "true" && should_push(VERSIONS_SECURE, version) ? ["${REPO}:${version}-secure${TAG_SUFFIX}"] : []
-  output = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_SECURE, version) ? [
-    "type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"
-  ] : []
+  output = PUSH_BY_DIGEST == "true" && should_push(VERSIONS_SECURE, version) ? concat(
+    ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"],
+    GHCR_WRITABLE == "true" ? ["type=image,name=${GHCR_REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  ) : []
   cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-secure${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-secure${plat_sfx()}")
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-secure${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-secure${plat_sfx()}")
 }
@@ -380,10 +390,12 @@ target "php-advance" {
   # Normal mode (default): push directly to the named tag on Docker Hub.
   # Digest mode (CI): push by content-hash only (no tag); a separate merge
   # step creates / updates the tagged multi-arch manifest list.
+  # When GHCR_WRITABLE=true, also push to GHCR by digest (see php-base comment).
   tags   = PUSH_BY_DIGEST != "true" ? ["${REPO}:${version}-advance${TAG_SUFFIX}"] : []
-  output = PUSH_BY_DIGEST == "true" ? [
-    "type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"
-  ] : []
+  output = PUSH_BY_DIGEST == "true" ? concat(
+    ["type=image,name=${REPO},push-by-digest=true,name-canonical=true,push=true"],
+    GHCR_WRITABLE == "true" ? ["type=image,name=${GHCR_REPO},push-by-digest=true,name-canonical=true,push=true"] : []
+  ) : []
   cache-from = cache_from_registry("${GHCR_REPO}:cache-${version}-advance${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-advance${plat_sfx()}")
   cache-to   = cache_to_registry("${GHCR_REPO}:cache-${version}-advance${plat_sfx()}${TAG_SUFFIX}", "php${ver_key(version)}-advance${plat_sfx()}")
 }
