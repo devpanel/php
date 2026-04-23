@@ -452,7 +452,11 @@ runs:
 
         echo "Logging in to GHCR to check/mirror platform digests..."
         _GHCR_AUTH_TOKEN="${GHCR_TOKEN_INPUT:-${GITHUB_TOKEN_INPUT}}"
-        _GHCR_AUTH_USER="${GHCR_USER_INPUT:-token}"
+        if [[ -n "${GHCR_TOKEN_INPUT:-}" ]]; then
+          _GHCR_AUTH_USER="${GHCR_USER_INPUT:-token}"
+        else
+          _GHCR_AUTH_USER="${GITHUB_ACTOR}"
+        fi
         printf '%s' "${_GHCR_AUTH_TOKEN}" \
           | docker login ghcr.io \
               --username "${_GHCR_AUTH_USER}" \
