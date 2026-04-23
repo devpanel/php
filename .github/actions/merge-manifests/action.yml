@@ -176,6 +176,14 @@ runs:
     # docker/setup-buildx-action is not needed: imagetools create is a pure
     # registry client-side operation (no builder required).
 
+    - name: Compute GHCR repository name
+      shell: bash
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+      run: |
+        echo "GHCR_REPO=ghcr.io/$(echo "${REPOSITORY}" | tr '[:upper:]' '[:lower:]')" \
+          >> "${GITHUB_ENV}"
+
     - name: Validate ghcr_user when ghcr_token is set
       if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
       shell: bash
@@ -209,8 +217,6 @@ runs:
         # fixed path — a tmpdir is fine as long as its path is exported.)
         WORK_DIR="$(mktemp -d)"
         echo "MERGE_MANIFESTS_WORK_DIR=${WORK_DIR}" >> "${GITHUB_ENV}"
-
-        GHCR_REPO="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
 
         # ── Parse merge matrix ─────────────────────────────────────────────
         VERSIONS_STAGES=()
@@ -526,10 +532,6 @@ runs:
         # the poll loop can read the pre-seeded state files and sentinel markers.
         WORK_DIR="${MERGE_MANIFESTS_WORK_DIR}"
         trap 'rm -rf "${WORK_DIR}"' EXIT
-
-        # Compute the GHCR repository name (lowercase) from GITHUB_REPOSITORY.
-        # Used as the source registry for imagetools create when GHCR_WRITABLE=true.
-        GHCR_REPO="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
 
         # ── Authentication: Docker Hub fallback mode (GHCR_WRITABLE != true) ──
         # When GHCR is not available as a source, log DOCKERHUB_TOKEN into an
