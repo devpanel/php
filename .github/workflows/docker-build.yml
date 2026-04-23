@@ -96,7 +96,6 @@ jobs:
             242168596
             242173818
             docker-build.yml
-          current_sha: ${{ github.sha }}
           ref_name: ${{ github.ref_name }}
           repository: ${{ github.repository }}
           github_token: ${{ github.token }}

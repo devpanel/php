@@ -89,7 +89,6 @@ jobs:
         uses: ./.github/actions/effective-before-sha
         with:
           workflow_files: test.yml
-          current_sha: ${{ github.sha }}
           ref_name: ${{ github.ref_name }}
           repository: ${{ github.repository }}
           github_token: ${{ github.token }}
