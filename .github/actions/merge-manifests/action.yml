@@ -111,11 +111,14 @@ inputs:
     description: >
       Docker Hub token for image push authentication.
       Used for imagetools create (push).
-      When ghcr_writable is false, also used for manifest inspection (seeding
-      reads) via the runner DOCKER_CONFIG so the runner's embedded token remains
-      in place; when ghcr_writable is true, DOCKERHUB_TOKEN is written to
-      DOCKER_CONFIG via docker/login-action (no PUSH_DOCKER_CONFIG isolation
-      needed since source and destination are different registries).
+      When ghcr_writable is false, DOCKERHUB_TOKEN is written to an isolated
+      PUSH_DOCKER_CONFIG tmpdir; the runner's embedded Docker Hub token stays
+      in DOCKER_CONFIG so seeding reads (imagetools inspect) do not consume
+      DOCKERHUB_TOKEN pull quota.
+      When ghcr_writable is true, DOCKERHUB_TOKEN is written to DOCKER_CONFIG
+      via docker/login-action (no PUSH_DOCKER_CONFIG isolation needed, since
+      source (GHCR) and destination (Docker Hub) are different registries so
+      the dual-scope 401 bug does not apply).
     required: true
   ghcr_writable:
     description: >
@@ -155,6 +158,19 @@ runs:
     # blobs are not downloaded or uploaded when the content already exists in
     # the destination registry (the build job pushes to Docker Hub first, so
     # Docker Hub HEAD blob-existence checks pass and no transfer is needed).
+
+    - name: Validate ghcr_user when ghcr_token is set
+      if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
+      shell: bash
+      env:
+        GHCR_USER: ${{ inputs.ghcr_user }}
+      run: |
+        if [[ -z "${GHCR_USER}" ]]; then
+          echo "::error::ghcr_token is set but ghcr_user is not provided." \
+               "Pass the PAT owner's username via the ghcr_user input" \
+               "(typically vars.GHCR_USER from the calling workflow)."
+          exit 1
+        fi
 
     - name: Login to Docker Hub
       if: inputs.ghcr_writable == 'true'
@@ -838,12 +854,14 @@ runs:
                 # credentials from the login-action steps.  In fallback mode
                 # PUSH_DOCKER_CONFIG holds DOCKERHUB_TOKEN in isolation to
                 # prevent the dual-scope 401 bug.
-                _create_config_args=()
                 if [[ -n "${PUSH_DOCKER_CONFIG}" ]]; then
-                  _create_config_args=(--config "${PUSH_DOCKER_CONFIG}")
+                  docker --config "${PUSH_DOCKER_CONFIG}" buildx imagetools create \
+                    --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}" && _create_ok=true || _create_ok=false
+                else
+                  docker buildx imagetools create \
+                    --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}" && _create_ok=true || _create_ok=false
                 fi
-                if docker "${_create_config_args[@]}" buildx imagetools create \
-                     --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}"; then
+                if [[ "${_create_ok}" == "true" ]]; then
                   rm -f "${_create_err_file}"
                   echo "  Updated ${IMAGE} with ${#REFS[@]} platform ref(s)."
                   # Promote temp map to the persistent state file
