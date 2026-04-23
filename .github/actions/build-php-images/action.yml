@@ -66,12 +66,13 @@ inputs:
       Whether the GHCR registry is writable ("true"/"false").  Pass the
       ghcr_writable output from the detect-versions action.  When "true",
       GHCR is used as the primary layer cache; when "false", GHA is primary.
-      Defaults to "false" so that builds without a detect step are safe.
+      Defaults to "false" but ghcr_repo must still be provided.
     default: 'false'
   ghcr_repo:
     description: >
       GHCR repository name (ghcr.io/<lowercase-owner/repo>).  Pass the
-      ghcr_repo output from the detect-versions action.
+      ghcr_repo output from the detect-versions action, or provide the
+      repository name manually when not using detect outputs.
     required: true
   downloads_dir:
     description: >
