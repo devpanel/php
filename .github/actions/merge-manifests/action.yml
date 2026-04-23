@@ -86,9 +86,11 @@ inputs:
     default: '60'
   github_token:
     description: >
-      Token used for GitHub API calls (list/download artifacts) and, when
-      ghcr_writable is true, for GHCR authentication to read source manifests.
-      Requires actions:read and packages:read permissions.
+      Token used for GitHub API calls (list/download artifacts) and for GHCR
+      authentication.  Requires actions:read and packages:read permissions.
+      When ghcr_writable is true and this token is used for GHCR login (i.e.
+      ghcr_token is not provided), it also requires packages:write so that
+      missing per-platform digests can be mirrored to GHCR.
     required: true
   run_id:
     description: >
@@ -133,9 +135,13 @@ inputs:
     required: true
   ghcr_token:
     description: >
-      Optional classic Personal Access Token with the read:packages scope.
-      When provided, this token is used instead of github_token for GHCR
-      login.  Required when the organisation's Actions token policy restricts
+      Optional classic Personal Access Token for GHCR login.  When provided,
+      this token is used instead of github_token for GHCR login.  It must
+      have permission appropriate for the configured path: read:packages is
+      sufficient for read-only GHCR access, but write:packages is required
+      when GHCR is writable and this action may mirror missing digests to
+      GHCR.  If you only have a read-only token, keep ghcr_writable set to
+      "false".  Required when the organisation's Actions token policy restricts
       GITHUB_TOKEN from reading packages.
     default: ''
   ghcr_user:
@@ -410,6 +416,14 @@ runs:
         if [[ "${GHCR_WRITABLE}" != "true" ]]; then
           echo "Not in GHCR mode; skipping GHCR mirror check."
           exit 0
+        fi
+
+        # Ensure skopeo is available; install it if not (ubuntu-latest runners
+        # have it in apt but it is not pre-installed on all runner images).
+        if ! command -v skopeo > /dev/null 2>&1; then
+          echo "skopeo not found; installing via apt-get..."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
         fi
 
         # Probe each seeded digest at GHCR; if absent, copy it from Docker
