@@ -146,18 +146,36 @@ runs:
   using: composite
   steps:
     # ── Authentication: GHCR mode (ghcr_writable=true) ──────────────────────
-    # When GHCR is available as the source registry, use standard login-action
-    # steps for both Docker Hub and GHCR.  Because source (ghcr.io) and
-    # destination (docker.io) are different registries, the dual-scope 401
-    # problem does not arise and no isolated PUSH_DOCKER_CONFIG is needed.
+    # When GHCR is available as the source registry:
     #
-    # docker/setup-buildx-action is not needed here: imagetools create is a
-    # pure registry client-side operation (no builder required).  It reads each
-    # source manifest by digest (GET /v2/{name}/manifests/{digest}) and writes
-    # the merged manifest list (PUT /v2/{name}/manifests/{tag}); image layer
-    # blobs are not downloaded or uploaded when the content already exists in
-    # the destination registry (the build job pushes to Docker Hub first, so
-    # Docker Hub HEAD blob-existence checks pass and no transfer is needed).
+    # 1. "Seed image manifests" step (before docker-login):
+    #    Runs imagetools inspect against Docker Hub using the runner's embedded
+    #    token — no DOCKERHUB_TOKEN pull quota consumed.  Writes per-image
+    #    platform-digest state files to a tmpdir whose path is exported via
+    #    $GITHUB_ENV (MERGE_MANIFESTS_WORK_DIR).  Logs in to GHCR and probes
+    #    each seeded digest; any digest absent from GHCR (e.g. from a build run
+    #    before GHCR was enabled) is mirrored from Docker Hub using imagetools
+    #    create, which pushes the per-platform manifest and any missing blobs to
+    #    GHCR so the digest becomes accessible at ghcr.io/…@sha256:<digest>.
+    #    A temporary migration tag (…:migrate-{version}-{stage}-{pkey}) is
+    #    created for each mirrored platform; it may be deleted once all
+    #    platforms have been rebuilt with GHCR enabled.
+    #
+    # 2. "Login to Docker Hub" (push scope only — no pull scope needed because
+    #    all imagetools create source refs use GHCR).  Scoping to push avoids
+    #    granting unnecessary pull access and is safe because source (ghcr.io)
+    #    and destination (docker.io) are different registries so the dual-scope
+    #    401 bug does not arise.
+    #
+    # 3. "Login to GHCR" — for reading source manifests in the poll step.
+    #
+    # docker/setup-buildx-action is not needed: imagetools create is a pure
+    # registry client-side operation (no builder required).  It reads each
+    # source manifest by digest from GHCR (GET /v2/{name}/manifests/{digest})
+    # and writes the merged manifest list to Docker Hub
+    # (PUT /v2/{name}/manifests/{tag}); image layer blobs are already present
+    # on Docker Hub (pushed by the build job), so only HEAD blob-existence
+    # checks are performed — no blob transfer occurs.
 
     - name: Validate ghcr_user when ghcr_token is set
       if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
@@ -172,12 +190,307 @@ runs:
           exit 1
         fi
 
+    - name: Seed image manifests from existing Docker Hub tags
+      if: inputs.ghcr_writable == 'true'
+      shell: bash
+      env:
+        MERGE_MATRIX_JSON: ${{ inputs.merge_matrix }}
+        REPO: ${{ inputs.repo }}
+        TAG_SUFFIX: ${{ inputs.tag_suffix }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
+        GHCR_TOKEN_INPUT: ${{ inputs.ghcr_token }}
+        GHCR_USER_INPUT: ${{ inputs.ghcr_user }}
+      run: |
+        set -euo pipefail
+
+        # Create WORK_DIR and export its path for subsequent steps.
+        # A tmpdir persists for the entire job; exporting the path via
+        # $GITHUB_ENV makes it available to the poll step without embedding
+        # state in the step output.  (Being a separate step does NOT require a
+        # fixed path — a tmpdir is fine as long as its path is exported.)
+        WORK_DIR="$(mktemp -d)"
+        echo "MERGE_MANIFESTS_WORK_DIR=${WORK_DIR}" >> "${GITHUB_ENV}"
+
+        GHCR_REPO="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+
+        # ── Parse merge matrix ─────────────────────────────────────────────
+        VERSIONS_STAGES=()
+        while IFS=$'\t' read -r _vs _; do
+          [[ -z "${_vs}" ]] && continue
+          VERSIONS_STAGES+=("${_vs}")
+        done < <(
+          printf '%s' "${MERGE_MATRIX_JSON}" \
+            | jq -r '.[] | (.version + ":" + .stage) + "\t0"'
+        )
+
+        if [[ ${#VERSIONS_STAGES[@]} -eq 0 ]]; then
+          echo "No images in merge matrix; nothing to seed."
+          exit 0
+        fi
+
+        echo "Seeding ${#VERSIONS_STAGES[@]} image(s) from existing Docker Hub tags..."
+
+        # ── Seed each image from its existing Docker Hub manifest ──────────
+        # Uses the runner's embedded Docker Hub token (default DOCKER_CONFIG).
+        # Because this step runs before the scoped docker-login, the runner
+        # token has full pull access — no DOCKERHUB_TOKEN quota is consumed.
+        SEED_ERRORS=0
+        for vs in "${VERSIONS_STAGES[@]}"; do
+          version="${vs%%:*}"
+          stage="${vs##*:}"
+          key="${version}:${stage}"
+          safe_key="${key//:/_}"
+          IMAGE_SEED="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+
+          state_file="${WORK_DIR}/digests-${safe_key}.txt"
+          > "${state_file}"
+
+          _seed_status=""
+          _seed_raw_file="$(mktemp)"
+          _seed_stderr="$(mktemp)"
+          if docker buildx imagetools inspect \
+               --format '{{json .}}' \
+               "${IMAGE_SEED}" > "${_seed_raw_file}" 2>"${_seed_stderr}"; then
+            _inspect_json="$(cat "${_seed_raw_file}")"
+            _seed_status="ok"
+            echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
+          else
+            if grep -qi \
+                 "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
+                 "${_seed_stderr}"; then
+              _seed_status="not_found"
+            else
+              _seed_err="$(cat "${_seed_stderr}" 2>/dev/null || true)"
+              echo "::warning::${IMAGE_SEED}: imagetools inspect failed" \
+                   "(${_seed_err:-unknown error})."
+              _seed_status="error"
+            fi
+          fi
+          rm -f "${_seed_raw_file}" "${_seed_stderr}"
+
+          _seeding_succeeded=true
+          case "${_seed_status}" in
+            ok)
+              # Multi-arch path: extract per-platform digests from
+              # .manifest.manifests[].
+              while IFS=$'\t' read -r _pf_plat _pf_digest; do
+                IFS='/' read -r _p_os _p_arch _p_var <<< "${_pf_plat}"
+                [[ "${_p_os}" == "unknown" || "${_p_arch}" == "unknown" ]] && continue
+                [[ -n "${_pf_digest}" && -n "${_p_os}" && -n "${_p_arch}" ]] || continue
+                _normalized_plat="${_p_os}/${_p_arch}"
+                if [[ -n "${_p_var:-}" ]] && \
+                   ! [[ "${_p_arch}" == "arm64" && "${_p_var}" == "v8" ]] && \
+                   ! [[ "${_p_arch}" == "amd64" && "${_p_var}" == "v1" ]]; then
+                  _normalized_plat="${_p_os}/${_p_arch}/${_p_var}"
+                fi
+                _pf_pkey="${_normalized_plat//\//-}"
+                printf '%s\t%s\n' "${_pf_pkey}" "${_pf_digest}" \
+                  >> "${state_file}"
+              done < <(printf '%s' "${_inspect_json}" | jq -r '
+                  .manifest.manifests[]? |
+                  select(
+                    .platform != null and
+                    (.platform.os // "") != "" and
+                    (.platform.architecture // "") != "" and
+                    (.platform.os // "") != "unknown" and
+                    (.platform.architecture // "") != "unknown"
+                  ) |
+                  [
+                    (.platform.os // "") + "/" + (.platform.architecture // "") +
+                    (if (.platform.variant // "") != ""
+                     then "/" + .platform.variant else "" end),
+                    (.digest // "")
+                  ] | @tsv
+                ')
+              # Single-arch path: .manifest.manifests absent → use
+              # .image.{os,architecture,variant} + .manifest.digest.
+              if [[ ! -s "${state_file}" ]]; then
+                while IFS=$'\t' read -r _pf_plat _pf_digest; do
+                  IFS='/' read -r _p_os _p_arch _p_var <<< "${_pf_plat}"
+                  [[ "${_p_os}" == "unknown" || "${_p_arch}" == "unknown" ]] && continue
+                  [[ -n "${_pf_digest}" && -n "${_p_os}" && -n "${_p_arch}" ]] || continue
+                  _sp_norm="${_p_os}/${_p_arch}"
+                  if [[ -n "${_p_var:-}" ]] && \
+                     ! [[ "${_p_arch}" == "arm64" && "${_p_var}" == "v8" ]] && \
+                     ! [[ "${_p_arch}" == "amd64" && "${_p_var}" == "v1" ]]; then
+                    _sp_norm="${_p_os}/${_p_arch}/${_p_var}"
+                  fi
+                  _sp_pkey="${_sp_norm//\//-}"
+                  printf '%s\t%s\n' "${_sp_pkey}" "${_pf_digest}" \
+                    >> "${state_file}"
+                  echo "  ${IMAGE_SEED}: seeded 1 platform from" \
+                       "single-arch manifest (${_sp_norm})."
+                done < <(printf '%s' "${_inspect_json}" | jq -r '
+                    select(.manifest | has("manifests") | not) |
+                    select(
+                      (.image.os // "") != "" and
+                      (.image.architecture // "") != "" and
+                      (.image.os // "") != "unknown" and
+                      (.image.architecture // "") != "unknown"
+                    ) |
+                    [
+                      ((.image.os // "") + "/" + (.image.architecture // "") +
+                       (if (.image.variant // "") != ""
+                        then "/" + .image.variant else "" end)),
+                      (.manifest.digest // "")
+                    ] |
+                    select(.[1] != "") |
+                    @tsv
+                  ')
+              fi
+              n=$(wc -l < "${state_file}")
+              if [[ "${n}" -gt 0 ]]; then
+                echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
+              fi
+              if [[ "${n}" -eq 0 ]]; then
+                _total_mf="$(printf '%s' "${_inspect_json}" | \
+                  jq 'if .manifest.manifests then (.manifest.manifests | length) else -1 end')"
+                _real_mf="$(printf '%s' "${_inspect_json}" | \
+                  jq '[ .manifest.manifests[]? | select(
+                      .platform != null and
+                      (.platform.os  // "") != "" and
+                      (.platform.architecture // "") != "" and
+                      (.platform.os  // "") != "unknown" and
+                      (.platform.architecture // "") != "unknown"
+                    ) ] | length')"
+                if [[ "${_total_mf}" -gt 0 && "${_real_mf}" -eq 0 ]]; then
+                  echo "  ${IMAGE_SEED}: existing manifest has only" \
+                       "attestation/unknown-platform entries;" \
+                       "treating as no prior published platforms."
+                else
+                  echo "::error::${IMAGE_SEED}: manifest inspection succeeded" \
+                       "but no baseline could be derived; refusing to continue" \
+                       "because doing so could publish an incomplete manifest" \
+                       "list and drop previously published platforms." \
+                       "Re-run later or investigate the Docker Hub manifest response."
+                  exit 1
+                fi
+              fi
+              ;;
+            not_found)
+              echo "  ${IMAGE_SEED}: no existing manifest (first push)."
+              ;;
+            error)
+              echo "::warning::${IMAGE_SEED}: inspect failed; cannot seed."
+              _seeding_succeeded=false
+              SEED_ERRORS=$(( SEED_ERRORS + 1 ))
+              ;;
+          esac
+
+          # Write a sentinel so the poll step can detect pre-seeded images at
+          # init time.  Only written when seeding succeeded (ok or not_found).
+          if [[ "${_seeding_succeeded}" == "true" ]]; then
+            touch "${WORK_DIR}/seeded-${safe_key}.marker"
+          fi
+        done
+
+        if [[ "${SEED_ERRORS}" -gt 0 ]]; then
+          echo "::error::${SEED_ERRORS} image(s) could not be seeded." \
+               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+          exit 1
+        fi
+
+        echo "Seeding complete."
+
+        # ── Mirror Docker Hub digests that are absent from GHCR ───────────
+        # In GHCR mode the poll step sources every platform ref from GHCR by
+        # digest (SOURCE_REPO=ghcr.io/…).  For platforms published before GHCR
+        # was enabled the digest exists only on Docker Hub; the poll step's
+        # imagetools create would fail when fetching ghcr.io/…@sha256:<digest>.
+        #
+        # Fix: probe each seeded digest at GHCR; if absent, mirror it using
+        # imagetools create.  imagetools create pushes the per-platform manifest
+        # bytes (and any missing blobs) to GHCR before writing the manifest
+        # index, so after the call the original per-platform digest is
+        # accessible at ghcr.io/…@sha256:<digest>.  A temporary migration tag
+        # (…:migrate-{version}-{stage}-{pkey}) is created in GHCR; it may be
+        # removed once all platforms have been rebuilt with GHCR enabled.
+        #
+        # Docker Hub reads use the runner's embedded token (no quota cost).
+        # GHCR writes use GITHUB_TOKEN / GHCR_TOKEN (packages:write).
+        # Because source (docker.io) and destination (ghcr.io) are different
+        # registries during the mirror, the dual-scope 401 bug does not apply.
+        _ANY_SEEDED=false
+        for vs in "${VERSIONS_STAGES[@]}"; do
+          version="${vs%%:*}"
+          stage="${vs##*:}"
+          key="${version}:${stage}"
+          safe_key="${key//:/_}"
+          [[ -s "${WORK_DIR}/digests-${safe_key}.txt" ]] && { _ANY_SEEDED=true; break; }
+        done
+
+        if [[ "${_ANY_SEEDED}" != "true" ]]; then
+          echo "No existing platforms seeded; skipping GHCR mirror check."
+          exit 0
+        fi
+
+        echo "Logging in to GHCR to check/mirror platform digests..."
+        _GHCR_AUTH_TOKEN="${GHCR_TOKEN_INPUT:-${GITHUB_TOKEN_INPUT}}"
+        _GHCR_AUTH_USER="${GHCR_USER_INPUT:-token}"
+        printf '%s' "${_GHCR_AUTH_TOKEN}" \
+          | docker login ghcr.io \
+              --username "${_GHCR_AUTH_USER}" \
+              --password-stdin
+
+        _MIRROR_ERRORS=0
+        for vs in "${VERSIONS_STAGES[@]}"; do
+          version="${vs%%:*}"
+          stage="${vs##*:}"
+          key="${version}:${stage}"
+          safe_key="${key//:/_}"
+          state_file="${WORK_DIR}/digests-${safe_key}.txt"
+          [[ -s "${state_file}" ]] || continue
+
+          while IFS=$'\t' read -r _pkey _pdigest; do
+            [[ -n "${_pkey}" && -n "${_pdigest}" ]] || continue
+            _ghcr_ref="${GHCR_REPO}@${_pdigest}"
+            _ghcr_check_stderr="$(mktemp)"
+            if docker buildx imagetools inspect \
+                 "${_ghcr_ref}" > /dev/null 2>"${_ghcr_check_stderr}"; then
+              rm -f "${_ghcr_check_stderr}"
+              continue
+            fi
+            rm -f "${_ghcr_check_stderr}"
+
+            echo "  ${_pkey//-/\/} (${_pdigest:0:19}…): absent from GHCR;" \
+                 "mirroring from Docker Hub..."
+            # imagetools create copies the per-platform manifest and its blobs
+            # to GHCR under a temporary tag.  Because the manifest bytes are
+            # identical, the original digest becomes accessible at GHCR after
+            # the push without needing a separate digest-copy tool.
+            _mirror_tag="${GHCR_REPO}:migrate-${version}-${stage}-${_pkey}"
+            _mirror_stderr="$(mktemp)"
+            if docker buildx imagetools create \
+                 --tag "${_mirror_tag}" \
+                 "${REPO}@${_pdigest}" \
+                 2>"${_mirror_stderr}"; then
+              echo "  Mirrored ${_pkey//-/\/} to ${_mirror_tag}."
+            else
+              _mirror_err="$(cat "${_mirror_stderr}" 2>/dev/null || true)"
+              echo "::error::Failed to mirror ${_pkey//-/\/}" \
+                   "(${_pdigest:0:19}…) to GHCR: ${_mirror_err:-unknown error}"
+              _MIRROR_ERRORS=$(( _MIRROR_ERRORS + 1 ))
+            fi
+            rm -f "${_mirror_stderr}"
+          done < "${state_file}"
+        done
+
+        if [[ "${_MIRROR_ERRORS}" -gt 0 ]]; then
+          echo "::error::${_MIRROR_ERRORS} platform digest(s) could not be" \
+               "mirrored to GHCR." \
+               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+          exit 1
+        fi
+
+        echo "GHCR mirror check complete."
+
     - name: Login to Docker Hub
       if: inputs.ghcr_writable == 'true'
       uses: docker/login-action@v4
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
+        scope: repository:${{ inputs.repo }}:push
 
     - name: Login to GHCR (for reading source manifests)
       if: inputs.ghcr_writable == 'true'
@@ -203,7 +516,17 @@ runs:
       run: |
         set -euo pipefail
 
-        WORK_DIR="$(mktemp -d)"
+        # In GHCR mode the "Seed image manifests" step has already populated the
+        # per-image state files and exported the tmpdir path as
+        # MERGE_MANIFESTS_WORK_DIR.  Reuse it so the poll loop can skip seeding
+        # for pre-seeded images (detected via the *.marker sentinel files).
+        # In fallback mode the env var is unset; create a fresh tmpdir.
+        if [[ -n "${MERGE_MANIFESTS_WORK_DIR:-}" && \
+              -d "${MERGE_MANIFESTS_WORK_DIR}" ]]; then
+          WORK_DIR="${MERGE_MANIFESTS_WORK_DIR}"
+        else
+          WORK_DIR="$(mktemp -d)"
+        fi
         trap 'rm -rf "${WORK_DIR}"' EXIT
 
         # Compute the GHCR repository name (lowercase) from GITHUB_REPOSITORY.
@@ -218,8 +541,10 @@ runs:
         # resource when two credentials are present, causing Docker Hub to reject
         # the token request).
         #
-        # In GHCR mode (GHCR_WRITABLE=true) the docker/login-action steps above
-        # have already written DOCKERHUB_TOKEN to the default DOCKER_CONFIG, so
+        # In GHCR mode (GHCR_WRITABLE=true) the docker/login-action step above
+        # has written DOCKERHUB_TOKEN to the default DOCKER_CONFIG with push-only
+        # scope (repository:{repo}:push).  All imagetools create source refs
+        # come from GHCR, so no Docker Hub pull scope is needed.
         # PUSH_DOCKER_CONFIG is left empty and the --config flag is omitted.
         PUSH_DOCKER_CONFIG=""
         if [[ "${GHCR_WRITABLE}" != "true" ]]; then
@@ -452,6 +777,11 @@ runs:
           touch "${IMG_PROCESSED[$key]}"
           touch "${IMG_MERGED_PKEYS[$key]}"
           touch "${IMG_PLATFORM_DIGESTS[$key]}"
+          # If the "Seed image manifests" step wrote a sentinel marker for this
+          # image, mark it as pre-seeded so the poll loop skips re-seeding.
+          if [[ -f "${WORK_DIR}/seeded-${safe_key}.marker" ]]; then
+            IMG_SEEDED[$key]="true"
+          fi
           echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX} (${IMG_EXPECTED_PLATFORMS[$key]} platform(s) expected)"
           if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
             VER_BUILD_DONE[$version]=0
@@ -548,9 +878,11 @@ runs:
           done <<< "${ALL_ARTIFACTS}"
 
           # ── Seed unseeded images ──────────────────────────────────────────
-          # Images with a non-empty cached state file were already marked
-          # pre-seeded during init and will not appear here.  This block only
-          # handles images whose cache was empty (first push or cold cache).
+          # In GHCR mode, all images are pre-seeded by the "Seed image
+          # manifests" step (which ran before docker-login) and marked
+          # IMG_SEEDED=true during init.  This block is therefore a no-op in
+          # the normal GHCR code path; it only runs in fallback mode (all
+          # images) or for any image that the pre-seeding step could not seed.
           #
           # Use docker buildx imagetools inspect to read the existing manifest
           # and populate the platform-digest state file.
@@ -576,9 +908,11 @@ runs:
 
               # ── imagetools inspect ───────────────────────────────────────────────
               # Uses the default DOCKER_CONFIG.
-              # In GHCR mode, DOCKER_CONFIG has DOCKERHUB_TOKEN (written by the
-              # docker/login-action step above) — one GET per image for seeding.
-              # In fallback mode, DOCKER_CONFIG has the runner's embedded token.
+              # In fallback mode DOCKER_CONFIG has the runner's embedded token.
+              # In GHCR mode this path is only reached if the pre-seeding step
+              # failed; DOCKER_CONFIG then has DOCKERHUB_TOKEN with push-only
+              # scope, so seeding inspect may fail — the image stays unseeded
+              # and imagetools create is deferred until the next cycle.
               # imagetools inspect inlines the image config blob into its JSON
               # output, giving platform info for both multi-arch images (via
               # .manifest.manifests[].platform) and single-arch images (via
