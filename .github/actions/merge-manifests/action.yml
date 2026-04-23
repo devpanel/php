@@ -230,6 +230,11 @@ runs:
                 --username "${DOCKERHUB_USERNAME}" \
                 --password-stdin \
                 docker.io
+          # Source shared Docker Hub quota helpers (refresh_hub_token,
+          # hub_pull_remaining, auth_quota_remaining, …).  These are used in
+          # the per-cycle quota probe and the imagetools create gate below.
+          # shellcheck source=.github/scripts/hub-quota-helpers.sh
+          source "${GITHUB_WORKSPACE}/.github/scripts/hub-quota-helpers.sh"
         fi
 
         # SOURCE_REPO: registry used as the source for imagetools create refs.
@@ -648,9 +653,43 @@ runs:
           rm -rf "${CYCLE_DIR}"
           mkdir -p "${CYCLE_DIR}"
 
+          # ── Docker Hub pull quota probe (fallback mode only) ──────────────
+          # In fallback mode imagetools create fetches each source manifest
+          # from Docker Hub, consuming one authenticated pull per ref.  Probe
+          # the quota once per cycle and gate each create call on the
+          # remaining budget.  Three variables are shared by all gates:
+          #   _auth_rem   – raw probe result: integer, "unlimited", or ""
+          #                 (probe failed).
+          #   _auth_avail – pulls available to this job this cycle: equals
+          #                 _auth_rem (no build-job reservation needed in
+          #                 fallback mode) or "unlimited".  0 when probe fails
+          #                 so gates defer conservatively.
+          #   _auth_used  – pulls consumed so far this cycle; incremented by
+          #                 ${#REFS[@]} after each successful create.
+          _auth_rem=""
+          _auth_avail=0
+          _auth_used=0
+          if [[ "${GHCR_WRITABLE}" != "true" ]]; then
+            _auth_rem="$(auth_quota_remaining)"
+            if [[ "${_auth_rem}" == "unlimited" ]]; then
+              _auth_avail="unlimited"
+              echo "  Docker Hub pull quota: unlimited."
+            elif [[ -n "${_auth_rem}" ]]; then
+              _auth_avail="${_auth_rem}"
+              echo "  Docker Hub pull quota: ${_auth_rem} pull(s) remaining."
+            else
+              echo "::warning::Authenticated Docker Hub quota probe failed;" \
+                   "treating remaining quota as exhausted for this cycle."
+              _auth_avail=0
+            fi
+          fi
+
           # Tracks whether any deferral was specifically because seeding had
           # not yet completed and there was no cached baseline.
           _any_seeding_deferred=false
+          # Tracks whether any imagetools create was deferred this cycle
+          # because the Docker Hub pull quota was insufficient.
+          _any_quota_deferred=false
           # Tracks whether any imagetools create command exited non-zero this
           # cycle.
           _any_create_failed=false
@@ -848,61 +887,90 @@ runs:
               done < "${REFS_MAP}"
 
               if [[ ${#REFS[@]} -gt 0 ]]; then
-                _create_err_file="$(mktemp)"
-                # In GHCR mode PUSH_DOCKER_CONFIG is empty and we omit --config;
-                # DOCKER_CONFIG already has both DOCKERHUB_TOKEN and GHCR
-                # credentials from the login-action steps.  In fallback mode
-                # PUSH_DOCKER_CONFIG holds DOCKERHUB_TOKEN in isolation to
-                # prevent the dual-scope 401 bug.
-                if [[ -n "${PUSH_DOCKER_CONFIG}" ]]; then
-                  docker --config "${PUSH_DOCKER_CONFIG}" buildx imagetools create \
-                    --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}" && _create_ok=true || _create_ok=false
-                else
-                  docker buildx imagetools create \
-                    --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}" && _create_ok=true || _create_ok=false
-                fi
-                if [[ "${_create_ok}" == "true" ]]; then
-                  rm -f "${_create_err_file}"
-                  echo "  Updated ${IMAGE} with ${#REFS[@]} platform ref(s)."
-                  # Promote temp map to the persistent state file
-                  cp "${REFS_MAP}" "${IMG_PLATFORM_DIGESTS[$key]}"
-                  # ── Mark these artifacts as processed ────────────────
-                  # Only done here, after a successful create, so that a
-                  # failed create in a prior cycle is retried.
-                  # Record "name:id" so that if a build is retried and the
-                  # artifact is re-uploaded (same name, new id via
-                  # overwrite:true), the updated artifact is recognised as
-                  # new and its digest is re-merged.
-                  for i in "${!NEW_PKEYS[@]}"; do
-                    echo "${ARTIFACT_PREFIX}${NEW_PKEYS[$i]}:${NEW_ARTIFACT_IDS[$i]}" \
-                      >> "${IMG_PROCESSED[$key]}"
-                    # Only increment the merged-platform count if this
-                    # platform_key has not been counted before.  A retried
-                    # build re-uploads the artifact with the same platform_key
-                    # but a new artifact id; without this guard the counter
-                    # would exceed img_expected and mark the image done
-                    # prematurely.
-                    pkey="${NEW_PKEYS[$i]}"
-                    if ! grep -qxF "${pkey}" "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
-                      echo "${pkey}" >> "${IMG_MERGED_PKEYS[$key]}"
-                      IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
-                    fi
-                  done
-                else
-                  _create_err="$(cat "${_create_err_file}" 2>/dev/null || true)"
-                  rm -f "${_create_err_file}"
-                  IMG_LAST_ERROR[$key]="${_create_err}"
-                  _img_create_deferred=true
-                  _any_create_failed=true
-                  if [[ -n "${_create_err}" ]]; then
-                    echo "imagetools create failed for ${IMAGE}: ${_create_err}"
-                  else
-                    echo "imagetools create failed for ${IMAGE}."
+                # ── Gate imagetools create on Docker Hub pull quota ───────
+                # In fallback mode each source-manifest fetch costs one
+                # authenticated pull.  Defer when the unused budget
+                # (_auth_avail - _auth_used) is smaller than the number of
+                # refs so quota is not exhausted mid-cycle.  Only the first
+                # deferral per cycle emits a log line to avoid repetition.
+                # The snapshot may drift from Docker Hub's actual counter if
+                # another process consumed quota between the probe and this
+                # create; re-probing at the start of every cycle corrects it.
+                if [[ "${GHCR_WRITABLE}" != "true" ]] \
+                   && [[ "${_auth_avail}" != "unlimited" ]] \
+                   && (( _auth_avail - _auth_used < ${#REFS[@]} )); then
+                  if [[ "${_any_quota_deferred}" != "true" ]]; then
+                    echo "  [${IMAGE}] Deferring imagetools create: Docker Hub" \
+                         "pull quota insufficient" \
+                         "(${_auth_rem:-unknown} authenticated remaining," \
+                         "$(( _auth_avail - _auth_used )) available to this job," \
+                         "${#REFS[@]} required)."
                   fi
-                  echo "Will retry next cycle."
-                  # State file (IMG_PLATFORM_DIGESTS) is unchanged; the temp
-                  # map is discarded.  New artifacts remain unprocessed so they
-                  # will be retried on the next cycle.
+                  _img_create_deferred=true
+                  _any_quota_deferred=true
+                else
+                  _create_err_file="$(mktemp)"
+                  # In GHCR mode PUSH_DOCKER_CONFIG is empty and we omit --config;
+                  # DOCKER_CONFIG already has both DOCKERHUB_TOKEN and GHCR
+                  # credentials from the login-action steps.  In fallback mode
+                  # PUSH_DOCKER_CONFIG holds DOCKERHUB_TOKEN in isolation to
+                  # prevent the dual-scope 401 bug.
+                  if [[ -n "${PUSH_DOCKER_CONFIG}" ]]; then
+                    docker --config "${PUSH_DOCKER_CONFIG}" buildx imagetools create \
+                      --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}" && _create_ok=true || _create_ok=false
+                  else
+                    docker buildx imagetools create \
+                      --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}" && _create_ok=true || _create_ok=false
+                  fi
+                  if [[ "${_create_ok}" == "true" ]]; then
+                    rm -f "${_create_err_file}"
+                    echo "  Updated ${IMAGE} with ${#REFS[@]} platform ref(s)."
+                    # Promote temp map to the persistent state file
+                    cp "${REFS_MAP}" "${IMG_PLATFORM_DIGESTS[$key]}"
+                    # Track pulls consumed so subsequent images in this cycle
+                    # see the correct remaining budget.
+                    if [[ "${GHCR_WRITABLE}" != "true" ]] \
+                       && [[ "${_auth_avail}" != "unlimited" ]]; then
+                      _auth_used=$(( _auth_used + ${#REFS[@]} ))
+                    fi
+                    # ── Mark these artifacts as processed ────────────────
+                    # Only done here, after a successful create, so that a
+                    # failed create in a prior cycle is retried.
+                    # Record "name:id" so that if a build is retried and the
+                    # artifact is re-uploaded (same name, new id via
+                    # overwrite:true), the updated artifact is recognised as
+                    # new and its digest is re-merged.
+                    for i in "${!NEW_PKEYS[@]}"; do
+                      echo "${ARTIFACT_PREFIX}${NEW_PKEYS[$i]}:${NEW_ARTIFACT_IDS[$i]}" \
+                        >> "${IMG_PROCESSED[$key]}"
+                      # Only increment the merged-platform count if this
+                      # platform_key has not been counted before.  A retried
+                      # build re-uploads the artifact with the same platform_key
+                      # but a new artifact id; without this guard the counter
+                      # would exceed img_expected and mark the image done
+                      # prematurely.
+                      pkey="${NEW_PKEYS[$i]}"
+                      if ! grep -qxF "${pkey}" "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
+                        echo "${pkey}" >> "${IMG_MERGED_PKEYS[$key]}"
+                        IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
+                      fi
+                    done
+                  else
+                    _create_err="$(cat "${_create_err_file}" 2>/dev/null || true)"
+                    rm -f "${_create_err_file}"
+                    IMG_LAST_ERROR[$key]="${_create_err}"
+                    _img_create_deferred=true
+                    _any_create_failed=true
+                    if [[ -n "${_create_err}" ]]; then
+                      echo "imagetools create failed for ${IMAGE}: ${_create_err}"
+                    else
+                      echo "imagetools create failed for ${IMAGE}."
+                    fi
+                    echo "Will retry next cycle."
+                    # State file (IMG_PLATFORM_DIGESTS) is unchanged; the temp
+                    # map is discarded.  New artifacts remain unprocessed so they
+                    # will be retried on the next cycle.
+                  fi
                 fi
               fi
             fi
@@ -930,6 +998,11 @@ runs:
           # ── Log any per-cycle create issues ───────────────────────────────────
           if [[ "${_any_seeding_deferred}" == "true" ]]; then
             echo "::warning::imagetools create deferred this cycle (waiting for seeding to complete)."
+          fi
+          if [[ "${_any_quota_deferred}" == "true" ]]; then
+            echo "::warning::imagetools create deferred this cycle: Docker Hub pull quota" \
+                 "insufficient (${_auth_rem:-unknown} authenticated remaining)." \
+                 "Will retry next cycle."
           fi
           if [[ "${_any_create_failed}" == "true" ]]; then
             echo "::warning::One or more imagetools create operations failed this cycle." \
