@@ -379,7 +379,7 @@ runs:
               # is used for these read-only manifest inspection calls.
               # imagetools inspect inlines the image config blob into its JSON
               # output, giving platform info for both multi-arch images (via
-              # .manifests[].platform) and single-arch images (via
+              # .manifest.manifests[].platform) and single-arch images (via
               # .image.{os,architecture,variant}) in one call.
               _seed_raw_file="$(mktemp)"
               seed_stderr="$(mktemp)"
@@ -408,9 +408,9 @@ runs:
               case "${_seed_status}" in
                 ok)
                   # Fresh manifest obtained; rewrite state file from it.
-                  # image index: extract per-platform digests from .manifests[].
-                  # single-platform (.manifests absent): extract platform info
-                  # from .image.{os,architecture,variant} + .digest (buildx
+                  # image index: extract per-platform digests from .manifest.manifests[].
+                  # single-platform (.manifest.manifests absent): extract platform info
+                  # from .image.{os,architecture,variant} + .manifest.digest (buildx
                   # inlines the config blob into the --format '{{json .}}'
                   # output, so no second request is needed).
                   > "${IMG_PLATFORM_DIGESTS[$key]}"
@@ -432,7 +432,7 @@ runs:
                       printf '%s\t%s\n' "${_pf_pkey}" "${_pf_digest}" \
                         >> "${IMG_PLATFORM_DIGESTS[$key]}"
                     done < <(printf '%s' "${_inspect_json}" | jq -r '
-                        .manifests[]? |
+                        .manifest.manifests[]? |
                         select(
                           .platform != null and
                           (.platform.os // "") != "" and
@@ -447,10 +447,10 @@ runs:
                           (.digest // "")
                         ] | @tsv
                       ')
-                  # Single-platform path: .manifests is absent so the loop above
+                  # Single-platform path: .manifest.manifests is absent so the loop above
                   # produced 0 entries.  Extract platform from
                   # .image.{os,architecture,variant} and manifest digest from
-                  # .digest (both inlined by buildx in --format '{{json .}}').
+                  # .manifest.digest (both inlined by buildx in --format '{{json .}}').
                   _sp_seeded=false
                   if [[ ! -s "${IMG_PLATFORM_DIGESTS[$key]}" ]]; then
                     while IFS=$'\t' read -r _pf_plat _pf_digest; do
@@ -469,12 +469,12 @@ runs:
                              "single-arch manifest (${_sp_norm})."
                         _sp_seeded=true
                       done < <(printf '%s' "${_inspect_json}" | jq -r '
-                          select(has("manifests") | not) |
+                          select(.manifest | has("manifests") | not) |
                           [
                             ((.image.os // "") + "/" + (.image.architecture // "") +
                              (if (.image.variant // "") != ""
                               then "/" + .image.variant else "" end)),
-                            (.digest // "")
+                            (.manifest.digest // "")
                           ] |
                           select(.[0] != "/" and .[0] != "" and .[1] != "") |
                           @tsv
@@ -512,9 +512,9 @@ runs:
                 # attestation/unknown-platform (safe — no real platforms to
                 # preserve) or something genuinely unexpected (hard fail).
                 _total_mf="$(printf '%s' "${_inspect_json}" | \
-                  jq 'if .manifests then (.manifests | length) else -1 end')"
+                  jq 'if .manifest.manifests then (.manifest.manifests | length) else -1 end')"
                 _real_mf="$(printf '%s' "${_inspect_json}" | \
-                  jq '[ .manifests[]? | select(
+                  jq '[ .manifest.manifests[]? | select(
                       .platform != null and
                       (.platform.os  // "") != "" and
                       (.platform.architecture // "") != "" and
