@@ -126,6 +126,11 @@ inputs:
       that DOCKERHUB_TOKEN pull quota is not consumed; when "false", Docker Hub
       is used as the source (current fallback behaviour).
     default: 'false'
+  ghcr_repo:
+    description: >
+      GHCR repository name (ghcr.io/<lowercase-owner/repo>).  Pass the
+      ghcr_repo output from the detect-versions action.
+    required: true
   ghcr_token:
     description: >
       Optional classic Personal Access Token with the read:packages scope.
@@ -176,13 +181,12 @@ runs:
     # docker/setup-buildx-action is not needed: imagetools create is a pure
     # registry client-side operation (no builder required).
 
-    - name: Compute GHCR repository name
+    - name: Export GHCR repository name
       shell: bash
       env:
-        REPOSITORY: ${{ inputs.repository }}
+        GHCR_REPO_INPUT: ${{ inputs.ghcr_repo }}
       run: |
-        echo "GHCR_REPO=ghcr.io/$(echo "${REPOSITORY}" | tr '[:upper:]' '[:lower:]')" \
-          >> "${GITHUB_ENV}"
+        echo "GHCR_REPO=${GHCR_REPO_INPUT}" >> "${GITHUB_ENV}"
 
     - name: Validate ghcr_user when ghcr_token is set
       if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''

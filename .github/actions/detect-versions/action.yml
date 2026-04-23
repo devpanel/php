@@ -82,6 +82,11 @@ outputs:
     description: >
       Total number of entries in the build matrix (versions × platforms).
     value: ${{ steps.detect.outputs.build_matrix_length }}
+  ghcr_repo:
+    description: >
+      GHCR repository name (ghcr.io/<lowercase-owner/repo>).  Computed once
+      here so downstream jobs do not need to recompute it.
+    value: ${{ steps.check-ghcr.outputs.ghcr_repo }}
   ghcr_writable:
     description: >
       "true" if the GHCR write-access pre-flight check passed, "false"
@@ -177,6 +182,7 @@ runs:
       run: |
         set -uo pipefail
         REPO_LC=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
+        echo "ghcr_repo=ghcr.io/${REPO_LC}" >> "$GITHUB_OUTPUT"
         ORG=$(echo "${REPO}" | cut -d'/' -f1)
 
         # When GITHUB_TOKEN is being used and its write access was already confirmed

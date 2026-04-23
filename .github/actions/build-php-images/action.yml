@@ -68,6 +68,11 @@ inputs:
       GHCR is used as the primary layer cache; when "false", GHA is primary.
       Defaults to "false" so that builds without a detect step are safe.
     default: 'false'
+  ghcr_repo:
+    description: >
+      GHCR repository name (ghcr.io/<lowercase-owner/repo>).  Pass the
+      ghcr_repo output from the detect-versions action.
+    required: true
   downloads_dir:
     description: >
       Pre-assembled downloads directory whose pre-downloaded/ subdirectory
@@ -86,15 +91,6 @@ runs:
   using: composite
   steps:
     # ── Build steps ──────────────────────────────────────────────────────────
-    - name: Compute GHCR repository (lowercase)
-      id: ghcr
-      shell: bash
-      env:
-        REPO: ${{ github.repository }}
-      run: |
-        repo_lc="$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')"
-        echo "repo=ghcr.io/${repo_lc}" >> "$GITHUB_OUTPUT"
-
     - name: Validate GHCR credentials for PAT auth
       if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
       shell: bash
@@ -189,7 +185,7 @@ runs:
         REPO: ${{ inputs.repo }}
         PUSH_BY_DIGEST: 'false'
         CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
-        GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+        GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
         DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
@@ -236,7 +232,7 @@ runs:
         REPO: ${{ inputs.repo }}
         PUSH_BY_DIGEST: 'true'
         CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
-        GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+        GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
         DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
@@ -297,7 +293,7 @@ runs:
         REPO: ${{ inputs.repo }}
         PUSH_BY_DIGEST: 'true'
         CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
-        GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+        GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
         DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0
@@ -357,7 +353,7 @@ runs:
         REPO: ${{ inputs.repo }}
         PUSH_BY_DIGEST: 'true'
         CACHE_FROM_ENABLED: ${{ inputs.cache_from_enabled }}
-        GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+        GHCR_REPO: ${{ inputs.ghcr_repo }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
         DOWNLOADS_DIR: ${{ steps.preseed-paths.outputs.downloads_dir }}
         BUILDX_BAKE_ENTITLEMENTS_FS: 0

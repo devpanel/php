@@ -261,6 +261,7 @@ jobs:
           ghcr_token: ${{ needs.detect.outputs.ghcr_cred_source == 'ghcr_token' && secrets.GHCR_TOKEN || '' }}
           ghcr_user: ${{ vars.GHCR_USER }}
           ghcr_writable: ${{ needs.detect.outputs.ghcr_writable }}
+          ghcr_repo: ${{ needs.detect.outputs.ghcr_repo }}
           downloads_dir: ${{ runner.temp }}/build-downloads
           bake_overrides_file: ${{ runner.temp }}/preseed-bake-overrides.json
 
@@ -302,5 +303,6 @@ jobs:
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           ghcr_writable: ${{ needs.detect.outputs.ghcr_writable }}
+          ghcr_repo: ${{ needs.detect.outputs.ghcr_repo }}
           ghcr_token: ${{ needs.detect.outputs.ghcr_cred_source == 'ghcr_token' && secrets.GHCR_TOKEN || '' }}
           ghcr_user: ${{ vars.GHCR_USER }}
