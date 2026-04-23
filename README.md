@@ -249,9 +249,10 @@ and functional tests for any changed Dockerfiles.
 | `docker-build.yml` | push to `main` or `develop`; `workflow_dispatch` | Detect changed versions and build images |
 
 `test.yml` runs lint, build, and functional tests in parallel.  Configure branch protection
-rules in GitHub to require all `test.yml` status checks to pass before pull
+rules in GitHub to require the `Test` workflow checks to pass before pull
 requests to `main` or `develop` can be merged, ensuring no broken Dockerfile
-or script reaches the publish workflows.  See the
+or script reaches the publish workflows.  (`Test` is the check name shown in the
+branch protection UI.)  See the
 [GitHub docs on required status checks](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging)
 for setup instructions.
 
