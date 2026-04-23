@@ -40,7 +40,11 @@ inputs:
     required: false
     default: ''
   current_sha:
-    description: The current commit SHA (github.sha).
+    description: >
+      The current commit SHA (github.sha).  Candidate runs whose head SHA
+      matches this value are skipped so the current commit is never used as
+      its own "before" SHA (which would produce an empty diff and suppress
+      all builds on re-runs of the same commit).
     required: true
   ref_name:
     description: The branch name (github.ref_name).
@@ -236,6 +240,11 @@ runs:
         for run_id in "${CANDIDATE_RUN_IDS[@]+"${CANDIDATE_RUN_IDS[@]}"}"; do
           sha="${RUN_ID_TO_SHA[${run_id}]:-}"
           [[ -z "${sha}" || ! "${sha}" =~ ^[0-9a-f]{40}$ ]] && continue
+          # Skip the current commit — it cannot be its own "before" SHA.
+          # This prevents a re-run of the same commit from selecting that
+          # commit's own run as its change anchor (which would produce an
+          # empty diff and suppress all builds).
+          [[ "${sha}" == "${CURRENT_SHA}" ]] && continue
 
           # Fetch platforms annotation for this run once.
           _run_plats=""
