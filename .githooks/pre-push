@@ -79,6 +79,8 @@ fi
 SH_FILES=()
 DOCKER_FILES=()
 YAML_FILES=()
+WORKFLOW_FILES=()
+ACTION_CHANGED=false
 
 for f in "${CHANGED_FILES[@]}"; do
   full="${REPO_ROOT}/${f}"
@@ -86,7 +88,15 @@ for f in "${CHANGED_FILES[@]}"; do
   case "$f" in
     *.sh | .githooks/*)  SH_FILES+=("$full") ;;
     */Dockerfile)      DOCKER_FILES+=("$full") ;;
-    .github/workflows/*.yml | .github/workflows/*.yaml) YAML_FILES+=("$full") ;;
+    .github/workflows/*.yml | .github/workflows/*.yaml)
+      YAML_FILES+=("$full")
+      WORKFLOW_FILES+=("$full")
+      ;;
+    .github/actions/*/action.yml | .github/actions/*/action.yaml)
+      YAML_FILES+=("$full")
+      # Composite action changes may affect workflow validation; flag for full re-check.
+      ACTION_CHANGED=true
+      ;;
     .yamllint.yml)
       _wf=()
       while IFS= read -r file; do
@@ -96,6 +106,23 @@ for f in "${CHANGED_FILES[@]}"; do
       ;;
   esac
 done
+
+# When a composite action changed, re-run actionlint against all workflow files
+# so cross-references are re-checked.
+if [[ "$ACTION_CHANGED" == true ]]; then
+  while IFS= read -r wf; do
+    WORKFLOW_FILES+=("$wf")
+  done < <(find "${REPO_ROOT}/.github/workflows" -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null)
+fi
+
+# Deduplicate WORKFLOW_FILES.
+if [[ ${#WORKFLOW_FILES[@]} -gt 0 ]]; then
+  _deduped_wf=()
+  while IFS= read -r file; do
+    _deduped_wf+=("$file")
+  done < <(printf '%s\n' "${WORKFLOW_FILES[@]}" | sort -u)
+  WORKFLOW_FILES=("${_deduped_wf[@]}")
+fi
 
 FAILED=0
 
@@ -108,9 +135,10 @@ run_if_nonempty() {
   fi
 }
 
-run_if_nonempty "shell"      "${TESTS_DIR}/lint-shell.sh"      "${SH_FILES[@]+"${SH_FILES[@]}"}"
-run_if_nonempty "Dockerfile" "${TESTS_DIR}/lint-dockerfile.sh" "${DOCKER_FILES[@]+"${DOCKER_FILES[@]}"}"
-run_if_nonempty "YAML"       "${TESTS_DIR}/lint-yaml.sh"       "${YAML_FILES[@]+"${YAML_FILES[@]}"}"
+run_if_nonempty "shell"      "${TESTS_DIR}/lint-shell.sh"        "${SH_FILES[@]+"${SH_FILES[@]}"}"
+run_if_nonempty "Dockerfile" "${TESTS_DIR}/lint-dockerfile.sh"   "${DOCKER_FILES[@]+"${DOCKER_FILES[@]}"}"
+run_if_nonempty "YAML"       "${TESTS_DIR}/lint-yaml.sh"         "${YAML_FILES[@]+"${YAML_FILES[@]}"}"
+run_if_nonempty "Actions"    "${TESTS_DIR}/lint-actionlint.sh"   "${WORKFLOW_FILES[@]+"${WORKFLOW_FILES[@]}"}"
 
 # Build + run tests run only when DEVPANEL_BUILD_ON_PUSH=1 is set, because a
 # full Docker image build can take several minutes.  CI always runs both.
