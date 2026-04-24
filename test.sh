@@ -7,6 +7,7 @@
 #   ./test.sh yaml               Run only YAML lint.
 #   ./test.sh shell              Run only shell lint.
 #   ./test.sh dockerfile         Run only Dockerfile lint.
+#   ./test.sh actions            Run only GitHub Actions lint (actionlint).
 #   ./test.sh build              Run only Docker build tests.
 #   ./test.sh run                Run only Docker functional (run) tests.
 #   ./test.sh build run --version 8.2  Build and run tests for a specific PHP version.
@@ -37,7 +38,7 @@ VERSION_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --update-baseline) EXTRA_ARGS+=(--update-baseline); shift ;;
-    yaml|shell|dockerfile|build|run) SUITES+=("$1"); shift ;;
+    yaml|shell|dockerfile|actions|build|run) SUITES+=("$1"); shift ;;
     --version)
       if [[ $# -lt 2 ]]; then
         echo "--version requires a value" >&2; exit 1
@@ -47,7 +48,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ ${#SUITES[@]} -eq 0 ]] && SUITES=(yaml shell dockerfile build run)
+[[ ${#SUITES[@]} -eq 0 ]] && SUITES=(yaml shell dockerfile actions build run)
 
 # ---- runner ---------------------------------------------------------------
 FAILED=()
@@ -77,6 +78,7 @@ for suite in "${SUITES[@]}"; do
     yaml)       run_suite "YAML lint"        "${TESTS_DIR}/lint-yaml.sh" ;;
     shell)      run_suite "Shell lint"       "${TESTS_DIR}/lint-shell.sh"       "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
     dockerfile) run_suite "Dockerfile lint"  "${TESTS_DIR}/lint-dockerfile.sh"  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
+    actions)    run_suite "Actions lint"     "${TESTS_DIR}/lint-actionlint.sh"  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" ;;
     build)      run_suite "Docker build"     "${TESTS_DIR}/build-dockerfile.sh" \
                   "${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}" ;;
     run)        run_suite "Docker run"       "${TESTS_DIR}/run-dockerfile.sh"   \
