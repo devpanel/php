@@ -55,11 +55,12 @@ description: >
 
   Seeding inspect uses the runner's embedded Docker Hub token (default
   DOCKER_CONFIG) so no DOCKERHUB_TOKEN pull quota is consumed for reads.
-  Once seeding completes, the poll step performs a plain (unscoped) login
-  with DOCKERHUB_TOKEN into the default DOCKER_CONFIG, replacing the
-  embedded token.  Because the embedded token is fully overwritten,
-  imagetools create sees only one docker.io credential and the dual-scope
-  401 bug cannot occur.
+  In GHCR mode a docker/login-action step logs into GHCR before seeding so
+  the seeding step can inspect and mirror digests to GHCR.
+  After seeding completes, a docker/login-action step logs into Docker Hub
+  with DOCKERHUB_TOKEN, replacing the embedded runner token.  Because the
+  embedded token is fully overwritten, imagetools create sees only one
+  docker.io credential and the dual-scope 401 bug cannot occur.
 
 inputs:
   merge_matrix:
@@ -112,8 +113,8 @@ inputs:
       Used for imagetools create (push).
       The runner's embedded Docker Hub token is used for seeding reads
       (imagetools inspect) so no DOCKERHUB_TOKEN pull quota is consumed
-      during that phase.  After seeding completes, the poll step performs
-      a plain (unscoped) login with DOCKERHUB_TOKEN, overwriting the
+      during that phase.  After seeding completes, a docker/login-action
+      step logs into Docker Hub with DOCKERHUB_TOKEN, overwriting the
       embedded token so that only one docker.io credential exists.
     required: true
   ghcr_writable:
@@ -160,24 +161,25 @@ runs:
     # images are guaranteed to be seeded — there is no fallback seeding in the
     # poll loop.
     #
-    # In GHCR mode (ghcr_writable=true) the seeding step additionally logs in
-    # to GHCR and probes each seeded digest; any digest absent from GHCR (e.g.
-    # from a build run before GHCR was enabled) is mirrored from Docker Hub
-    # using `skopeo copy`, which pushes the per-platform manifest bytes and any
-    # missing blobs to GHCR addressed only by their content digest — no tag is
-    # created.  After the copy the digest is accessible at
-    # ghcr.io/…@sha256:<digest>.
+    # In GHCR mode (ghcr_writable=true) a docker/login-action step logs into
+    # GHCR before seeding so the seeding step can inspect and mirror digests to
+    # GHCR.  After seeding, another docker/login-action step logs into Docker
+    # Hub, replacing the embedded runner token so that only one docker.io
+    # credential exists in DOCKER_CONFIG.
     #
     # ── Authentication ───────────────────────────────────────────────────────
-    # The seeding step runs before the poll step and reads Docker Hub manifests
-    # using the runner's embedded token (no DOCKERHUB_TOKEN quota consumed).
-    # At the start of the poll step a plain (unscoped) docker login replaces
-    # the embedded token with DOCKERHUB_TOKEN, leaving exactly one docker.io
-    # credential in DOCKER_CONFIG.  imagetools create therefore sees only one
-    # credential and the dual-scope 401 bug cannot occur.
+    # Step order:
+    #   1. docker/login-action → GHCR (GHCR mode only, before seeding)
+    #   2. Seed image manifests (uses runner's embedded Docker Hub token for
+    #      reads; GHCR credential already present for mirror writes)
+    #   3. docker/login-action → Docker Hub (always, after seeding; overwrites
+    #      embedded token — exactly one docker.io credential remains)
+    #   4. Poll and merge manifests (imagetools create runs without any
+    #      additional docker login calls)
     #
-    # In GHCR mode the poll step also logs into ghcr.io so imagetools create
-    # can read source manifests from GHCR.
+    # Because the embedded Docker Hub token is fully overwritten before the poll
+    # loop starts, imagetools create sees only one docker.io credential and the
+    # dual-scope 401 bug cannot occur.
     #
     # docker/setup-buildx-action is not needed: imagetools create is a pure
     # registry client-side operation (no builder required).
@@ -202,6 +204,14 @@ runs:
           exit 1
         fi
 
+    - name: Log in to GHCR
+      if: inputs.ghcr_writable == 'true'
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
+        password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
+
     - name: Seed image manifests from existing Docker Hub tags
       shell: bash
       env:
@@ -209,9 +219,6 @@ runs:
         REPO: ${{ inputs.repo }}
         TAG_SUFFIX: ${{ inputs.tag_suffix }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
-        GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
-        GHCR_TOKEN_INPUT: ${{ inputs.ghcr_token }}
-        GHCR_USER_INPUT: ${{ inputs.ghcr_user }}
       run: |
         set -euo pipefail
 
@@ -242,8 +249,9 @@ runs:
 
         # ── Seed each image from its existing Docker Hub manifest ──────────
         # Uses the runner's embedded Docker Hub token (default DOCKER_CONFIG).
-        # Because this step runs before the scoped docker-login, the runner
-        # token has full pull access — no DOCKERHUB_TOKEN quota is consumed.
+        # This step runs before the Docker Hub docker/login-action step, so the
+        # runner token still has full pull access — no DOCKERHUB_TOKEN quota is
+        # consumed.
         SEED_ERRORS=0
         for vs in "${VERSIONS_STAGES[@]}"; do
           version="${vs%%:*}"
@@ -428,7 +436,8 @@ runs:
         # digest is accessible at ghcr.io/…@sha256:<digest>.
         #
         # Docker Hub reads use the runner's embedded token (no quota cost).
-        # GHCR writes use GITHUB_TOKEN / GHCR_TOKEN (packages:write).
+        # GHCR writes use the credential from the preceding docker/login-action
+        # step (GITHUB_TOKEN / GHCR_TOKEN with packages:write).
         # Because source (docker.io) and destination (ghcr.io) are different
         # registries during the mirror, the dual-scope 401 bug does not apply.
         _ANY_SEEDED=false
@@ -445,23 +454,7 @@ runs:
           exit 0
         fi
 
-        echo "Logging in to GHCR to check/mirror platform digests..."
-        if [[ -n "${GHCR_TOKEN_INPUT:-}" ]]; then
-          if [[ -z "${GHCR_USER_INPUT:-}" ]]; then
-            echo "Error: ghcr_user must be set when ghcr_token is provided." >&2
-            exit 1
-          fi
-          _GHCR_AUTH_USER="${GHCR_USER_INPUT}"
-          _GHCR_AUTH_TOKEN="${GHCR_TOKEN_INPUT}"
-        else
-          _GHCR_AUTH_USER="${GITHUB_ACTOR}"
-          _GHCR_AUTH_TOKEN="${GITHUB_TOKEN_INPUT}"
-        fi
-        printf '%s' "${_GHCR_AUTH_TOKEN}" \
-          | docker login ghcr.io \
-              --username "${_GHCR_AUTH_USER}" \
-              --password-stdin
-
+        echo "Checking/mirroring platform digests to GHCR..."
         _MIRROR_ERRORS=0
         for vs in "${VERSIONS_STAGES[@]}"; do
           version="${vs%%:*}"
@@ -515,6 +508,12 @@ runs:
         echo "GHCR mirror check complete."
 
 
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ inputs.dockerhub_username }}
+        password: ${{ inputs.dockerhub_token }}
+
     - name: Poll and merge manifests
       shell: bash
       env:
@@ -528,8 +527,6 @@ runs:
         DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
-        GHCR_TOKEN_INPUT: ${{ inputs.ghcr_token }}
-        GHCR_USER_INPUT: ${{ inputs.ghcr_user }}
       run: |
         set -euo pipefail
 
@@ -538,38 +535,6 @@ runs:
         # the poll loop can read the pre-seeded state files and sentinel markers.
         WORK_DIR="${MERGE_MANIFESTS_WORK_DIR}"
         trap 'rm -rf "${WORK_DIR}"' EXIT
-
-        # ── Authentication ───────────────────────────────────────────────────────
-        # The "Seed image manifests" step used the runner's embedded Docker Hub
-        # token (default DOCKER_CONFIG) for imagetools inspect so no
-        # DOCKERHUB_TOKEN pull quota was consumed during seeding.  Seeding is
-        # now complete and the embedded token is no longer needed; replace it
-        # with DOCKERHUB_TOKEN via a plain (unscoped) login so the default
-        # config holds a single pull+push capable credential.  Because the
-        # embedded token is fully overwritten, imagetools create sees only one
-        # docker.io credential and the dual-scope 401 bug cannot occur.
-        printf '%s' "${DOCKERHUB_TOKEN}" \
-          | docker login \
-              --username "${DOCKERHUB_USERNAME}" \
-              --password-stdin \
-              docker.io
-
-        if [[ "${GHCR_WRITABLE}" == "true" ]]; then
-          # Add the GHCR credential so imagetools create can read source
-          # manifests from ghcr.io.
-          if [[ -n "${GHCR_TOKEN_INPUT:-}" ]]; then
-            _ghcr_login_user="${GHCR_USER_INPUT}"
-            _ghcr_login_token="${GHCR_TOKEN_INPUT}"
-          else
-            _ghcr_login_user="${GITHUB_ACTOR}"
-            _ghcr_login_token="${GH_TOKEN}"
-          fi
-          printf '%s' "${_ghcr_login_token}" \
-            | docker login \
-                --username "${_ghcr_login_user}" \
-                --password-stdin \
-                ghcr.io
-        fi
 
         if [[ "${GHCR_WRITABLE}" != "true" ]]; then
           # ── Docker Hub quota probe helpers (fallback mode only) ────────────
