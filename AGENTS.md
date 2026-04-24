@@ -93,14 +93,15 @@ Example `TODO.md` structure:
 ## Conventions
 
 ### General
-- All text files must end with a trailing newline. The baseline-generating lint scripts (`tests/lint-dockerfile.sh`, `tests/lint-shell.sh`, `tests/lint-yaml.sh`) enforce this by appending `\n` after every generated JSON baseline.
+- All text files must end with a trailing newline. The baseline-generating lint scripts (`tests/lint-dockerfile.sh`, `tests/lint-shell.sh`) enforce this by appending `\n` after every generated JSON baseline.
 
 ### Lint Baselines
-Baseline JSON files in `tests/baselines/` track pre-existing lint violations per `path:RULE` key. CI fails on any deviation from the baseline — both increases (new regressions) and decreases (stale baseline) are errors.
+Baseline JSON files in `tests/baselines/` track pre-existing lint violations per `path:RULE` key for `shellcheck` and `hadolint`. CI fails on any deviation from the baseline — both increases (new regressions) and decreases (stale baseline) are errors.
 
-- **Updating**: Run the relevant lint script with `--update-baseline` (e.g. `bash tests/lint-yaml.sh --update-baseline`) after fixing violations or adding new files that introduce violations.
+- **Updating**: Run the relevant lint script with `--update-baseline` (e.g. `bash tests/lint-shell.sh --update-baseline`) after fixing violations or adding new files that introduce violations.
 - **Strict enforcement**: CI fails if the current violation count for any key *differs* from the baseline — both increases (regressions) and decreases (stale baseline) are errors. Always keep the baseline current.
 - **Zero-violation rule**: When all violations tracked in a baseline have been fixed, run `--update-baseline`. The script writes an empty baseline (`{}`) and appends a TODO entry to `TODO.md`. Complete that TODO: delete the baseline file *and* remove the baseline comparison logic from the lint script. Once that cleanup is done, zero violations are strictly enforced with no exceptions; any new violation is an immediate CI failure.
+- **YAML linting** (`tests/lint-yaml.sh`) does **not** use baselines. Any yamllint violation is an immediate CI failure and must be fixed — it cannot be baselined. Running `./test.sh --update-baseline` only updates baseline-capable lint suites; YAML lint still runs and is enforced normally.
 
 ### Dockerfile Style
 - Section headers use `#==` comments (e.g. `#== Install Composer`).
