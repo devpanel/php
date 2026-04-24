@@ -1,0 +1,1272 @@
+name: Poll and merge platform manifests for all images
+description: >
+  Merges per-platform image digests into tagged multi-arch manifests for every
+  image in the merge matrix.  Runs as a single job alongside every per-platform
+  build job.
+
+  On every polling cycle it fetches the full artifact list for the run once and
+  uses it for all images:
+
+  1. Digest artifacts ("digests-{VERSION}-{STAGE}-{platform_key}"): for each
+     new one, the state file is updated (new digest replaces old for that
+     platform key), then a single "docker buildx imagetools create" call pushes
+     a manifest list built from every entry in the state file — existing
+     platforms plus every newly-built platform.
+
+  2. Build-done markers ("build-done-a{RUN_ATTEMPT}-{VERSION}-{platform_key}"):
+     uploaded by every build job when it finishes (success or failure).  The
+     encoded run_attempt is compared against GITHUB_RUN_ATTEMPT (which is the
+     same for every job in a workflow run) so that stale markers from a
+     previous failed attempt are not treated as completion signals when the job
+     is re-run.  When the count of verified markers equals the per-version
+     expected platform count (from the merge matrix) all builds for that
+     version are done and the merge loop can exit for all stages of that
+     version.
+
+  Batching multiple completions into one create call per image avoids
+  unnecessary intermediate manifest states.  A single job (not a matrix) is
+  used for all images to avoid race conditions when pushing manifests.
+
+  The "Seed image manifests" step always runs before docker-login (both GHCR
+  and fallback modes).  It reads the existing Docker Hub manifest using the
+  runner's embedded token (no DOCKERHUB_TOKEN pull quota consumed) and writes
+  the per-image platform-digest baseline.  This step hard-fails on any seed
+  error, so if the polling loop starts, all images are guaranteed to be seeded.
+  There is no lazy/fallback seeding inside the poll loop.
+
+  After seeding, each digest artifact is compared against the seeded state.
+  If the platform+digest is already live on Docker Hub (exact match), the
+  artifact is marked processed and counted without calling imagetools create.
+  This prevents redundant pushes when manifests completed in a previous run
+  or attempt are re-encountered.
+
+  Authentication design (two modes):
+
+  GHCR mode (ghcr_writable=true, preferred):
+    Build jobs push each platform image to both Docker Hub and GHCR.  The
+    merge job uses GHCR as the source for imagetools create so all manifest
+    reads use GITHUB_TOKEN (free) rather than DOCKERHUB_TOKEN.  Blobs are
+    already present on Docker Hub (pushed by the build job), so imagetools
+    create only needs to write the manifest index and performs only HEAD
+    blob-existence checks (not counted as pulls) against Docker Hub.
+
+  Docker Hub fallback mode (ghcr_writable=false):
+    Build jobs push only to Docker Hub.  Source refs point to Docker Hub.
+
+  Seeding inspect uses the runner's embedded Docker Hub token (default
+  DOCKER_CONFIG) so no DOCKERHUB_TOKEN pull quota is consumed for reads.
+  In GHCR mode a docker/login-action step logs into GHCR before seeding so
+  the seeding step can inspect and mirror digests to GHCR.
+  After seeding completes, a docker/login-action step logs into Docker Hub
+  with DOCKERHUB_TOKEN, replacing the embedded runner token.  Because the
+  embedded token is fully overwritten, imagetools create sees only one
+  docker.io credential and the dual-scope 401 bug cannot occur.
+
+inputs:
+  merge_matrix:
+    description: >
+      JSON array of {version, stage, expected_platforms} objects — one entry
+      per Docker Hub image that needs a manifest merge.  expected_platforms is
+      the number of build-matrix entries expected to produce a digest artifact
+      for that image; the merge loop uses it as the per-image completion
+      threshold.  Every version must have an "advance" entry because advance
+      expected_platforms drives the per-version build-done threshold.
+      Pass needs.detect.outputs.merge_matrix from the calling workflow.
+      Example: [{"version":"8.3","stage":"base","expected_platforms":2},
+                {"version":"8.3","stage":"advance","expected_platforms":2}]
+    required: true
+  repo:
+    description: Docker Hub repository (e.g. devpanel/php)
+    default: 'devpanel/php'
+  tag_suffix:
+    description: Image tag suffix appended to every tag (e.g. '' or '-rc')
+    required: true
+  poll_interval_seconds:
+    description: Seconds to wait between polling cycles.
+    default: '60'
+  github_token:
+    description: >
+      Token used for GitHub API calls (list/download artifacts) and for GHCR
+      authentication.  Requires actions:read and packages:read permissions.
+      When ghcr_writable is true and this token is used for GHCR login (i.e.
+      ghcr_token is not provided), it also requires packages:write so that
+      missing per-platform digests can be mirrored to GHCR.
+    required: true
+  run_id:
+    description: >
+      ID of the current GitHub Actions workflow run.
+      Pass github.run_id from the calling workflow.
+    required: true
+  repository:
+    description: >
+      Owner/repo slug of the current repository.
+      Pass github.repository from the calling workflow.
+    required: true
+  dockerhub_username:
+    description: >
+      Docker Hub username for image push authentication.
+      Used for imagetools create (push).
+    required: true
+  dockerhub_token:
+    description: >
+      Docker Hub token for image push authentication.
+      Used for imagetools create (push).
+      The runner's embedded Docker Hub token is used for seeding reads
+      (imagetools inspect) so no DOCKERHUB_TOKEN pull quota is consumed
+      during that phase.  After seeding completes, a docker/login-action
+      step logs into Docker Hub with DOCKERHUB_TOKEN, overwriting the
+      embedded token so that only one docker.io credential exists.
+    required: true
+  ghcr_writable:
+    description: >
+      Whether GHCR is writable and available as the source registry for
+      imagetools create.  Pass needs.detect.outputs.ghcr_writable from the
+      calling workflow.  When "true", GHCR is used as the manifest source so
+      that DOCKERHUB_TOKEN pull quota is not consumed; when "false", Docker Hub
+      is used as the source (current fallback behaviour).
+    default: 'false'
+  ghcr_repo:
+    description: >
+      GHCR repository name (ghcr.io/<lowercase-owner/repo>).  Pass the
+      ghcr_repo output from the detect-versions action.
+    required: true
+  ghcr_token:
+    description: >
+      Optional classic Personal Access Token for GHCR login.  When provided,
+      this token is used instead of github_token for GHCR login.  It must
+      have permission appropriate for the configured path: read:packages is
+      sufficient for read-only GHCR access, but write:packages is required
+      when GHCR is writable and this action may mirror missing digests to
+      GHCR.  If you only have a read-only token, keep ghcr_writable set to
+      "false".  Required when the organisation's Actions token policy restricts
+      GITHUB_TOKEN from reading packages.
+    default: ''
+  ghcr_user:
+    description: >
+      Username associated with ghcr_token when using a Personal Access Token.
+      Pass the username value as this input, typically from the calling
+      workflow's GHCR_USER repository variable (vars.GHCR_USER).
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # ── Pre-login seeding (always runs, both modes) ──────────────────────────
+    # The "Seed image manifests" step always runs before the docker-login steps.
+    # It reads the existing Docker Hub manifest using the runner's embedded
+    # token (no DOCKERHUB_TOKEN pull quota consumed), writes per-image
+    # platform-digest state files to a tmpdir, and exports the path as
+    # MERGE_MANIFESTS_WORK_DIR via $GITHUB_ENV so the poll step can reuse it.
+    # The step hard-fails on any seed error, so if the poll loop starts, all
+    # images are guaranteed to be seeded — there is no fallback seeding in the
+    # poll loop.
+    #
+    # In GHCR mode (ghcr_writable=true) a docker/login-action step logs into
+    # GHCR before seeding so the seeding step can inspect and mirror digests to
+    # GHCR.  After seeding, another docker/login-action step logs into Docker
+    # Hub, replacing the embedded runner token so that only one docker.io
+    # credential exists in DOCKER_CONFIG.
+    #
+    # ── Authentication ───────────────────────────────────────────────────────
+    # Step order:
+    #   1. docker/login-action → GHCR (GHCR mode only, before seeding)
+    #   2. Seed image manifests (uses runner's embedded Docker Hub token for
+    #      reads; GHCR credential already present for mirror writes)
+    #   3. docker/login-action → Docker Hub (always, after seeding; overwrites
+    #      embedded token — exactly one docker.io credential remains)
+    #   4. Poll and merge manifests (imagetools create runs without any
+    #      additional docker login calls)
+    #
+    # Because the embedded Docker Hub token is fully overwritten before the poll
+    # loop starts, imagetools create sees only one docker.io credential and the
+    # dual-scope 401 bug cannot occur.
+    #
+    # docker/setup-buildx-action is not needed: imagetools create is a pure
+    # registry client-side operation (no builder required).
+
+    - name: Export GHCR repository name
+      shell: bash
+      env:
+        GHCR_REPO_INPUT: ${{ inputs.ghcr_repo }}
+      run: |
+        echo "GHCR_REPO=${GHCR_REPO_INPUT}" >> "${GITHUB_ENV}"
+
+    - name: Validate ghcr_user when ghcr_token is set
+      if: inputs.ghcr_writable == 'true' && inputs.ghcr_token != ''
+      shell: bash
+      env:
+        GHCR_USER: ${{ inputs.ghcr_user }}
+      run: |
+        if [[ -z "${GHCR_USER}" ]]; then
+          echo "::error::ghcr_token is set but ghcr_user is not provided." \
+               "Pass the PAT owner's username via the ghcr_user input" \
+               "(typically vars.GHCR_USER from the calling workflow)."
+          exit 1
+        fi
+
+    - name: Log in to GHCR
+      if: inputs.ghcr_writable == 'true'
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
+        password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
+
+    - name: Seed image manifests from existing Docker Hub tags
+      shell: bash
+      env:
+        MERGE_MATRIX_JSON: ${{ inputs.merge_matrix }}
+        REPO: ${{ inputs.repo }}
+        TAG_SUFFIX: ${{ inputs.tag_suffix }}
+        GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
+      run: |
+        set -euo pipefail
+
+        # Create WORK_DIR and export its path for subsequent steps.
+        # A tmpdir persists for the entire job; exporting the path via
+        # $GITHUB_ENV makes it available to the poll step without embedding
+        # state in the step output.  (Being a separate step does NOT require a
+        # fixed path — a tmpdir is fine as long as its path is exported.)
+        WORK_DIR="$(mktemp -d)"
+        echo "MERGE_MANIFESTS_WORK_DIR=${WORK_DIR}" >> "${GITHUB_ENV}"
+
+        # ── Parse merge matrix ─────────────────────────────────────────────
+        VERSIONS_STAGES=()
+        while IFS=$'\t' read -r _vs _; do
+          [[ -z "${_vs}" ]] && continue
+          VERSIONS_STAGES+=("${_vs}")
+        done < <(
+          printf '%s' "${MERGE_MATRIX_JSON}" \
+            | jq -r '.[] | (.version + ":" + .stage) + "\t0"'
+        )
+
+        if [[ ${#VERSIONS_STAGES[@]} -eq 0 ]]; then
+          echo "No images in merge matrix; nothing to seed."
+          exit 0
+        fi
+
+        echo "Seeding ${#VERSIONS_STAGES[@]} image(s) from existing Docker Hub tags..."
+
+        # ── Seed each image from its existing Docker Hub manifest ──────────
+        # Uses the runner's embedded Docker Hub token (default DOCKER_CONFIG).
+        # This step runs before the Docker Hub docker/login-action step, so the
+        # runner token still has full pull access — no DOCKERHUB_TOKEN quota is
+        # consumed.
+        SEED_ERRORS=0
+        for vs in "${VERSIONS_STAGES[@]}"; do
+          version="${vs%%:*}"
+          stage="${vs##*:}"
+          key="${version}:${stage}"
+          safe_key="${key//:/_}"
+          IMAGE_SEED="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+
+          state_file="${WORK_DIR}/digests-${safe_key}.txt"
+          > "${state_file}"
+
+          _seed_status=""
+          _seed_raw_file="$(mktemp)"
+          _seed_stderr="$(mktemp)"
+          if docker buildx imagetools inspect \
+               --format '{{json .}}' \
+               "${IMAGE_SEED}" > "${_seed_raw_file}" 2>"${_seed_stderr}"; then
+            _inspect_json="$(cat "${_seed_raw_file}")"
+            _seed_status="ok"
+            echo "  ${IMAGE_SEED}: fetched manifest (imagetools inspect)."
+          else
+            if grep -qi \
+                 "not found\|manifest unknown\|no such manifest\|does not exist\|404" \
+                 "${_seed_stderr}"; then
+              _seed_status="not_found"
+            else
+              _seed_err="$(cat "${_seed_stderr}" 2>/dev/null || true)"
+              echo "::warning::${IMAGE_SEED}: imagetools inspect failed" \
+                   "(${_seed_err:-unknown error})."
+              _seed_status="error"
+            fi
+          fi
+          rm -f "${_seed_raw_file}" "${_seed_stderr}"
+
+          _seeding_succeeded=true
+          case "${_seed_status}" in
+            ok)
+              # Multi-arch path: extract per-platform digests from
+              # .manifest.manifests[].
+              while IFS=$'\t' read -r _pf_plat _pf_digest; do
+                IFS='/' read -r _p_os _p_arch _p_var <<< "${_pf_plat}"
+                [[ "${_p_os}" == "unknown" || "${_p_arch}" == "unknown" ]] && continue
+                [[ -n "${_pf_digest}" && -n "${_p_os}" && -n "${_p_arch}" ]] || continue
+                _normalized_plat="${_p_os}/${_p_arch}"
+                if [[ -n "${_p_var:-}" ]] && \
+                   ! [[ "${_p_arch}" == "arm64" && "${_p_var}" == "v8" ]] && \
+                   ! [[ "${_p_arch}" == "amd64" && "${_p_var}" == "v1" ]]; then
+                  _normalized_plat="${_p_os}/${_p_arch}/${_p_var}"
+                fi
+                _pf_pkey="${_normalized_plat//\//-}"
+                printf '%s\t%s\n' "${_pf_pkey}" "${_pf_digest}" \
+                  >> "${state_file}"
+              done < <(printf '%s' "${_inspect_json}" | jq -r '
+                  .manifest.manifests[]? |
+                  select(
+                    .platform != null and
+                    (.platform.os // "") != "" and
+                    (.platform.architecture // "") != "" and
+                    (.platform.os // "") != "unknown" and
+                    (.platform.architecture // "") != "unknown"
+                  ) |
+                  [
+                    (.platform.os // "") + "/" + (.platform.architecture // "") +
+                    (if (.platform.variant // "") != ""
+                     then "/" + .platform.variant else "" end),
+                    (.digest // "")
+                  ] | @tsv
+                ')
+              # Single-arch path: .manifest.manifests absent → use
+              # .image.{os,architecture,variant} + .manifest.digest.
+              if [[ ! -s "${state_file}" ]]; then
+                while IFS=$'\t' read -r _pf_plat _pf_digest; do
+                  IFS='/' read -r _p_os _p_arch _p_var <<< "${_pf_plat}"
+                  [[ "${_p_os}" == "unknown" || "${_p_arch}" == "unknown" ]] && continue
+                  [[ -n "${_pf_digest}" && -n "${_p_os}" && -n "${_p_arch}" ]] || continue
+                  _sp_norm="${_p_os}/${_p_arch}"
+                  if [[ -n "${_p_var:-}" ]] && \
+                     ! [[ "${_p_arch}" == "arm64" && "${_p_var}" == "v8" ]] && \
+                     ! [[ "${_p_arch}" == "amd64" && "${_p_var}" == "v1" ]]; then
+                    _sp_norm="${_p_os}/${_p_arch}/${_p_var}"
+                  fi
+                  _sp_pkey="${_sp_norm//\//-}"
+                  printf '%s\t%s\n' "${_sp_pkey}" "${_pf_digest}" \
+                    >> "${state_file}"
+                  echo "  ${IMAGE_SEED}: seeded 1 platform from" \
+                       "single-arch manifest (${_sp_norm})."
+                done < <(printf '%s' "${_inspect_json}" | jq -r '
+                    select(.manifest | has("manifests") | not) |
+                    select(
+                      (.image.os // "") != "" and
+                      (.image.architecture // "") != "" and
+                      (.image.os // "") != "unknown" and
+                      (.image.architecture // "") != "unknown"
+                    ) |
+                    [
+                      ((.image.os // "") + "/" + (.image.architecture // "") +
+                       (if (.image.variant // "") != ""
+                        then "/" + .image.variant else "" end)),
+                      (.manifest.digest // "")
+                    ] |
+                    select(.[1] != "") |
+                    @tsv
+                  ')
+              fi
+              n=$(wc -l < "${state_file}")
+              if [[ "${n}" -gt 0 ]]; then
+                echo "  ${IMAGE_SEED}: seeded ${n} platform(s) from existing manifest."
+              fi
+              if [[ "${n}" -eq 0 ]]; then
+                _total_mf="$(printf '%s' "${_inspect_json}" | \
+                  jq 'if .manifest.manifests then (.manifest.manifests | length) else -1 end')"
+                _real_mf="$(printf '%s' "${_inspect_json}" | \
+                  jq '[ .manifest.manifests[]? | select(
+                      .platform != null and
+                      (.platform.os  // "") != "" and
+                      (.platform.architecture // "") != "" and
+                      (.platform.os  // "") != "unknown" and
+                      (.platform.architecture // "") != "unknown"
+                    ) ] | length')"
+                if [[ "${_total_mf}" -gt 0 && "${_real_mf}" -eq 0 ]]; then
+                  echo "  ${IMAGE_SEED}: existing manifest has only" \
+                       "attestation/unknown-platform entries;" \
+                       "treating as no prior published platforms."
+                else
+                  echo "::error::${IMAGE_SEED}: manifest inspection succeeded" \
+                       "but no baseline could be derived; refusing to continue" \
+                       "because doing so could publish an incomplete manifest" \
+                       "list and drop previously published platforms." \
+                       "Re-run later or investigate the Docker Hub manifest response."
+                  exit 1
+                fi
+              fi
+              ;;
+            not_found)
+              echo "  ${IMAGE_SEED}: no existing manifest (first push)."
+              ;;
+            error)
+              echo "::warning::${IMAGE_SEED}: inspect failed; cannot seed."
+              _seeding_succeeded=false
+              SEED_ERRORS=$(( SEED_ERRORS + 1 ))
+              ;;
+          esac
+
+          # Write a sentinel so the poll step can detect pre-seeded images at
+          # init time.  Only written when seeding succeeded (ok or not_found).
+          if [[ "${_seeding_succeeded}" == "true" ]]; then
+            touch "${WORK_DIR}/seeded-${safe_key}.marker"
+          fi
+        done
+
+        if [[ "${SEED_ERRORS}" -gt 0 ]]; then
+          echo "::error::${SEED_ERRORS} image(s) could not be seeded." \
+               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+          exit 1
+        fi
+
+        echo "Seeding complete."
+
+        # ── Mirror Docker Hub digests that are absent from GHCR ───────────
+        # Only needed in GHCR mode: the poll step sources every platform ref
+        # from GHCR by digest (SOURCE_REPO=ghcr.io/…).  For platforms published
+        # before GHCR was enabled the digest exists only on Docker Hub; the poll
+        # step's imagetools create would fail when fetching
+        # ghcr.io/…@sha256:<digest>.
+        if [[ "${GHCR_WRITABLE}" != "true" ]]; then
+          echo "Not in GHCR mode; skipping GHCR mirror check."
+          exit 0
+        fi
+
+        # Ensure skopeo is available; install it if not (ubuntu-latest runners
+        # have it in apt but it is not pre-installed on all runner images).
+        if ! command -v skopeo > /dev/null 2>&1; then
+          echo "skopeo not found; installing via apt-get..."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
+        fi
+
+        # Probe each seeded digest at GHCR; if absent, copy it from Docker
+        # Hub using `skopeo copy`.  skopeo copies the per-platform manifest
+        # bytes and any missing blobs to GHCR and addresses them only by their
+        # content digest — no tag is created in GHCR.  After the copy the
+        # digest is accessible at ghcr.io/…@sha256:<digest>.
+        #
+        # Docker Hub reads use the runner's embedded token (no quota cost).
+        # GHCR writes use the credential from the preceding docker/login-action
+        # step (GITHUB_TOKEN / GHCR_TOKEN with packages:write).
+        # Because source (docker.io) and destination (ghcr.io) are different
+        # registries during the mirror, the dual-scope 401 bug does not apply.
+        _ANY_SEEDED=false
+        for vs in "${VERSIONS_STAGES[@]}"; do
+          version="${vs%%:*}"
+          stage="${vs##*:}"
+          key="${version}:${stage}"
+          safe_key="${key//:/_}"
+          [[ -s "${WORK_DIR}/digests-${safe_key}.txt" ]] && { _ANY_SEEDED=true; break; }
+        done
+
+        if [[ "${_ANY_SEEDED}" != "true" ]]; then
+          echo "No existing platforms seeded; skipping GHCR mirror check."
+          exit 0
+        fi
+
+        echo "Checking/mirroring platform digests to GHCR..."
+        _MIRROR_ERRORS=0
+        for vs in "${VERSIONS_STAGES[@]}"; do
+          version="${vs%%:*}"
+          stage="${vs##*:}"
+          key="${version}:${stage}"
+          safe_key="${key//:/_}"
+          state_file="${WORK_DIR}/digests-${safe_key}.txt"
+          [[ -s "${state_file}" ]] || continue
+
+          _mirror_stderr="$(mktemp)"
+          while IFS=$'\t' read -r _pkey _pdigest; do
+            [[ -n "${_pkey}" && -n "${_pdigest}" ]] || continue
+            _ghcr_ref="${GHCR_REPO}@${_pdigest}"
+            _ghcr_check_stderr="$(mktemp)"
+            if docker buildx imagetools inspect \
+                 "${_ghcr_ref}" > /dev/null 2>"${_ghcr_check_stderr}"; then
+              rm -f "${_ghcr_check_stderr}"
+              continue
+            fi
+            rm -f "${_ghcr_check_stderr}"
+
+            echo "  ${_pkey//-/\/} (${_pdigest:0:19}…): absent from GHCR;" \
+                 "mirroring from Docker Hub..."
+            # Use skopeo copy to push the per-platform manifest and its blobs
+            # to GHCR by digest without creating any tag.  The source ref uses
+            # the Docker Hub digest; the destination is the GHCR repo addressed
+            # by the same digest.  After the copy the digest becomes accessible
+            # at ghcr.io/…@sha256:<digest> without leaving a human-visible tag.
+            if skopeo copy \
+                 "docker://${REPO}@${_pdigest}" \
+                 "docker://${GHCR_REPO}@${_pdigest}" \
+                 2>"${_mirror_stderr}"; then
+              echo "  Mirrored ${_pkey//-/\/} (${_pdigest:0:19}…) to GHCR by digest."
+            else
+              _mirror_err="$(cat "${_mirror_stderr}" 2>/dev/null || true)"
+              echo "::error::Failed to mirror ${_pkey//-/\/}" \
+                   "(${_pdigest:0:19}…) to GHCR: ${_mirror_err:-unknown error}"
+              _MIRROR_ERRORS=$(( _MIRROR_ERRORS + 1 ))
+            fi
+          done < "${state_file}"
+          rm -f "${_mirror_stderr}"
+        done
+
+        if [[ "${_MIRROR_ERRORS}" -gt 0 ]]; then
+          echo "::error::${_MIRROR_ERRORS} platform digest(s) could not be" \
+               "mirrored to GHCR." \
+               "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+          exit 1
+        fi
+
+        echo "GHCR mirror check complete."
+
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ inputs.dockerhub_username }}
+        password: ${{ inputs.dockerhub_token }}
+
+    - name: Poll and merge manifests
+      shell: bash
+      env:
+        MERGE_MATRIX_JSON:     ${{ inputs.merge_matrix }}
+        REPO:                  ${{ inputs.repo }}
+        TAG_SUFFIX:            ${{ inputs.tag_suffix }}
+        POLL_INTERVAL_SECONDS: ${{ inputs.poll_interval_seconds }}
+        GH_TOKEN:              ${{ inputs.github_token }}
+        RUN_ID:                ${{ inputs.run_id }}
+        GITHUB_REPO:           ${{ inputs.repository }}
+        DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
+        DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
+        GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
+      run: |
+        set -euo pipefail
+
+        # The "Seed image manifests" step always runs before this step and
+        # exports the tmpdir path as MERGE_MANIFESTS_WORK_DIR.  Reuse it so
+        # the poll loop can read the pre-seeded state files and sentinel markers.
+        WORK_DIR="${MERGE_MANIFESTS_WORK_DIR}"
+        trap 'rm -rf "${WORK_DIR}"' EXIT
+
+        if [[ "${GHCR_WRITABLE}" != "true" ]]; then
+          # ── Docker Hub quota probe helpers (fallback mode only) ────────────
+          # Probes the Docker Hub pull rate limit using a HEAD request to the
+          # ratelimitpreview/test endpoint (HEAD requests are not counted
+          # against quota).  Used by the per-cycle quota gate below.
+          #
+          # Token state (managed only by the functions below).
+          _HUB_QUOTA_AUTH_TOKEN=""
+          _HUB_QUOTA_AUTH_TOKEN_TIME=0
+          _HUB_QUOTA_TOKEN_MAX_AGE=240  # seconds before cached token is refreshed
+
+          # hub_pull_remaining TOKEN
+          # Sends a HEAD request to the Docker Hub rate-limit probe endpoint.
+          # Prints the numeric remaining pull count, "unlimited" (no header),
+          # or "" on failure.  Always returns 0 so it is safe under set -e.
+          # Uses --head (not -X HEAD) to avoid curl exit 28 on HTTP/1.1
+          # downgrade by MITM proxies on GitHub-hosted runners.
+          hub_pull_remaining() {
+            local _token="$1"
+            [[ -z "${_token}" ]] && { echo ""; return 0; }
+            local _tmpheaders _http_code _headers _remaining
+            _tmpheaders="$(mktemp)"
+            _http_code="$(curl -s --connect-timeout 5 --max-time 15 \
+              -H "Authorization: Bearer ${_token}" \
+              --head -D "${_tmpheaders}" -o /dev/null \
+              -w '%{http_code}' \
+              "https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest" \
+              2>/dev/null)" || _http_code=""
+            _headers="$(cat "${_tmpheaders}" 2>/dev/null || true)"
+            rm -f "${_tmpheaders}"
+            if [[ "${_http_code:0:1}" == "2" ]]; then
+              _remaining="$(printf '%s' "${_headers}" \
+                | grep -i '^ratelimit-remaining:' \
+                | grep -oE '[0-9]+' | head -1)" || _remaining=""
+              echo "${_remaining:-unlimited}"
+            fi
+            return 0
+          }
+
+          # refresh_auth_quota_token
+          # Fetches (or reuses a cached) authenticated Docker Hub token for
+          # the ratelimitpreview/test:pull scope using DOCKERHUB_USERNAME and
+          # DOCKERHUB_TOKEN.  Skips the fetch when the cached token is still
+          # fresh.  Returns 0 when a valid token is available, 1 on failure.
+          # On failure, emits a categorised ::error:: annotation.
+          refresh_auth_quota_token() {
+            local _now
+            _now="$(date +%s)"
+            if [[ -n "${_HUB_QUOTA_AUTH_TOKEN}" ]] \
+                && (( _now - _HUB_QUOTA_AUTH_TOKEN_TIME < _HUB_QUOTA_TOKEN_MAX_AGE )); then
+              return 0
+            fi
+            local _rc=0 _body _http_code _curl_err _token _tmpbody _tmpstderr
+            _tmpbody="$(mktemp)"
+            _tmpstderr="$(mktemp)"
+            _http_code="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+              --user "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}" \
+              --output "${_tmpbody}" \
+              --write-out '%{http_code}' \
+              "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" \
+              2>"${_tmpstderr}")" || _rc=$?
+            _body="$(cat "${_tmpbody}" 2>/dev/null || true)"
+            _curl_err="$(cat "${_tmpstderr}" 2>/dev/null || true)"
+            rm -f "${_tmpbody}" "${_tmpstderr}"
+            _token="$(printf '%s' "${_body}" | jq -r '.token // ""' 2>/dev/null)" \
+              || _token=""
+            if [[ -n "${_token}" ]]; then
+              _HUB_QUOTA_AUTH_TOKEN="${_token}"
+              _HUB_QUOTA_AUTH_TOKEN_TIME="${_now}"
+              return 0
+            fi
+            if (( _rc != 0 )); then
+              echo "::error::Network/TLS/DNS failure contacting the Docker Hub auth" \
+                   "endpoint (curl exit ${_rc}). Check runner connectivity and Docker" \
+                   "Hub status before retrying." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
+            elif [[ "${_http_code}" == "401" ]] || [[ "${_http_code}" == "403" ]]; then
+              echo "::error::Docker Hub rejected the credentials (HTTP ${_http_code})." \
+                   "Verify that the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are" \
+                   "set and valid." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
+            else
+              echo "::error::Could not obtain a Docker Hub auth token" \
+                   "(HTTP ${_http_code:-unknown}). Verify that DOCKERHUB_USERNAME and" \
+                   "DOCKERHUB_TOKEN are set and valid, and that the Docker Hub auth" \
+                   "endpoint is reachable." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page." >&2
+            fi
+            local _debug_info="${_curl_err}"
+            [[ -n "${_debug_info}" ]] && [[ -n "${_body}" ]] && _debug_info+=$'\n'
+            _debug_info+="${_body}"
+            if [[ -n "${_debug_info}" ]]; then
+              local _safe_debug="${_debug_info//'%'/'%25'}"
+              _safe_debug="${_safe_debug//$'\r'/'%0D'}"
+              _safe_debug="${_safe_debug//$'\n'/'%0A'}"
+              echo "::debug::Docker Hub auth response: ${_safe_debug}" >&2
+            fi
+            return 1
+          }
+
+          # auth_quota_remaining
+          # Refreshes the cached token if needed, then prints the authenticated
+          # Docker Hub pull quota remaining (integer, "unlimited", or "").
+          auth_quota_remaining() {
+            refresh_auth_quota_token || true
+            hub_pull_remaining "${_HUB_QUOTA_AUTH_TOKEN}"
+          }
+        fi
+
+        # SOURCE_REPO: registry used as the source for imagetools create refs.
+        # In GHCR mode, reads use GITHUB_TOKEN (free, no DOCKERHUB_TOKEN pull
+        # quota).  In fallback mode, reads use DOCKERHUB_TOKEN.
+        if [[ "${GHCR_WRITABLE}" == "true" ]]; then
+          SOURCE_REPO="${GHCR_REPO}"
+        else
+          SOURCE_REPO="${REPO}"
+        fi
+
+        # ── Parse merge matrix into parallel arrays ────────────────────────
+        # VERSIONS_STAGES[i] = "VERSION:STAGE"
+        # IMG_EXPECTED_PLATFORMS["VERSION:STAGE"] = expected platform count
+        #   (number of (version, platform) build-matrix entries that will
+        #   upload a digest artifact for this image; used as the per-image
+        #   completion threshold so that intentionally-omitted
+        #   (version, platform) pairs do not cause the merge loop to poll
+        #   indefinitely).
+        # VER_EXPECTED_PLATFORMS["VERSION"] = expected build-done count
+        #   (advance expected_platforms; advance is always present per version)
+        declare -A IMG_EXPECTED_PLATFORMS
+        declare -A VER_EXPECTED_PLATFORMS
+        VERSIONS_STAGES=()
+        while IFS=$'\t' read -r _vs _ep; do
+          [[ -z "${_vs}" ]] && continue
+          VERSIONS_STAGES+=("${_vs}")
+          IMG_EXPECTED_PLATFORMS["${_vs}"]="${_ep}"
+          _vs_stage="${_vs##*:}"
+          _vs_ver="${_vs%%:*}"
+          if [[ "${_vs_stage}" == "advance" ]]; then
+            VER_EXPECTED_PLATFORMS["${_vs_ver}"]="${_ep}"
+          fi
+        done < <(
+          printf '%s' "${MERGE_MATRIX_JSON}" \
+            | jq -r '.[] | (.version + ":" + .stage) + "\t" + (.expected_platforms // 0 | tostring)'
+        )
+
+        if [[ ${#VERSIONS_STAGES[@]} -eq 0 ]]; then
+          echo "No images in merge matrix; nothing to do."
+          exit 0
+        fi
+
+        # Validate that every merge-matrix entry has a positive expected_platforms
+        # value.  A zero means detect-versions did not compute the count, which
+        # would make every completion check immediately true (0 >= 0) and silently
+        # produce empty manifests.  Fail early with a clear message instead.
+        for _val_vs in "${VERSIONS_STAGES[@]}"; do
+          _val_key="${_val_vs%%:*}:${_val_vs##*:}"
+          _val_ep="${IMG_EXPECTED_PLATFORMS[$_val_key]}"
+          if [[ -z "${_val_ep}" || "${_val_ep}" -le 0 ]]; then
+            echo "::error::merge-matrix entry '${_val_key}' has" \
+                 "expected_platforms=${_val_ep:-<unset>};" \
+                 "every entry must have a positive expected_platforms value." \
+                 "This is a bug in detect-versions; please report it."
+            exit 1
+          fi
+        done
+
+        # Validate that every version has an "advance" entry.  VER_EXPECTED_PLATFORMS
+        # is only set from advance entries; without it the per-version build-done
+        # threshold is undefined, causing numeric comparisons to fail later.
+        for _val_vs in "${VERSIONS_STAGES[@]}"; do
+          _val_ver="${_val_vs%%:*}"
+          if [[ -z "${VER_EXPECTED_PLATFORMS[${_val_ver}]+x}" ]]; then
+            echo "::error::version '${_val_ver}' has no 'advance' entry in the" \
+                 "merge matrix; every version must include an advance entry." \
+                 "This is a bug in detect-versions; please report it."
+            exit 1
+          fi
+        done
+
+        # Per-image state (keyed by "VERSION:STAGE", colons replaced with _ for
+        # filenames).
+        declare -A IMG_PROCESSED        # image_key → path to processed-artifacts file
+        declare -A IMG_DIGEST_MERGED    # image_key → count of distinct merged platforms
+        declare -A IMG_MERGED_PKEYS     # image_key → path to merged-platform-keys set file
+        declare -A IMG_DONE             # image_key → "true"/"false"
+        declare -A IMG_SEEDED           # image_key → "true" (seeded) / "false" (pending)
+        declare -A IMG_PLATFORM_DIGESTS # image_key → path to platform-digest state file
+        declare -A IMG_LAST_ERROR       # image_key → last imagetools create error text
+        #   State file format: one "platform_key<TAB>sha256:digest" per line.
+        #   Seeded from the existing manifest during the first polling cycle via
+        #   imagetools inspect; updated after each successful imagetools create.
+        #   Provides within-run preservation without a per-cycle inspect.
+
+        # Per-version build-done state.  A single "build-done-a{N}-{VERSION}-*"
+        # marker covers all stages (base/secure/advance) for that version,
+        # so we track it per version, not per stage.
+        declare -A VER_BUILD_DONE    # version → count of build-done markers seen
+
+        # In-memory set of build-done artifact names already counted this run.
+        # Prevents double-counting when the artifact list is re-read each cycle.
+        # Only current-attempt markers (name prefix "build-done-a${GITHUB_RUN_ATTEMPT}-")
+        # are ever added here; markers from other attempts are ignored by the
+        # prefix filter and never reach this set.
+        declare -A BUILD_DONE_SEEN   # artifact_name → 1
+
+        echo "Managing manifests for ${#VERSIONS_STAGES[@]} image(s):"
+        for vs in "${VERSIONS_STAGES[@]}"; do
+          version="${vs%%:*}"
+          stage="${vs##*:}"
+          key="${version}:${stage}"
+          safe_key="${key//:/_}"
+
+          IMG_PROCESSED[$key]="${WORK_DIR}/processed-${safe_key}.txt"
+          IMG_MERGED_PKEYS[$key]="${WORK_DIR}/merged-pkeys-${safe_key}.txt"
+          IMG_PLATFORM_DIGESTS[$key]="${WORK_DIR}/digests-${safe_key}.txt"
+          IMG_DIGEST_MERGED[$key]=0
+          IMG_DONE[$key]="false"
+          IMG_SEEDED[$key]="false"
+          IMG_LAST_ERROR[$key]=""
+          touch "${IMG_PROCESSED[$key]}"
+          touch "${IMG_MERGED_PKEYS[$key]}"
+          touch "${IMG_PLATFORM_DIGESTS[$key]}"
+          # If the "Seed image manifests" step wrote a sentinel marker for this
+          # image, mark it as pre-seeded so the poll loop skips re-seeding.
+          if [[ -f "${WORK_DIR}/seeded-${safe_key}.marker" ]]; then
+            IMG_SEEDED[$key]="true"
+          fi
+          echo "  ${REPO}:${version}-${stage}${TAG_SUFFIX} (${IMG_EXPECTED_PLATFORMS[$key]} platform(s) expected)"
+          if [[ -z "${VER_BUILD_DONE[$version]+set}" ]]; then
+            VER_BUILD_DONE[$version]=0
+          fi
+        done
+
+        POLL_CYCLE=0
+
+        # Consecutive artifact-list API failure counter.  After this many
+        # back-to-back failures the loop aborts so the job fails instead of
+        # hanging forever (e.g. if the token lacks actions:read or the API is
+        # rate-limiting).
+        MAX_API_FAILURES=5
+        API_FAILURE_COUNT=0
+
+        while true; do
+
+          POLL_CYCLE=$(( POLL_CYCLE + 1 ))
+
+          # ── Check if all images are done ───────────────────────────────
+          PENDING_COUNT=0
+          for vs in "${VERSIONS_STAGES[@]}"; do
+            version="${vs%%:*}"
+            stage="${vs##*:}"
+            key="${version}:${stage}"
+            [[ "${IMG_DONE[$key]}" == "true" ]] || (( PENDING_COUNT++ )) || true
+          done
+          if [[ ${PENDING_COUNT} -eq 0 ]]; then
+            echo "All ${#VERSIONS_STAGES[@]} image(s) are complete."
+            break
+          fi
+
+          # ── Fetch all artifacts for this run in one API call ───────────
+          # Retrieve artifact names and ids in a single paginated request to
+          # minimise GitHub API traffic; classify them per image below.
+          ALL_ARTIFACTS=""
+          if ALL_ARTIFACTS="$(gh api --paginate \
+            "repos/${GITHUB_REPO}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            --jq '.artifacts[]
+                  | [.name, (.id | tostring)]
+                  | join("\t")')"; then
+            API_FAILURE_COUNT=0
+          else
+            API_FAILURE_COUNT=$(( API_FAILURE_COUNT + 1 ))
+            echo "::warning::Artifact list API call failed" \
+                 "(${API_FAILURE_COUNT}/${MAX_API_FAILURES} consecutive failures)."
+            if (( API_FAILURE_COUNT >= MAX_API_FAILURES )); then
+              echo "::error::Artifact list API call failed ${MAX_API_FAILURES}" \
+                   "times in a row; aborting merge loop." \
+                   "To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+              exit 1
+            fi
+            sleep "${POLL_INTERVAL_SECONDS}"
+            continue
+          fi
+
+          # ── Count new build-done markers (per version, shared across stages) ─
+          # Format: "build-done-a{ATTEMPT}-{VERSION}-{platform_key}"
+          # Only markers for the current run attempt are considered; the prefix
+          # filter "build-done-a${GITHUB_RUN_ATTEMPT}-" ensures markers from
+          # any other attempt are never even parsed.  GITHUB_RUN_ATTEMPT is a
+          # default GitHub Actions environment variable set automatically on
+          # every runner — no API call needed.
+          #
+          # On a partial re-run ("Re-run failed jobs"), successful jobs from the
+          # previous attempt are not re-run and therefore do not upload new
+          # current-attempt build-done markers.  In that case
+          # VER_BUILD_DONE[$version] will never reach the per-version expected
+          # count; the merge still completes because the image's completion
+          # check has a second condition: digest_merged >= per-image expected.
+          # Non-re-run platforms match the already-live fast-path (their
+          # existing digest artifacts are matched against the seeded Docker Hub
+          # manifest) so they are counted as merged without a new imagetools
+          # create, and digest_merged reaches the per-image expected count.
+          while IFS=$'\t' read -r aname _; do
+            [[ -z "${aname}" ]] && continue
+            [[ "${aname}" == "build-done-a${GITHUB_RUN_ATTEMPT}-"* ]] || continue
+            [[ -n "${BUILD_DONE_SEEN[$aname]+set}" ]] && continue
+
+            # Parse: build-done-a{attempt}-{version}-{platform_key}
+            # (attempt already validated by the prefix filter above)
+            _bd_verplat="${aname#"build-done-a${GITHUB_RUN_ATTEMPT}-"}"
+            [[ -n "${_bd_verplat}" && "${_bd_verplat}" == *"-"* ]] || continue
+
+            for version in "${!VER_BUILD_DONE[@]}"; do
+              if [[ "${_bd_verplat}" == "${version}-"* ]]; then
+                BUILD_DONE_SEEN[$aname]=1
+                VER_BUILD_DONE[$version]=$(( VER_BUILD_DONE[$version] + 1 ))
+                echo "  Build-done marker: ${aname}" \
+                     "(${VER_BUILD_DONE[$version]}/${VER_EXPECTED_PLATFORMS[$version]} for v${version})"
+                break
+              fi
+            done
+          done <<< "${ALL_ARTIFACTS}"
+
+          # ── Assert all images are seeded ──────────────────────────────────
+          # The "Seed image manifests" step always runs before this step and
+          # hard-fails on any seed error.  If any image is still unseeded here
+          # it indicates a bug in the seeding step that allowed it to exit 0
+          # without seeding all images.  Fail hard rather than silently
+          # dropping previously-published platforms.
+          for vs in "${VERSIONS_STAGES[@]}"; do
+            key="${vs%%:*}:${vs##*:}"
+            if [[ "${IMG_SEEDED[$key]}" != "true" ]]; then
+              echo "::error::${key}: image not seeded before poll loop — this is" \
+                   "a bug in the 'Seed image manifests' step. Re-run the workflow."
+              exit 1
+            fi
+          done
+
+          # ── Process each pending image ─────────────────────────────────
+          CYCLE_DIR="${WORK_DIR}/cycle"
+          rm -rf "${CYCLE_DIR}"
+          mkdir -p "${CYCLE_DIR}"
+
+          # ── Docker Hub pull quota probe (fallback mode only) ──────────────
+          # In fallback mode imagetools create fetches each source manifest
+          # from Docker Hub, consuming one authenticated pull per ref.  Probe
+          # the quota once per cycle and gate each create call on the
+          # remaining budget.  Three variables are shared by all gates:
+          #   _auth_rem   – raw probe result: integer, "unlimited", or ""
+          #                 (probe failed).
+          #   _auth_avail – pulls available to this job this cycle: equals
+          #                 _auth_rem (no build-job reservation needed in
+          #                 fallback mode) or "unlimited".  0 when probe fails
+          #                 so gates defer conservatively.
+          #   _auth_used  – pulls consumed so far this cycle; incremented by
+          #                 ${#REFS[@]} after each successful create.
+          _auth_rem=""
+          _auth_avail=0
+          _auth_used=0
+          if [[ "${GHCR_WRITABLE}" != "true" ]]; then
+            _auth_rem="$(auth_quota_remaining)"
+            if [[ "${_auth_rem}" == "unlimited" ]]; then
+              _auth_avail="unlimited"
+              echo "  Docker Hub pull quota: unlimited."
+            elif [[ -n "${_auth_rem}" ]]; then
+              _auth_avail="${_auth_rem}"
+              echo "  Docker Hub pull quota: ${_auth_rem} pull(s) remaining."
+            else
+              echo "::warning::Authenticated Docker Hub quota probe failed;" \
+                   "treating remaining quota as exhausted for this cycle."
+              _auth_avail=0
+            fi
+          fi
+
+          # Tracks whether any imagetools create was deferred this cycle
+          # because the Docker Hub pull quota was insufficient.
+          _any_quota_deferred=false
+          # Tracks whether any imagetools create command exited non-zero this
+          # cycle.
+          _any_create_failed=false
+
+          for vs in "${VERSIONS_STAGES[@]}"; do
+            version="${vs%%:*}"
+            stage="${vs##*:}"
+            key="${version}:${stage}"
+            safe_key="${key//:/_}"
+            IMAGE="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+            ARTIFACT_PREFIX="digests-${version}-${stage}-"
+            DIGEST_KEY="${version}-${stage}"
+
+            [[ "${IMG_DONE[$key]}" == "true" ]] && continue
+
+            # Per-image flag: set when imagetools create is skipped
+            # (quota exhausted) or fails in this cycle.  Prevents the
+            # completion check from marking the image done so that the
+            # next cycle can retry the create.
+            _img_create_deferred=false
+
+            build_done="${VER_BUILD_DONE[$version]}"
+            ver_expected="${VER_EXPECTED_PLATFORMS[$version]}"
+            img_expected="${IMG_EXPECTED_PLATFORMS[$key]}"
+            img_dir="${CYCLE_DIR}/${safe_key}"
+            mkdir -p "${img_dir}/platforms"
+
+            # ── Collect newly available platform digests for this image ──
+            # "New" means not yet in this image's PROCESSED file.
+            # We do NOT add artifacts to PROCESSED here; that happens only
+            # after a successful imagetools create so that a failed or
+            # rate-limited inspect cycle does not permanently lose the digest.
+            # Use parallel arrays to avoid encoding issues (digests contain
+            # colons, e.g. "sha256:abc..." which would break :-delimited strings).
+            # Processed artifacts are tracked as "name:id" so that a re-uploaded
+            # artifact (same name, new id from overwrite:true reruns) is recognised
+            # as a new artifact and re-merged rather than silently skipped.
+            NEW_PKEYS=()         # platform keys,  e.g. linux-amd64
+            NEW_PDIGESTS=()      # full digest refs, e.g. sha256:abc…
+            NEW_ARTIFACT_IDS=()  # artifact ids, matching indices with NEW_PKEYS
+
+            while IFS=$'\t' read -r aname aid; do
+              [[ -z "${aname}" ]] && continue
+              [[ "${aname}" == "${ARTIFACT_PREFIX}"* ]] || continue
+              grep -qxF "${aname}:${aid}" "${IMG_PROCESSED[$key]}" 2>/dev/null && continue
+
+              platform_key="${aname#"${ARTIFACT_PREFIX}"}"   # e.g. linux-amd64
+              dl_dir="${img_dir}/dl/${aname}"
+              mkdir -p "${dl_dir}"
+
+              # Download the artifact zip.  On any failure (network, API rate
+              # limit, corrupt zip) log a warning and leave the artifact
+              # unprocessed — it will be retried next polling cycle.
+              DOWNLOAD_OK=false
+              if gh api \
+                   "repos/${GITHUB_REPO}/actions/artifacts/${aid}/zip" \
+                   > "${dl_dir}/artifact.zip" \
+                 && unzip -q "${dl_dir}/artifact.zip" -d "${dl_dir}"
+              then
+                DOWNLOAD_OK=true
+              fi
+
+              if [[ "${DOWNLOAD_OK}" == "true" ]]; then
+                digest_file="${dl_dir}/${platform_key}.json"
+                if [[ -f "${digest_file}" ]]; then
+                  DIGEST="$(jq -r \
+                    --arg k "${DIGEST_KEY}" '.[$k] // ""' "${digest_file}")"
+                  if [[ -n "${DIGEST}" ]]; then
+                    # If seeding is complete and this exact platform+digest is
+                    # already live on Docker Hub, count the platform as merged
+                    # without pushing again.  This avoids redundant imagetools
+                    # create calls (and the associated pull-quota cost) when a
+                    # manifest that was fully merged in a previous run or a
+                    # previous attempt is re-encountered on re-run.  The cached
+                    # state only ever contains digests that were either already
+                    # in Docker Hub at seed time or were written by a successful
+                    # imagetools create, so a cache-fallback seed is equally
+                    # reliable for this check.
+                    if [[ "${IMG_SEEDED[$key]}" == "true" ]] && \
+                       grep -qxF "${platform_key}"$'\t'"${DIGEST}" \
+                         "${IMG_PLATFORM_DIGESTS[$key]}" 2>/dev/null; then
+                      echo "  [${IMAGE}] ${platform_key//-/\/}: already live" \
+                           "(digest matches existing manifest); skipping."
+                      echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
+                      if ! grep -qxF "${platform_key}" \
+                             "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
+                        echo "${platform_key}" >> "${IMG_MERGED_PKEYS[$key]}"
+                        IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
+                      fi
+                    else
+                      NEW_PKEYS+=("${platform_key}")
+                      NEW_PDIGESTS+=("${DIGEST}")
+                      NEW_ARTIFACT_IDS+=("${aid}")
+                    fi
+                  elif [[ "${build_done}" -ge "${ver_expected}" ]]; then
+                    echo "::warning::${aname}: key '${DIGEST_KEY}' empty;" \
+                         "all builds complete, skipping."
+                    echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
+                  else
+                    echo "::warning::${aname}: key '${DIGEST_KEY}' empty;" \
+                         "will retry next cycle."
+                  fi
+                elif [[ "${build_done}" -ge "${ver_expected}" ]]; then
+                  echo "::warning::${aname}: missing ${platform_key}.json;" \
+                       "all builds complete, skipping."
+                  echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
+                else
+                  echo "::warning::${aname}: missing ${platform_key}.json;" \
+                       "will retry next cycle."
+                fi
+              else
+                echo "  Download failed for ${aname}; will retry next cycle."
+              fi
+            done <<< "${ALL_ARTIFACTS}"
+
+            # ── Skip permanently inaccessible artifacts once all builds done ─
+            # Only mark an artifact as permanently skipped if it was NOT
+            # successfully downloaded this cycle (i.e. its platform_key is not
+            # in NEW_PKEYS).  Artifacts that were just downloaded but whose
+            # imagetools create has not yet succeeded must not be marked here —
+            # they are still in NEW_PKEYS and must remain unprocessed so they
+            # can be retried if imagetools create fails (e.g. Docker rate limit).
+            if [[ "${build_done}" -ge "${ver_expected}" ]]; then
+              # Build a set of platform keys downloaded this cycle for O(1) lookup.
+              declare -A _new_pkeys_set=()
+              for _k in "${NEW_PKEYS[@]+"${NEW_PKEYS[@]}"}"; do
+                _new_pkeys_set["${_k}"]=1
+              done
+              while IFS=$'\t' read -r aname aid; do
+                [[ -z "${aname}" ]] && continue
+                [[ "${aname}" == "${ARTIFACT_PREFIX}"* ]] || continue
+                grep -qxF "${aname}:${aid}" "${IMG_PROCESSED[$key]}" 2>/dev/null && continue
+                pkey_skip="${aname#"${ARTIFACT_PREFIX}"}"
+                # Skip if already queued for merge this cycle (download succeeded).
+                [[ -v _new_pkeys_set["${pkey_skip}"] ]] && continue
+                echo "::warning::${aname}: all builds done but cannot be" \
+                     "downloaded; skipping."
+                echo "${aname}:${aid}" >> "${IMG_PROCESSED[$key]}"
+              done <<< "${ALL_ARTIFACTS}"
+              unset _new_pkeys_set
+            fi
+
+            # ── Merge new platforms into the Docker Hub tag ───────────────
+            # Strategy: the IMG_PLATFORM_DIGESTS state file holds every
+            # platform digest that was present in the existing manifest at
+            # startup (seeded once before the poll loop) plus every platform
+            # successfully pushed in this run so far.  For each new batch we:
+            #   1. Build a temp map = state file + new digests (new wins on
+            #      collision, i.e. when a platform is being rebuilt).
+            #   2. Call imagetools create with all refs from the temp map.
+            #   3. On success: promote the temp map to the state file and
+            #      record the artifacts as processed.
+            # No per-cycle inspect is needed — within-run state is always
+            # up-to-date and cross-run state was captured at startup.
+            if [[ ${#NEW_PKEYS[@]} -gt 0 ]]; then
+              # Seeding is guaranteed to have completed before the poll loop
+              # (the "Seed image manifests" step hard-fails otherwise), so
+              # IMG_SEEDED is always true here.  If the state file is somehow
+              # empty for an image that had no prior published platforms, that
+              # is safe: imagetools create publishes only the newly built
+              # platforms, which is the correct first-push behaviour.
+              if [[ "${IMG_SEEDED[$key]}" != "true" ]]; then
+                echo "::error::${IMAGE}: not seeded before poll loop — this is" \
+                     "a bug. Re-run the workflow."
+                exit 1
+              fi
+              echo "Merging ${#NEW_PKEYS[@]} new platform(s) into ${IMAGE}..."
+
+              # Build temp map: start from current state, add/replace new digests
+              REFS_MAP="${img_dir}/refs_map.txt"
+              cp "${IMG_PLATFORM_DIGESTS[$key]}" "${REFS_MAP}"
+              for i in "${!NEW_PKEYS[@]}"; do
+                pkey="${NEW_PKEYS[$i]}"
+                pdigest="${NEW_PDIGESTS[$i]}"
+                # Remove stale entry for this platform key (rebuild scenario),
+                # using awk for safe fixed-string matching on the key field.
+                awk -v k="${pkey}" -F'\t' '$1 != k' "${REFS_MAP}" > "${img_dir}/map_tmp.txt" || true
+                printf '%s\t%s\n' "${pkey}" "${pdigest}" >> "${img_dir}/map_tmp.txt"
+                mv "${img_dir}/map_tmp.txt" "${REFS_MAP}"
+                echo "  [${IMAGE}] ${pkey//-/\/}: ${pdigest}"
+              done
+
+              # Collect REFS from every entry in the temp map.
+              # In GHCR mode, platform refs are sourced from GHCR by digest so
+              # that manifest reads use GITHUB_TOKEN and do not consume
+              # DOCKERHUB_TOKEN pull quota.  In fallback mode, refs are sourced
+              # from Docker Hub.  The sha256 digest is identical in both
+              # registries (same content → same hash).
+              REFS=()
+              while IFS=$'\t' read -r pkey pdigest; do
+                [[ -n "${pkey}" && -n "${pdigest}" ]] || continue
+                REFS+=("${SOURCE_REPO}@${pdigest}")
+              done < "${REFS_MAP}"
+
+              if [[ ${#REFS[@]} -gt 0 ]]; then
+                # ── Gate imagetools create on Docker Hub pull quota ───────
+                # In fallback mode each source-manifest fetch costs one
+                # authenticated pull.  Defer when the unused budget
+                # (_auth_avail - _auth_used) is smaller than the number of
+                # refs so quota is not exhausted mid-cycle.  Only the first
+                # deferral per cycle emits a log line to avoid repetition.
+                # The snapshot may drift from Docker Hub's actual counter if
+                # another process consumed quota between the probe and this
+                # create; re-probing at the start of every cycle corrects it.
+                if [[ "${GHCR_WRITABLE}" != "true" ]] \
+                   && [[ "${_auth_avail}" != "unlimited" ]] \
+                   && (( _auth_avail - _auth_used < ${#REFS[@]} )); then
+                  if [[ "${_any_quota_deferred}" != "true" ]]; then
+                    echo "  [${IMAGE}] Deferring imagetools create: Docker Hub" \
+                         "pull quota insufficient" \
+                         "(${_auth_rem:-unknown} authenticated remaining," \
+                         "$(( _auth_avail - _auth_used )) available to this job," \
+                         "${#REFS[@]} required)."
+                  fi
+                  _img_create_deferred=true
+                  _any_quota_deferred=true
+                else
+                  _create_err_file="$(mktemp)"
+                  docker buildx imagetools create \
+                    --tag "${IMAGE}" "${REFS[@]}" 2>"${_create_err_file}" && _create_ok=true || _create_ok=false
+                  if [[ "${_create_ok}" == "true" ]]; then
+                    rm -f "${_create_err_file}"
+                    echo "  Updated ${IMAGE} with ${#REFS[@]} platform ref(s)."
+                    # Promote temp map to the persistent state file
+                    cp "${REFS_MAP}" "${IMG_PLATFORM_DIGESTS[$key]}"
+                    # Track pulls consumed so subsequent images in this cycle
+                    # see the correct remaining budget.
+                    if [[ "${GHCR_WRITABLE}" != "true" ]] \
+                       && [[ "${_auth_avail}" != "unlimited" ]]; then
+                      _auth_used=$(( _auth_used + ${#REFS[@]} ))
+                    fi
+                    # ── Mark these artifacts as processed ────────────────
+                    # Only done here, after a successful create, so that a
+                    # failed create in a prior cycle is retried.
+                    # Record "name:id" so that if a build is retried and the
+                    # artifact is re-uploaded (same name, new id via
+                    # overwrite:true), the updated artifact is recognised as
+                    # new and its digest is re-merged.
+                    for i in "${!NEW_PKEYS[@]}"; do
+                      echo "${ARTIFACT_PREFIX}${NEW_PKEYS[$i]}:${NEW_ARTIFACT_IDS[$i]}" \
+                        >> "${IMG_PROCESSED[$key]}"
+                      # Only increment the merged-platform count if this
+                      # platform_key has not been counted before.  A retried
+                      # build re-uploads the artifact with the same platform_key
+                      # but a new artifact id; without this guard the counter
+                      # would exceed img_expected and mark the image done
+                      # prematurely.
+                      pkey="${NEW_PKEYS[$i]}"
+                      if ! grep -qxF "${pkey}" "${IMG_MERGED_PKEYS[$key]}" 2>/dev/null; then
+                        echo "${pkey}" >> "${IMG_MERGED_PKEYS[$key]}"
+                        IMG_DIGEST_MERGED[$key]=$(( IMG_DIGEST_MERGED[$key] + 1 ))
+                      fi
+                    done
+                  else
+                    _create_err="$(cat "${_create_err_file}" 2>/dev/null || true)"
+                    rm -f "${_create_err_file}"
+                    IMG_LAST_ERROR[$key]="${_create_err}"
+                    _img_create_deferred=true
+                    _any_create_failed=true
+                    if [[ -n "${_create_err}" ]]; then
+                      echo "imagetools create failed for ${IMAGE}: ${_create_err}"
+                    else
+                      echo "imagetools create failed for ${IMAGE}."
+                    fi
+                    echo "Will retry next cycle."
+                    # State file (IMG_PLATFORM_DIGESTS) is unchanged; the temp
+                    # map is discarded.  New artifacts remain unprocessed so they
+                    # will be retried on the next cycle.
+                  fi
+                fi
+              fi
+            fi
+
+            # ── Completion checks for this image ──────────────────────────
+            digest_merged="${IMG_DIGEST_MERGED[$key]}"
+
+            if [[ "${_img_create_deferred}" != "true" ]]; then
+              # imagetools create ran; check whether this image is now done.
+              if [[ "${build_done}" -ge "${ver_expected}" ]]; then
+                if [[ "${digest_merged}" -lt "${img_expected}" ]]; then
+                  echo "::warning::Only ${digest_merged}/${img_expected}" \
+                       "platform(s) merged for ${IMAGE}; will report at end."
+                fi
+                IMG_DONE[$key]="true"
+                echo "Image ${IMAGE} complete" \
+                     "(${digest_merged}/${img_expected} platform(s) merged)."
+              elif [[ "${digest_merged}" -ge "${img_expected}" ]]; then
+                IMG_DONE[$key]="true"
+                echo "All ${img_expected} platform(s) merged for ${IMAGE}."
+              fi
+            fi
+          done
+
+          # ── Log any per-cycle create issues ───────────────────────────────────
+          if [[ "${_any_quota_deferred}" == "true" ]]; then
+            echo "::warning::imagetools create deferred this cycle: Docker Hub pull quota" \
+                 "insufficient (${_auth_rem:-unknown} authenticated remaining)." \
+                 "Will retry next cycle."
+          fi
+          if [[ "${_any_create_failed}" == "true" ]]; then
+            echo "::warning::One or more imagetools create operations failed this cycle." \
+                 "Check earlier imagetools create logs for the underlying failure."
+          fi
+
+          # ── Status summary and sleep ───────────────────────────────────
+          DONE_COUNT=0
+          for vs in "${VERSIONS_STAGES[@]}"; do
+            version="${vs%%:*}"
+            stage="${vs##*:}"
+            key="${version}:${stage}"
+            [[ "${IMG_DONE[$key]}" == "true" ]] && (( DONE_COUNT++ )) || true
+          done
+
+          if [[ ${DONE_COUNT} -lt ${#VERSIONS_STAGES[@]} ]]; then
+            echo "Cycle ${POLL_CYCLE}:" \
+                 "${DONE_COUNT}/${#VERSIONS_STAGES[@]} manifest(s) complete;" \
+                 "polling again in ${POLL_INTERVAL_SECONDS}s..."
+            sleep "${POLL_INTERVAL_SECONDS}"
+          fi
+        done
+
+        # ── Final check: fail if any image is missing platform merges ─────────
+        # When imagetools create failed, the merge loop exits with some images
+        # unpushed.  Exit 1 here so the job reports failure and can be retried.
+        INCOMPLETE_KEYS=()
+        for vs in "${VERSIONS_STAGES[@]}"; do
+          version="${vs%%:*}"
+          stage="${vs##*:}"
+          key="${version}:${stage}"
+          digest_merged="${IMG_DIGEST_MERGED[$key]}"
+          img_expected="${IMG_EXPECTED_PLATFORMS[$key]}"
+          if [[ "${digest_merged}" -lt "${img_expected}" ]]; then
+            INCOMPLETE_KEYS+=("${key}")
+          fi
+        done
+        if [[ ${#INCOMPLETE_KEYS[@]} -gt 0 ]]; then
+          echo "::error::The following images were not fully merged (fewer platforms" \
+               "merged than expected — check per-platform build jobs for failures):"
+          for key in "${INCOMPLETE_KEYS[@]}"; do
+            version="${key%%:*}"
+            stage="${key##*:}"
+            IMAGE="${REPO}:${version}-${stage}${TAG_SUFFIX}"
+            digest_merged="${IMG_DIGEST_MERGED[$key]}"
+            img_expected="${IMG_EXPECTED_PLATFORMS[$key]}"
+            echo "::error::  ${IMAGE} (${digest_merged}/${img_expected} platform(s) merged)"
+            last_err="${IMG_LAST_ERROR[$key]:-}"
+            if [[ -n "${last_err}" ]]; then
+              # Sanitize for use in a GHA annotation: collapse newlines to spaces
+              # and escape workflow-command reserved characters ('%', '\r', '\n').
+              safe_err="$(printf '%s' "${last_err}" \
+                | tr '\n\r' '  ' \
+                | sed 's/%/%25/g')"
+              echo "::error::  Last error: ${safe_err}"
+            fi
+          done
+          echo "::error::To retry: click 'Re-run failed jobs' on this workflow run's summary page."
+          exit 1
+        fi
