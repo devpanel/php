@@ -65,6 +65,17 @@ jobs:
       - name: Run Dockerfile lint
         run: bash tests/lint-dockerfile.sh
 
+  lint-actions:
+    name: Lint GitHub Actions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run Actions lint
+        run: bash tests/lint-actionlint.sh
+
   # ── Find the effective before SHAs ──────────────────────────────────────────
   # Looks up the last successful test.yml run on this branch and uses its
   # head SHA as the "before" anchor for the linux-amd64 platform.
@@ -198,7 +209,7 @@ jobs:
   build:
     name: Build and test PHP ${{ matrix.version }}
     runs-on: ubuntu-latest
-    needs: [lint-yaml, lint-shell, lint-dockerfile, verify-extension, verify-code-server, detect]
+    needs: [lint-yaml, lint-shell, lint-dockerfile, lint-actions, verify-extension, verify-code-server, detect]
     if: needs.detect.outputs.has_versions == 'true'
     strategy:
       fail-fast: false
@@ -371,6 +382,7 @@ jobs:
       - lint-yaml
       - lint-shell
       - lint-dockerfile
+      - lint-actions
       - verify-extension
       - verify-code-server
       - prepare
