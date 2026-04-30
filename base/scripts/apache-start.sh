@@ -59,6 +59,7 @@ chown "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR" "$CODES_USER_DATA_DIR/extens
 if [ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ]; then
   _installer_env_file=$(mktemp)
   _installer_rc_file=$(mktemp)
+  chmod 600 "$_installer_env_file" "$_installer_rc_file"
   bash -c '
     _installer_path=$1
     _env_file=$2
@@ -92,8 +93,8 @@ if [ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ]; then
   fi
 
   _installer_rc=0
-  if [ -f "$_installer_rc_file" ]; then
-    _installer_rc=$(cat "$_installer_rc_file")
+  if [ -s "$_installer_rc_file" ]; then
+    read -r _installer_rc < "$_installer_rc_file" || true
   fi
   if [ "${_installer_rc:-0}" -ne 0 ]; then
     printf "custom_package_installer.sh exited with code %s (continuing startup)\n" \
