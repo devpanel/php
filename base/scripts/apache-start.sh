@@ -62,9 +62,7 @@ if [ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ]; then
   # capture output and avoid aborting startup on errors or `exit` calls.
   {
     _had_expand_aliases=0
-    case " $(shopt -p expand_aliases) " in
-      *" -s "*) _had_expand_aliases=1 ;;
-    esac
+    shopt -q expand_aliases && _had_expand_aliases=1
     # Save current shell options so the installer cannot permanently alter them
     # (e.g. `set -e`, `set -u`, `set -o pipefail` would otherwise break startup).
     _saved_shell_opts=$(set +o 2>/dev/null)
