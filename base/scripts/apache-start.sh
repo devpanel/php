@@ -55,21 +55,34 @@ chown "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR" "$CODES_USER_DATA_DIR/extens
 # Install any custom packages.
 # If a user-provided installer exists, source it so any `export`ed variables
 # become visible to this startup script. Redirect stdout/stderr to the log and
-# protect the parent shell from accidental `exit` calls by temporarily
-# shadowing `exit` with a harmless function while sourcing.
+# protect the parent shell from accidental `exit` calls by rewriting `exit` to
+# `return` while sourcing.
 if [ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ]; then
   # Run the installer in the current shell so exported vars persist, but
   # capture output and avoid aborting startup on errors or `exit` calls.
   {
-    # SC2329: `exit` is shadowed to prevent sourced script from exiting the parent
-    # shellcheck disable=SC2329
-    exit() { return; }
+    _had_expand_aliases=0
+    case " $(shopt -p expand_aliases) " in
+      *" -s "*) _had_expand_aliases=1 ;;
+    esac
+    # Save current shell options so the installer cannot permanently alter them
+    # (e.g. `set -e`, `set -u`, `set -o pipefail` would otherwise break startup).
+    _saved_shell_opts=$(set +o 2>/dev/null)
+    set +e +u +o pipefail 2>/dev/null || true
+    # Alias exit to return so `exit N` in the installer stops only the sourced
+    # file and propagates the exit status rather than terminating this script.
+    shopt -s expand_aliases
+    alias exit='return'
     # SC1090/SC1091: intentional dynamic source of a user file
     # shellcheck disable=SC1090,SC1091
     . "$APP_ROOT/.devpanel/custom_package_installer.sh"
     _installer_rc=$?
-    # Restore exit by unsetting the function (this restores the builtin).
-    unset -f exit 2>/dev/null || true
+    unalias exit 2>/dev/null || true
+    if [ "$_had_expand_aliases" -eq 0 ]; then
+      shopt -u expand_aliases
+    fi
+    # Restore shell options to the state before sourcing the installer.
+    eval "$_saved_shell_opts" 2>/dev/null || true
     # Ensure any auto-export enabled by the custom script is disabled.
     # `set +a` is idempotent and safe to run even if not previously enabled.
     set +a 2>/dev/null || true

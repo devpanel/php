@@ -430,6 +430,6 @@ BAZ="some value"
 set +a
 ```
 
-Security note: The startup process will source arbitrary code from `.devpanel/custom_package_installer.sh` as the container startup user. Verify and audit any scripts you place there. Using `set -a` increases the chance of unintentionally exporting variables; use it with care.
+Security note: In this image, the startup process sources arbitrary code from `.devpanel/custom_package_installer.sh` as `root` (the container startup path invokes `sudo -E /bin/bash /scripts/apache-start.sh`). Verify and audit any scripts you place there, because they run with root privileges during startup. Any variables you explicitly `export` (or implicitly export via `set -a`) may remain available to later startup steps, including commands invoked with `sudo -u ... -E`, so use exports with care.
 
 Note: `apache-start.sh` will run `set +a` after sourcing your custom script to ensure the shell's auto-export state is cleared even if your script enabled it.
