@@ -404,3 +404,32 @@ SHA256 on every CI run.
 
 The VSIX is architecture-independent, so only one hash value is needed (unlike
 code-server which ships separate `amd64`/`arm64` packages).
+
+## Custom package installer
+
+You can provide a startup script at `.devpanel/custom_package_installer.sh` inside your application root to run custom setup steps during container startup. The startup process will source this script so any variables you explicitly `export` will become available to the rest of the startup sequence. All output (stdout/stderr) from the script is appended to `/tmp/custom_package_installer.log`.
+
+Recommended (explicit exports):
+
+```bash
+#!/bin/bash
+export FOO=bar
+export BAZ="some value"
+```
+
+Auto-export mode (enable inside your custom script):
+
+If you prefer to write plain assignments without `export`, enable auto-export for the duration of the file using `set -a`/`set +a`:
+
+```bash
+#!/bin/bash
+# Auto-export all assignments in this file
+set -a
+FOO=bar
+BAZ="some value"
+set +a
+```
+
+Security note: In this image, the startup process sources arbitrary code from `.devpanel/custom_package_installer.sh` as `root` (the container startup path invokes `sudo -E /bin/bash /scripts/apache-start.sh`). Verify and audit any scripts you place there, because they run with root privileges during startup. Any variables you explicitly `export` (or implicitly export via `set -a`) may remain available to later startup steps, including commands invoked with `sudo -u ... -E`, so use exports with care.
+
+Note: `apache-start.sh` will run `set +a` after sourcing your custom script to ensure the shell's auto-export state is cleared even if your script enabled it.
