@@ -53,7 +53,31 @@ mkdir -p "$CODES_USER_DATA_DIR/extensions"
 chown "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR" "$CODES_USER_DATA_DIR/extensions"
 
 # Install any custom packages.
-[ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] && /bin/bash "$APP_ROOT/.devpanel/custom_package_installer.sh"  >> /tmp/custom_package_installer.log
+# If a user-provided installer exists, source it so any `export`ed variables
+# become visible to this startup script. Redirect stdout/stderr to the log and
+# protect the parent shell from accidental `exit` calls by temporarily
+# shadowing `exit` with a harmless function while sourcing.
+if [ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ]; then
+  # Run the installer in the current shell so exported vars persist, but
+  # capture output and avoid aborting startup on errors or `exit` calls.
+  {
+    # SC2329: `exit` is shadowed to prevent sourced script from exiting the parent
+    # shellcheck disable=SC2329
+    exit() { return; }
+    # SC1090/SC1091: intentional dynamic source of a user file
+    # shellcheck disable=SC1090,SC1091
+    . "$APP_ROOT/.devpanel/custom_package_installer.sh"
+    _installer_rc=$?
+    # Restore exit by unsetting the function (this restores the builtin).
+    unset -f exit 2>/dev/null || true
+    # Ensure any auto-export enabled by the custom script is disabled.
+    # `set +a` is idempotent and safe to run even if not previously enabled.
+    set +a 2>/dev/null || true
+    if [ "$_installer_rc" -ne 0 ]; then
+      printf "custom_package_installer.sh exited with code %s (continuing startup)\n" "$_installer_rc"
+    fi
+  } >> /tmp/custom_package_installer.log 2>&1 || true
+fi
 
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
