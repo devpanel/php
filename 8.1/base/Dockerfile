@@ -33,11 +33,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
           libmagickwand-dev \
           libmagickcore-dev \
           libpspell-dev \
-          postgresql-common \
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
-    && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
     && docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install -j$(nproc) gd pspell \
     && pecl install -o -f \
