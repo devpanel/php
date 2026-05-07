@@ -280,13 +280,13 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
 # Install psql 18x
-RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+RUN mkdir -p /etc/apt/keyrings \
+    && wget --quiet -O /etc/apt/keyrings/postgresql-archive-keyring.gpg https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "deb [signed-by=/etc/apt/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
       > /etc/apt/sources.list.d/pgdg.list \
-    && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
     && apt-get update \
     && apt-get install -y postgresql-client-18 \
     && rm -rf /var/lib/apt/lists/*
-
 
 # Install development libraries, build all common PHP and PECL extensions,
 # build libsodium from source, then remove the dev libraries and their
