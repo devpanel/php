@@ -270,17 +270,16 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
           git \
           rsync \
           ssh \
+          locales \
           default-mysql-client \
-          postgresql-common \
         && break; \
       [ "$i" -lt 3 ] && sleep 5; \
     done \
-    && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
+    && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
+    && locale-gen en_US.UTF-8 \
+    && update-locale LANG=en_US.UTF-8
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
-
-# Install psql 18x
-RUN apt-get update && apt-get install -y postgresql-client-18
 
 # Install development libraries, build all common PHP and PECL extensions,
 # build libsodium from source, then remove the dev libraries and their

@@ -33,9 +33,11 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
           libmagickwand-dev \
           libmagickcore-dev \
           libpspell-dev \
+          postgresql-common \
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
+    && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
     && docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install -j$(nproc) gd pspell \
     && pecl install -o -f \
@@ -57,6 +59,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
         -o APT::AutoRemove::RecommendsImportant=false \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
+
+# Install psql 18x
+RUN apt-get update && apt-get install -y postgresql-client-18
 
 USER ${USER}
 
