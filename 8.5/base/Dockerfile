@@ -60,7 +60,11 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
 # Install psql 18x
-RUN apt-get update && apt-get install -y postgresql-client-18
+RUN apt-get update \
+    && apt-get install -y postgresql-common \
+    && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
+    && apt-get install -y postgresql-client-18 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Override Composer with PHP 8.5 version using self-update
 RUN composer self-update
