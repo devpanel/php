@@ -63,6 +63,26 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
+# Install psql 18x
+RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
+    && for i in $(seq 1 3); do \
+      apt-get update && apt-get upgrade -y --fix-missing \
+        && apt-get install -f -y --no-install-recommends \
+        && apt-get install -y --fix-missing --no-install-recommends \
+          gnupg \
+          lsb-release \
+        && break; \
+      [ "$i" -lt 3 ] && sleep 5; \
+    done \
+    && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+       > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y postgresql-client-18 \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
+
 # Override WP-CLI with 7.4-specific version (2.4.0)
 RUN rm -f /usr/local/bin/wp \
     && curl -LO https://github.com/wp-cli/wp-cli/releases/download/v2.4.0/wp-cli-2.4.0.phar \
