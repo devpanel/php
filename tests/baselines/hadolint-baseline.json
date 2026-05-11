@@ -46,7 +46,6 @@
   "./base/Dockerfile:DL4001": 1,
   "./base/Dockerfile:DL4006": 4,
   "./base/Dockerfile:SC2015": 1,
-  "./base/Dockerfile:SC2016": 1,
   "./base/Dockerfile:SC2046": 1,
   "./secure/Dockerfile:DL3006": 1,
   "./secure/Dockerfile:DL3008": 1,
