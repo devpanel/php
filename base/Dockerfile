@@ -277,9 +277,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
         && break; \
       [ "$i" -lt 3 ] && sleep 5; \
     done \
-    && sed -i '/${LANG}/s/^# //g' /etc/locale.gen \
-    && locale-gen ${LANG} \
-    && update-locale LANG=${LANG} \
+    && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
+    && locale-gen en_US.UTF-8 \
+    && update-locale LANG=en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
