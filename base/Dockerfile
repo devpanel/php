@@ -206,12 +206,14 @@ FROM php:${PHP_VERSION}-apache AS php-ext-common
 
 #== System Environments
 ARG DEBIAN_FRONTEND=noninteractive
+ARG DEBIAN_FRONTEND=noninteractive
 ENV USER=www
 ENV GROUP=www
 ENV UID=1000
 ENV GID=1000
 ENV HOME=/home/${USER}
 ENV SHELL=/bin/bash
+ENV LANG=en_US.UTF-8
 
 #== Default Environments
 ENV APP_ROOT=/var/www/html
@@ -275,9 +277,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
         && break; \
       [ "$i" -lt 3 ] && sleep 5; \
     done \
-    && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
-    && locale-gen en_US.UTF-8 \
-    && update-locale LANG=en_US.UTF-8 \
+    && sed -i '/${LANG}/s/^# //g' /etc/locale.gen \
+    && locale-gen ${LANG} \
+    && update-locale LANG=${LANG} \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
