@@ -342,7 +342,7 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
     && pecl install -o -f libsodium \
     && docker-php-ext-enable \
         bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
-        pdo_mysql redis shmop soap sockets sodium sysvmsg \
+        pdo_mysql pdo_pgsql redis shmop soap sockets sodium sysvmsg \
         sysvsem sysvshm tidy xsl yaml zip pcntl memcached \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \
