@@ -53,7 +53,56 @@ mkdir -p "$CODES_USER_DATA_DIR/extensions"
 chown "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR" "$CODES_USER_DATA_DIR/extensions"
 
 # Install any custom packages.
-[ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ] && /bin/bash "$APP_ROOT/.devpanel/custom_package_installer.sh"  >> /tmp/custom_package_installer.log
+# If a user-provided installer exists, run it in a separate bash process so
+# any `set -e`/`set -u`/traps cannot terminate this startup script, then
+# import only the exported environment it produced.
+if [ -f "$APP_ROOT/.devpanel/custom_package_installer.sh" ]; then
+  _installer_env_file=$(mktemp)
+  _installer_rc_file=$(mktemp)
+  chmod 600 "$_installer_env_file" "$_installer_rc_file"
+  bash -c '
+    _installer_path=$1
+    _env_file=$2
+    _rc_file=$3
+
+    trap '"'"'
+      _rc=$?
+      trap - EXIT
+      printf "%s\n" "$_rc" > "$_rc_file"
+      export -p > "$_env_file"
+      exit 0
+    '"'"' EXIT
+
+    set +e +u +o pipefail 2>/dev/null || true
+    shopt -s expand_aliases
+    alias exit="return"
+    # SC1090/SC1091: intentional dynamic source of a user file
+    # shellcheck disable=SC1090,SC1091
+    . "$_installer_path"
+    _installer_rc=$?
+    unalias exit 2>/dev/null || true
+    exit "$_installer_rc"
+  ' bash "$APP_ROOT/.devpanel/custom_package_installer.sh" \
+    "$_installer_env_file" "$_installer_rc_file" \
+    >> /tmp/custom_package_installer.log 2>&1 || true
+
+  if [ -f "$_installer_env_file" ]; then
+    # Import only the environment exported by the child shell.
+    # shellcheck disable=SC1090
+    . "$_installer_env_file"
+  fi
+
+  _installer_rc=0
+  if [ -s "$_installer_rc_file" ]; then
+    read -r _installer_rc < "$_installer_rc_file" || true
+  fi
+  if [ "${_installer_rc:-0}" -ne 0 ]; then
+    printf "custom_package_installer.sh exited with code %s (continuing startup)\n" \
+      "$_installer_rc" >> /tmp/custom_package_installer.log
+  fi
+
+  rm -f "$_installer_env_file" "$_installer_rc_file"
+fi
 
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
