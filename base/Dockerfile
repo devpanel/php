@@ -323,6 +323,7 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
           libzip-dev \
           libmemcached-dev \
           libssl-dev \
+          libpq-dev \
           zlib1g-dev \
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
