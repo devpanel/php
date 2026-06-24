@@ -517,13 +517,13 @@ runs:
     - name: Poll and merge manifests
       shell: bash
       env:
-        MERGE_MATRIX_JSON:     ${{ inputs.merge_matrix }}
-        REPO:                  ${{ inputs.repo }}
-        TAG_SUFFIX:            ${{ inputs.tag_suffix }}
+        MERGE_MATRIX_JSON: ${{ inputs.merge_matrix }}
+        REPO: ${{ inputs.repo }}
+        TAG_SUFFIX: ${{ inputs.tag_suffix }}
         POLL_INTERVAL_SECONDS: ${{ inputs.poll_interval_seconds }}
-        GH_TOKEN:              ${{ inputs.github_token }}
-        RUN_ID:                ${{ inputs.run_id }}
-        GITHUB_REPO:           ${{ inputs.repository }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        RUN_ID: ${{ inputs.run_id }}
+        GITHUB_REPO: ${{ inputs.repository }}
         DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
         DOCKERHUB_TOKEN: ${{ inputs.dockerhub_token }}
         GHCR_WRITABLE: ${{ inputs.ghcr_writable }}
@@ -1256,7 +1256,7 @@ runs:
             IMAGE="${REPO}:${version}-${stage}${TAG_SUFFIX}"
             digest_merged="${IMG_DIGEST_MERGED[$key]}"
             img_expected="${IMG_EXPECTED_PLATFORMS[$key]}"
-            echo "::error::  ${IMAGE} (${digest_merged}/${img_expected} platform(s) merged)"
+            echo "::error:: ${IMAGE} (${digest_merged}/${img_expected} platform(s) merged)"
             last_err="${IMG_LAST_ERROR[$key]:-}"
             if [[ -n "${last_err}" ]]; then
               # Sanitize for use in a GHA annotation: collapse newlines to spaces
@@ -1264,7 +1264,7 @@ runs:
               safe_err="$(printf '%s' "${last_err}" \
                 | tr '\n\r' '  ' \
                 | sed 's/%/%25/g')"
-              echo "::error::  Last error: ${safe_err}"
+              echo "::error:: Last error: ${safe_err}"
             fi
           done
           echo "::error::To retry: click 'Re-run failed jobs' on this workflow run's summary page."
