@@ -22,7 +22,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Update PHP 7.4 and 8.0 PostgreSQL sources to the PGDG archive.
 - [x] Run focused Dockerfile lint/configuration validation and review the final diff.
 - [x] Scan changed files for secrets.
-- [ ] Run parallel code validation.
+- [x] Run parallel code validation.
 
 ## Definition of Done
 - Bullseye builds use the Debian archive and pinned security snapshot, and PHP 7.4/8.0 use the archived PGDG repository.
@@ -36,8 +36,10 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Keep PHP 8.1 extension installation failures from being hidden by the optional dependency-marking fallback.
 - [x] Point Bullseye PostgreSQL client installs at the PGDG archive.
 - [x] Run Dockerfile/shell lint, shell syntax, diff, and secret checks; attempt a PHP 8.1 build (local Buildx driver lacks cache-export support).
+- [x] Run parallel code validation; no actionable review findings, and CodeQL found no analyzable code changes.
+- [ ] Confirm the GitHub Actions rerun after workflow approval.
 
 ## Definition of Done
 - PHP 7.4/8.0 build from valid PostgreSQL package sources.
 - PHP 8.1 imagick setup failures are surfaced, and Copilot Chat functional tests handle preinstalled newer versions.
-- Focused validation passes; changed files contain no secrets.
+- The GitHub Actions test matrix passes; focused validation passes and changed files contain no secrets.
