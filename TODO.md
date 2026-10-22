@@ -7,8 +7,9 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 ## Steps
 - [x] Restore unconditional CLI installation and remove architecture-specific omission tests.
 - [x] Enable QEMU on ARM runners and document the runtime emulation requirement.
-- [ ] Restore the Dockerfile lint baseline and run focused checks.
-- [ ] Scan changed files for secrets and complete code/security review.
+- [x] Restore the Dockerfile lint baseline; YAML/Dockerfile/shell lint, shell syntax and ARM64 Bake parsing pass.
+- [x] Scan changed files for secrets (none); independent review found no significant issues. Automated review unavailable; CodeQL has no analyzable changes.
+- [x] Record validation limitation: native ARM runner execution cannot be verified in this AMD64-only sandbox.
 
 ## Definition of Done
 - All image builds install and verify the bundled CLI.
