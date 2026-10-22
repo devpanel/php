@@ -179,17 +179,21 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
 #== Update PEAR for HTTP chunked response support in legacy PHP images
-ARG PEAR_VERSION=1.10.18
+COPY resolve-pear-version.php /tmp/resolve-pear-version.php
+ARG PEAR_MIN_VERSION=1.10.18
 RUN installed_pear="$(pear version)" \
     && installed_pear="${installed_pear#PEAR Version: }" \
-    && if dpkg --compare-versions "${installed_pear%%[[:space:]]*}" lt "$PEAR_VERSION"; then \
-      curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
+    && if dpkg --compare-versions "${installed_pear%%[[:space:]]*}" lt "$PEAR_MIN_VERSION"; then \
+      PEAR_VERSION="$(php /tmp/resolve-pear-version.php "$PEAR_MIN_VERSION")" \
+      && echo "Updating PEAR to ${PEAR_VERSION}" \
+      && curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
         "https://pear.php.net/get/PEAR-${PEAR_VERSION}.tgz" -o /tmp/pear.tgz \
       && pear upgrade --offline --loose /tmp/pear.tgz \
       && mkdir -p "$(pear config-get cache_dir)" \
       && pear clear-cache \
       && rm -f /tmp/pear.tgz; \
-    fi
+    fi \
+    && rm -f /tmp/resolve-pear-version.php
 
 # Install development libraries, build all common PHP and PECL extensions,
 # build libsodium from source, then remove the dev libraries and their

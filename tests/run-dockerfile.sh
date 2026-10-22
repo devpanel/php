@@ -152,6 +152,13 @@ assert_file_exists() {
 test_base() {
   local image="$1" version="$2"
 
+  if docker run --rm --entrypoint php -v "$REPO_ROOT:/pear-tests:ro" \
+    "$image" /pear-tests/tests/resolve-pear-version.php; then
+    ok "PEAR compatibility selection"
+  else
+    err "PEAR compatibility selection"
+  fi
+
   # PHP CLI — version string must contain the expected major.minor
   assert_contains "$image" "PHP ${version}\." "PHP ${version} CLI available" \
     php --version
