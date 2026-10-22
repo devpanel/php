@@ -55,7 +55,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Remove separate Copilot Chat downloads, installation, and verification.
 - [x] Run focused lint/build checks and refresh affected baselines; PHP 7.4 Bake build is blocked by sandbox DNS resolution of Debian repositories.
 - [x] Scan changed files for secrets; none detected.
-- [ ] Complete code/security review and report remaining CI verification.
+- [x] Complete code/security review: independent review found no significant issues and CodeQL reported zero alerts. Test run 39771022231 requires approval before end-to-end builds can be verified.
 
 ## Definition of Done
 - Builds no longer download or install a separate Copilot Chat extension.
