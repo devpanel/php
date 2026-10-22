@@ -197,7 +197,7 @@ test_base() {
   # -iname to locate the directory case-insensitively, normalize to lowercase,
   # and grep to confirm the expected publisher/name prefix is present.
   assert_contains "$image" "github\.copilot-chat" "GitHub Copilot Chat extension installs and is found" \
-    sh -c "code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir /var/www/html/.vscode && find /var/www/html/.vscode/extensions/ -maxdepth 1 -iname 'github.copilot-chat-*' -type d | tr '[:upper:]' '[:lower:]' | grep 'github.copilot-chat'"
+    sh -c "code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir /var/www/html/.vscode --force && find /var/www/html/.vscode/extensions/ -maxdepth 1 -iname 'github.copilot-chat-*' -type d | tr '[:upper:]' '[:lower:]' | grep 'github.copilot-chat'"
 }
 
 test_secure() {
