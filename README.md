@@ -279,8 +279,11 @@ for setup instructions.
   without pushing.  Functional tests (`tests/run-dockerfile.sh`) then start each
   built image and verify PHP, Apache, Composer, and extensions work.
   Run `./test.sh build run --version <v>` to test a single PHP version quickly.
-- The build workflow is `docker-build.yml`, which handles both push-triggered and manual dispatch
-  builds.  It runs a detect → build (per-platform, parallel) → merge pipeline.
+- The build workflow is `docker-build.yml`, which handles both push-triggered
+  and manual dispatch builds.  It runs a detect → build (per-platform,
+  parallel) → merge pipeline.  ARM64 builds use native `ubuntu-24.04-arm`
+  runners; AMD64 builds use `ubuntu-latest`.  QEMU is only set up when the
+  requested platform does not match the runner architecture.
 - The `advance` variant depends on `secure`, which depends on `base`.
   The build chain is enforced via the bake target dependency graph.
 
