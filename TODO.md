@@ -69,7 +69,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Upgrade PEAR with curl-downloaded local metadata-independent installation.
 - [x] Enable OPcache only when it is not already loaded, including built-in PHP 8.5.
 - [x] Run Dockerfile/shell lint, shell syntax and Bake parsing; verify the OPcache guard on official PHP 7.4 and 8.5 images. Full PHP 7.4 Bake build is blocked by sandbox Debian DNS resolution.
-- [ ] Scan for secrets and complete code/security review.
+- [x] Scan for secrets; no secrets detected. Independent review found no significant issues; automated review was unavailable and CodeQL had no analyzable code. Fresh PHP 7.4/8.5 cache initialization checks pass; CI requires approval.
 
 ## Definition of Done
 - Legacy images use a PEAR release with HTTP chunked response decoding.

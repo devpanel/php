@@ -183,7 +183,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
 ARG PEAR_VERSION=1.10.18
 RUN curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
       "https://pear.php.net/get/PEAR-${PEAR_VERSION}.tgz" -o /tmp/pear.tgz \
-    && pear upgrade --offline /tmp/pear.tgz \
+    && pear upgrade --offline --loose /tmp/pear.tgz \
+    && mkdir -p "$(pear config-get cache_dir)" \
     && pear clear-cache \
     && rm -f /tmp/pear.tgz
 
