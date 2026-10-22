@@ -61,8 +61,12 @@ ARG COPILOT_CHAT_VSIX_SHA256=691e80194fdba0399879fd065a76b9b14b32bfd29818292e816
 
 # Install unzip and zip early so they are available for VSIX validation and
 # repacking during the download step.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends unzip zip \
+RUN for i in $(seq 1 3); do \
+      apt-get update \
+        && apt-get install -y --no-install-recommends unzip zip \
+        && break \
+      || { [ "$i" -lt 3 ] && sleep 5; }; \
+    done \
     && rm -rf /var/lib/apt/lists/*
 
 # Download libsodium source (pinned release, identical for every PHP version)
