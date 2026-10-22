@@ -61,3 +61,17 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - Builds no longer download or install a separate Copilot Chat extension.
 - PECL uses HTTPS channel metadata and unpinned shared extensions.
 - Focused checks pass; any unavailable build verification is explicitly reported.
+
+# Task: Fix remaining PEAR and OPcache build failures
+
+## Steps
+- [x] Inspect Test run 39771238006 and the twelve PR commits.
+- [x] Upgrade PEAR with curl-downloaded local metadata-independent installation.
+- [x] Enable OPcache only when it is not already loaded, including built-in PHP 8.5.
+- [x] Run Dockerfile/shell lint, shell syntax and Bake parsing; verify the OPcache guard on official PHP 7.4 and 8.5 images. Full PHP 7.4 Bake build is blocked by sandbox Debian DNS resolution.
+- [ ] Scan for secrets and complete code/security review.
+
+## Definition of Done
+- Legacy images use a PEAR release with HTTP chunked response decoding.
+- OPcache remains loaded on every PHP version without enabling a nonexistent PHP 8.5 shared module.
+- Focused checks pass; any remaining build or CI blockers are explicitly reported.

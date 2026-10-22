@@ -186,6 +186,9 @@ test_base() {
       php -m
   done
 
+  assert_contains "$image" "^Zend OPcache$" "OPcache extension loaded" \
+    php -m
+
   # Verify no PHP extension .so has unresolved shared-library dependencies.
   # A "not found" line from ldd means a runtime library was removed along with
   # the dev packages — the failure mode caused by the usrmerge path mismatch

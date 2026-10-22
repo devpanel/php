@@ -179,6 +179,14 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
+#== Update PEAR for HTTP chunked response support in legacy PHP images
+ARG PEAR_VERSION=1.10.18
+RUN curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
+      "https://pear.php.net/get/PEAR-${PEAR_VERSION}.tgz" -o /tmp/pear.tgz \
+    && pear upgrade --offline /tmp/pear.tgz \
+    && pear clear-cache \
+    && rm -f /tmp/pear.tgz
+
 # Install development libraries, build all common PHP and PECL extensions,
 # build libsodium from source, then remove the dev libraries and their
 # automatically-added dependencies that are not needed at runtime.
@@ -243,9 +251,12 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
     && ( cd /tmp/libsodium/libsodium-1.0.18-RELEASE/ && ./configure && make && make check && make install ) \
     && pecl install -o -f libsodium \
     && docker-php-ext-enable \
-        bcmath bz2 calendar exif gettext gmp intl mysqli opcache \
+        bcmath bz2 calendar exif gettext gmp intl mysqli \
         pdo_mysql pdo_pgsql redis shmop soap sockets sodium sysvmsg \
         sysvsem sysvshm tidy xsl yaml zip pcntl memcached \
+    && if ! php -r 'exit(extension_loaded("Zend OPcache") ? 0 : 1);'; then \
+      docker-php-ext-enable opcache; \
+    fi \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \
     && { find /usr/local/lib/php/extensions -name '*.so' \
