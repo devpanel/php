@@ -343,9 +343,13 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
         bcmath bz2 calendar exif gettext gmp intl mysqli \
         pdo_mysql pdo_pgsql shmop soap sockets sysvmsg sysvsem sysvshm \
         tidy xsl zip pcntl \
-    && pecl channel-update pecl.php.net \
+    && for i in $(seq 1 3); do \
+      pecl channel-update pecl.php.net \
+        && break \
+      || { [ "$i" -lt 3 ] && sleep 5; }; \
+    done \
     && pecl install -o -f \
-        redis-5.3.7 \
+        redis-6.3.0 \
         yaml-2.2.2 \
         memcached-3.2.0 \
     && rm -f /usr/local/etc/php/conf.d/*sodium.ini \

@@ -39,7 +39,6 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     done \
     && docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install -j$(nproc) gd pspell \
-    && pecl channel-update pecl.php.net \
     && pecl install -o -f \
         igbinary \
         imagick \

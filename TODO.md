@@ -39,7 +39,9 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Scope the best-effort apt-mark fallback in all PHP version Dockerfiles.
 - [x] Run Dockerfile/shell lint, shell syntax, Bake checks, and secret scanning; attempt a PHP 8.1 image build (sandbox DNS prevented GitHub download).
 - [x] Run parallel code/security validation; no review findings, and CodeQL had no analyzable code.
-- [ ] Confirm the current Test run after approval (run 39724221886 is action-required and has not started jobs).
+- [x] Review Test run 39724432825; Redis 5.3.7 failed on PHP 8.4/8.5, and shared PECL channel refreshes returned malformed XML on multiple versions.
+- [x] Upgrade the shared Redis extension to a PHP 8.4-compatible release, retry the shared PECL refresh, and remove redundant per-version refreshes.
+- [ ] Validate the follow-up Test run and complete focused checks, secret scanning, and parallel validation.
 
 ## Definition of Done
 - The CI failures from Test run 39719313157 have targeted fixes.
