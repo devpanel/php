@@ -31,6 +31,10 @@ Each PHP version ships three layered variants.
 
 Release candidate tags end with `-rc` (e.g. `8.3-base-rc`).
 
+The bundled legacy `devpanel` CLI is AMD64-only, including in ARM64 images.
+Executing it on an ARM64 host requires AMD64 emulation on that host; CI runner
+emulation is not included in the published images.
+
 Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3**
 
 ---
@@ -281,9 +285,10 @@ for setup instructions.
   Run `./test.sh build run --version <v>` to test a single PHP version quickly.
 - The build workflow is `docker-build.yml`, which handles both push-triggered
   and manual dispatch builds.  It runs a detect → build (per-platform,
-  parallel) → merge pipeline.  ARM64 builds use native `ubuntu-24.04-arm`
-  runners; AMD64 builds use `ubuntu-latest`.  QEMU is only set up when the
-  requested platform does not match the runner architecture.
+  parallel) → merge pipeline.  ARM64 builds use native `ubuntu-26.04-arm`
+  runners; AMD64 builds use `ubuntu-26.04`. QEMU is set up on ARM runners
+  to execute the bundled AMD64 DevPanel CLI, and for cross-platform builds.
+  Native AMD64 builds skip QEMU.
 - The `advance` variant depends on `secure`, which depends on `base`.
   The build chain is enforced via the bake target dependency graph.
 

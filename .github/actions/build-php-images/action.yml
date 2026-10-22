@@ -114,7 +114,7 @@ runs:
         password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
 
     - name: Set up QEMU
-      if: ${{ !((runner.arch == 'ARM64' && startsWith(inputs.platform, 'linux/arm64')) || (runner.arch == 'X64' && startsWith(inputs.platform, 'linux/amd64'))) }}
+      if: ${{ !(runner.arch == 'X64' && startsWith(inputs.platform, 'linux/amd64')) }}
       uses: docker/setup-qemu-action@v4
 
     - name: Set up Docker Buildx

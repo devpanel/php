@@ -2,6 +2,20 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Restore DevPanel CLI and enable QEMU on ARM runners
+
+## Steps
+- [x] Restore unconditional CLI installation and remove architecture-specific omission tests.
+- [x] Enable QEMU on ARM runners and document the runtime emulation requirement.
+- [x] Restore the Dockerfile lint baseline; YAML/Dockerfile/shell lint, shell syntax and ARM64 Bake parsing pass.
+- [x] Scan changed files for secrets (none); independent review found no significant issues. Automated review unavailable; CodeQL has no analyzable changes.
+- [x] Record validation limitation: native ARM runner execution cannot be verified in this AMD64-only sandbox.
+
+## Definition of Done
+- All image builds install and verify the bundled CLI.
+- ARM runners register QEMU before Buildx; native AMD64 builds still skip it.
+- Focused checks pass; unavailable full-build verification is explicitly reported.
+
 # Task: Use native ARM runners for ARM64 builds
 
 ## Steps
