@@ -35,11 +35,12 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Use `--force` in the Copilot Chat functional test to handle a newer preinstalled extension.
 - [x] Keep PHP 8.1 extension installation failures from being hidden by the optional dependency-marking fallback.
 - [x] Point Bullseye PostgreSQL client installs at the PGDG archive.
-- [x] Run Dockerfile/shell lint, shell syntax, diff, and secret checks; attempt a PHP 8.1 build (local Buildx driver lacks cache-export support).
-- [x] Run parallel code validation; no actionable review findings, and CodeQL found no analyzable code changes.
-- [ ] Confirm the GitHub Actions rerun after workflow approval.
+- [x] Refresh PECL channel metadata before extension installs.
+- [x] Scope the best-effort apt-mark fallback in all PHP version Dockerfiles.
+- [x] Run Dockerfile/shell lint, shell syntax, Bake checks, and secret scanning; attempt a PHP 8.1 image build (sandbox DNS prevented GitHub download).
+- [ ] Run parallel code/security validation on the final patch.
+- [ ] Confirm the GitHub Actions rerun after approval.
 
 ## Definition of Done
-- PHP 7.4/8.0 build from valid PostgreSQL package sources.
-- PHP 8.1 imagick setup failures are surfaced, and Copilot Chat functional tests handle preinstalled newer versions.
-- The GitHub Actions test matrix passes; focused validation passes and changed files contain no secrets.
+- The CI failures from Test run 39719313157 have targeted fixes.
+- The affected image builds and functional tests pass in CI; modified files contain no secrets.

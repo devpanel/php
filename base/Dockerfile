@@ -343,6 +343,7 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
         bcmath bz2 calendar exif gettext gmp intl mysqli \
         pdo_mysql pdo_pgsql shmop soap sockets sysvmsg sysvsem sysvshm \
         tidy xsl zip pcntl \
+    && pecl channel-update pecl.php.net \
     && pecl install -o -f \
         redis-5.3.7 \
         yaml-2.2.2 \
@@ -366,7 +367,7 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
             | while IFS= read -r lib; do dpkg-query --search "$(realpath "$lib" 2>/dev/null || echo "$lib")" 2>/dev/null; done \
             | cut -d: -f1 \
             | sort -u \
-            | xargs -r apt-mark manual; } || true \
+            | xargs -r apt-mark manual || true; } \
     && apt-get purge -y --auto-remove \
         -o APT::AutoRemove::RecommendsImportant=false \
     && rm -rf /var/lib/apt/lists/* \

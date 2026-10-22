@@ -39,6 +39,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     done \
     && docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install -j$(nproc) gd pspell \
+    && pecl channel-update pecl.php.net \
     && pecl install -o -f \
         igbinary \
         imagick \
@@ -54,7 +55,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
             | while IFS= read -r lib; do dpkg-query --search "$(realpath "$lib" 2>/dev/null || echo "$lib")" 2>/dev/null; done \
             | cut -d: -f1 \
             | sort -u \
-            | xargs -r apt-mark manual; } || true \
+            | xargs -r apt-mark manual || true; } \
     && apt-get purge -y --auto-remove \
         -o APT::AutoRemove::RecommendsImportant=false \
     && rm -rf /var/lib/apt/lists/* \
@@ -82,4 +83,3 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
 RUN composer self-update 2.7.7
 
 USER ${USER}
-
