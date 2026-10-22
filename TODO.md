@@ -14,14 +14,15 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 
 - [ ] Remove shellcheck baseline comparison: delete tests/baselines/shellcheck-baseline.json and the baseline comparison logic from tests/lint-shell.sh, and update the script to fail when shellcheck reports any violations (fail when the generated JSON is non-empty). After that, any new shellcheck violation will be an immediate CI failure.
 
-# Task: Retry downloader apt package installation
+# Task: Use archived Bullseye package sources
 
 ## Steps
-- [x] Identify the 404 for the Debian security `unzip` package in the failing Actions logs.
-- [x] Add bounded retries around `apt-get update` and the `unzip`/`zip` installation in `base/Dockerfile`.
-- [ ] Run focused Dockerfile validation and review the final diff.
-- [ ] Scan changed files for secrets and run parallel code validation.
+- [x] Identify that PHP 7.4's Bullseye security repository returns 404 for the `unzip` package after Bullseye LTS ended.
+- [x] Configure Bullseye stages to use Debian's archive repository and accept its expired metadata.
+- [x] Run focused Dockerfile lint/configuration validation and review the final diff.
+- [x] Scan changed files for secrets.
+- [ ] Run parallel code validation.
 
 ## Definition of Done
-- The downloader retries the metadata refresh and package installation after transient Debian mirror failures.
+- Bullseye downloader and extension stages inherit Debian Archive sources with expired metadata checks disabled.
 - Focused validation passes, the diff stays limited to the fix and this checklist, and changed files contain no secrets.

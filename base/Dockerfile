@@ -21,7 +21,15 @@ ARG PHP_VERSION=8.3
 FROM alpine:3 AS downloads
 RUN mkdir -p /pre-downloaded
 
-FROM php:${PHP_VERSION}-apache AS downloader
+# Debian Bullseye reached end of LTS in August 2026 and its repositories are
+# archived. Keep both downloader and PHP extension stages on the same sources.
+FROM php:${PHP_VERSION}-apache AS php-base
+RUN if grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release; then \
+      sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list \
+      && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive; \
+    fi
+
+FROM php-base AS downloader
 
 ARG CODESERVER_VERSION=4.99.4
 ARG CODESERVER_DEB_SHA256_AMD64=74c107b33643ed11223263b86431530fbc9c9f7c8202997579a6f0c41b4cb102
@@ -61,12 +69,8 @@ ARG COPILOT_CHAT_VSIX_SHA256=691e80194fdba0399879fd065a76b9b14b32bfd29818292e816
 
 # Install unzip and zip early so they are available for VSIX validation and
 # repacking during the download step.
-RUN for i in $(seq 1 3); do \
-      apt-get update \
-        && apt-get install -y --no-install-recommends unzip zip \
-        && break \
-      || { [ "$i" -lt 3 ] && sleep 5; }; \
-    done \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends unzip zip \
     && rm -rf /var/lib/apt/lists/*
 
 # Download libsodium source (pinned release, identical for every PHP version)
@@ -206,7 +210,7 @@ RUN if [ -d /tmp/_vsix_repack ]; then \
 #
 # This stage is referenced as the 'common-php-ext' Bake named context.
 # It is cached in GitHub Actions (type=gha) but never pushed to Docker Hub.
-FROM php:${PHP_VERSION}-apache AS php-ext-common
+FROM php-base AS php-ext-common
 
 #== System Environments
 ARG DEBIAN_FRONTEND=noninteractive
