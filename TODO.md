@@ -21,7 +21,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Configure Bullseye stages to use Debian's archive repository and accept its expired metadata.
 - [x] Run focused Dockerfile lint/configuration validation and review the final diff.
 - [x] Scan changed files for secrets.
-- [ ] Run parallel code validation.
+- [x] Run parallel code validation.
 
 ## Definition of Done
 - Bullseye downloader and extension stages inherit Debian Archive sources with expired metadata checks disabled.
