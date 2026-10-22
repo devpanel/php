@@ -294,8 +294,13 @@ RUN a2enmod rewrite remoteip headers
 
 # Copy shared assets from the 'common' build context (./base/ directory).
 # Per-version Dockerfiles may overlay version-specific files on top.
-COPY --from=common bin/devpanel /usr/local/bin/devpanel
-RUN chmod +x /usr/local/bin/devpanel && devpanel version
+# The bundled legacy DevPanel CLI is an AMD64-only executable.
+RUN --mount=type=bind,from=common,source=/bin/devpanel,target=/tmp/devpanel,readonly \
+    case "$(dpkg --print-architecture)" in \
+      amd64) install -m 0755 /tmp/devpanel /usr/local/bin/devpanel && devpanel version ;; \
+      arm64) echo "Skipping legacy DevPanel CLI: no ARM64 binary is bundled" >&2 ;; \
+      *) echo "Unsupported architecture for DevPanel CLI" >&2; exit 1 ;; \
+    esac
 COPY --from=common templates /templates
 COPY --from=common scripts   /scripts
 COPY --from=common drush     /drush

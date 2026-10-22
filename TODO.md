@@ -2,6 +2,19 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Fix ARM64 builds executing an AMD64-only CLI
+
+## Steps
+- [x] Identify the failing instruction and verify the bundled CLI architecture.
+- [x] Keep the legacy CLI on AMD64, omit it on ARM64, and document the limitation.
+- [x] Add architecture-aware CLI functional checks.
+- [ ] Run existing lint/build checks, secret scanning, and code/security validation.
+
+## Definition of Done
+- ARM64 builds do not copy or execute the incompatible legacy CLI.
+- AMD64 builds still install and verify the bundled CLI.
+- Focused checks pass; unavailable full-build verification is explicitly reported.
+
 # Task: Use native ARM runners for ARM64 builds
 
 ## Steps

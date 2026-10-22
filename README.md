@@ -31,6 +31,9 @@ Each PHP version ships three layered variants.
 
 Release candidate tags end with `-rc` (e.g. `8.3-base-rc`).
 
+The bundled legacy `devpanel` CLI is AMD64-only and is not installed in ARM64
+images. This applies to all PHP versions and all three variants.
+
 Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3**
 
 ---

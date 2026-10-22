@@ -175,6 +175,22 @@ test_base() {
   assert_contains "$image" "Apache" "apache2 binary present" \
     apache2 -v
 
+  # The bundled legacy DevPanel CLI is only available for AMD64.
+  local architecture
+  if architecture="$(run_in "$image" dpkg --print-architecture)"; then
+    case "$architecture" in
+      amd64)
+        assert_contains "$image" "Version" "DevPanel CLI executable on AMD64" \
+          devpanel version ;;
+      arm64)
+        assert_empty "$image" "no incompatible DevPanel CLI on ARM64" \
+          sh -c 'command -v devpanel || true' ;;
+      *) err "unexpected image architecture: $architecture" ;;
+    esac
+  else
+    err "could not determine image architecture: $architecture"
+  fi
+
   # PHP extensions: common extensions that should always be installed
   assert_contains "$image" "PDO" "PDO extension loaded" \
     php -m
