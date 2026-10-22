@@ -8,7 +8,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Inspect platform routing and composite build setup.
 - [x] Route ARM64 builds to ARM runners and skip QEMU for native builds.
 - [x] Document native runner selection and the cross-platform fallback.
-- [ ] Run focused workflow checks, secret scanning, and code/security review.
+- [x] Run focused workflow checks, secret scanning, and code/security review.
 
 ## Definition of Done
 - ARM64 build matrix jobs use `ubuntu-24.04-arm`; AMD64 jobs retain `ubuntu-latest`.
