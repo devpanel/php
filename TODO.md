@@ -5,8 +5,8 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 # Task: Run builds after an all-versions dispatch
 
 ## Steps
-- [ ] Update the `build` and `merge` job conditions in `.github/workflows/docker-build.yml`.
-- [ ] Run relevant workflow validation and review the final diff.
+- [x] Update the `build` and `merge` job conditions in `.github/workflows/docker-build.yml`.
+- [x] Run relevant workflow validation and review the final diff.
 
 ## Definition of Done
 - The downstream jobs can run when `prepare` is intentionally skipped, but only if `detect` succeeded, versions were detected, and the run was not cancelled.
