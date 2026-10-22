@@ -181,6 +181,11 @@ test_base() {
   assert_contains "$image" "imagick" "imagick extension loaded" \
     php -m
 
+  for extension in redis yaml memcached igbinary; do
+    assert_contains "$image" "^${extension}$" "${extension} extension loaded" \
+      php -m
+  done
+
   # Verify no PHP extension .so has unresolved shared-library dependencies.
   # A "not found" line from ldd means a runtime library was removed along with
   # the dev packages — the failure mode caused by the usrmerge path mismatch
@@ -191,13 +196,9 @@ test_base() {
   assert_empty "$image" "no unresolved .so deps in PHP extensions" \
     sh -c 'ext=$(php -r "echo PHP_EXTENSION_DIR;") && find "$ext" -name "*.so" -exec ldd {} + 2>/dev/null | grep "not found" || true'
 
-  # GitHub Copilot Chat extension must be installed in the extensions directory.
-  # code-server --install-extension unpacks the VSIX into a subdirectory named
-  # after the extension (e.g. GitHub.copilot-chat-<version>).  Use find with
-  # -iname to locate the directory case-insensitively, normalize to lowercase,
-  # and grep to confirm the expected publisher/name prefix is present.
-  assert_contains "$image" "github\.copilot-chat" "GitHub Copilot Chat extension installs and is found" \
-    sh -c "code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir /var/www/html/.vscode --force && find /var/www/html/.vscode/extensions/ -maxdepth 1 -iname 'github.copilot-chat-*' -type d | tr '[:upper:]' '[:lower:]' | grep 'github.copilot-chat'"
+  # code-server must work without installing a separate Chat extension.
+  assert_contains "$image" "[0-9]+\.[0-9]+\.[0-9]+" "code-server available" \
+    code-server --version
 }
 
 test_secure() {

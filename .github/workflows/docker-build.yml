@@ -24,7 +24,7 @@ on:
       no_cache:
         description: >
           Disable Docker layer cache and force a fresh download of all build
-          artefacts (code-server, Copilot Chat).
+          artefacts (code-server).
           When false, the cache is used as normal.
         type: boolean
         default: true
@@ -188,8 +188,8 @@ jobs:
           path: ${{ steps.preseed.outputs.bake_overrides_file }}
           retention-days: 1
 
-      # Upload the flat pre-downloaded/ directory (code-server .deb files and
-      # Copilot Chat VSIX) as a workflow artifact so build jobs can download it
+      # Upload the flat pre-downloaded/ directory (code-server .deb files)
+      # as a workflow artifact so build jobs can download it
       # directly.  Using an artifact (rather than the GHA preseed cache) is
       # more reliable because artifacts are guaranteed to persist for the
       # lifetime of the workflow run; the GHA cache can be evicted mid-run
@@ -231,7 +231,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      # Download the pre-seeded code-server .deb and Copilot Chat VSIX files
+      # Download the pre-seeded code-server .deb files
       # that the detect job assembled and uploaded.  Using a workflow artifact
       # (not the GHA preseed cache) guarantees these files are present for the
       # lifetime of the run; a cache miss would silently produce an empty

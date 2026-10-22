@@ -57,10 +57,7 @@ chown "${SUDO_USER:-$USER}:" "$CODES_USER_DATA_DIR" "$CODES_USER_DATA_DIR/extens
 
 set -m
 if [[ "$CODES_ENABLE" == "yes" ]]; then
-  # Install the GitHub Copilot Chat extension and any user-specified VSCode extensions.
-  if [ -z "$(find "$CODES_USER_DATA_DIR/extensions/" -maxdepth 1 -iname 'github.copilot-chat-*' -type d 2>/dev/null)" ]; then
-    sudo -u "${SUDO_USER:-$USER}" -E -- code-server --install-extension /usr/local/share/devpanel/copilot-chat.vsix --user-data-dir="$CODES_USER_DATA_DIR"
-  fi
+  # Install any user-specified VSCode extensions.
   if [ -n "${DP_VSCODE_EXTENSIONS:-}" ]; then
     IFS=',' read -ra _dp_extensions <<< "$DP_VSCODE_EXTENSIONS"
     for value in "${_dp_extensions[@]}"; do

@@ -39,8 +39,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install -j$(nproc) gd pspell \
     && pecl install -o -f \
-        igbinary-3.2.12 \
-        imagick-3.8.1 \
+        igbinary \
+        imagick \
     && docker-php-ext-enable gd igbinary imagick pspell \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \

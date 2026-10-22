@@ -137,7 +137,7 @@ PLATFORM_KEY="${NORMALIZED_PLATFORM//\//-}"
 #                        preseed-downloads composite action.  When set, it is
 #                        passed as an additional --file argument so each
 #                        phpX_Y-downloader target receives the correct
-#                        code-server/Copilot Chat version and SHA256 args for
+#                        code-server version and SHA256 args for
 #                        its Debian tier.  When unset, the Dockerfile ARG
 #                        defaults are used as fallback.
 #

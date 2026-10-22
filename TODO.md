@@ -46,3 +46,18 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 ## Definition of Done
 - The CI failures from Test run 39719313157 have targeted fixes.
 - The affected image builds and functional tests pass in CI; modified files contain no secrets.
+
+# Task: Address build and Copilot Chat feedback
+
+## Steps
+- [x] Inspect the latest CI failures and the ten PR commits.
+- [x] Use HTTPS for PECL channel metadata and remove unnecessary extension pins.
+- [x] Remove separate Copilot Chat downloads, installation, and verification.
+- [x] Run focused lint/build checks and refresh affected baselines; PHP 7.4 Bake build is blocked by sandbox DNS resolution of Debian repositories.
+- [x] Scan changed files for secrets; none detected.
+- [ ] Complete code/security review and report remaining CI verification.
+
+## Definition of Done
+- Builds no longer download or install a separate Copilot Chat extension.
+- PECL uses HTTPS channel metadata and unpinned shared extensions.
+- Focused checks pass; any unavailable build verification is explicitly reported.

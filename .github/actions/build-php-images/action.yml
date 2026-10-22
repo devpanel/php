@@ -83,7 +83,7 @@ inputs:
   bake_overrides_file:
     description: >
       Path to a pre-generated bake overrides JSON file that maps each
-      phpX_Y-downloader target to the correct code-server / Copilot Chat
+      phpX_Y-downloader target to the correct code-server
       versions and SHA256 digests for its Debian tier.  Pass the path to
       the preseed-bake-overrides artifact downloaded from the detect job.
     required: true

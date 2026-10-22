@@ -38,57 +38,18 @@ ARG CODESERVER_VERSION=4.99.4
 ARG CODESERVER_DEB_SHA256_AMD64=74c107b33643ed11223263b86431530fbc9c9f7c8202997579a6f0c41b4cb102
 ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e5de9d55f1e2077c3
 
-# GitHub Copilot Chat is not available in the Open VSX marketplace used by
-# code-server, so we download it directly from the VS Marketplace.
-#
-# Version channels
-# ──────────────────────────────────
-# The Copilot Chat extension publishes two channels to the VS Marketplace:
-#   • Stable releases use simple MAJOR.MINOR.PATCH version numbers
-#     (e.g. 0.26.7, visible as "0.26.0 … 0.26.7" in the VS Code desktop UI).
-#   • Pre-release builds use a build-date-stamped format: MAJOR.MINOR.YYYYMMDDNN
-#     (e.g. 0.26.2025040204 = series 0.26, released 2025-04-02, build 04).
-# Only stable releases are passed by CI (patch ≤ 9 digits excludes date-stamps).
-# code-server 4.X.Y bundles VS Code 1.X.Y (e.g. 4.99.4 → VS Code 1.99.4).
-#
-# CI resolves the latest compatible stable versions before the build and passes
-# them explicitly via CODESERVER_VERSION and COPILOT_CHAT_VERSION build args.
-# The defaults below are used for standalone `docker build` invocations.
-#
-# To update the defaults or SHA256 values:
-#   1. Find the latest code-server release at github.com/coder/code-server/releases
-#   2. Download the VSIX with --compressed so curl decompresses transfer encoding:
-#      curl -fsSL --compressed \
-#        "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/<ver>/vspackage" \
-#        -o copilot-chat-<ver>.vsix
-#   3. Run: sha256sum copilot-chat-<ver>.vsix   (Linux) or
-#           shasum -a 256 copilot-chat-<ver>.vsix (macOS)
-#   4. Update COPILOT_CHAT_VERSION and COPILOT_CHAT_VSIX_SHA256 below.
-ARG COPILOT_CHAT_VERSION=0.26.7
-# SHA256 of the VSIX downloaded from the VS Marketplace vspackage endpoint
-# (architecture-independent).  CI passes the value computed at download time;
-# standalone builds verify against this pinned value.
-ARG COPILOT_CHAT_VSIX_SHA256=691e80194fdba0399879fd065a76b9b14b32bfd29818292e816a4522eb0330d1
-
-# Install unzip and zip early so they are available for VSIX validation and
-# repacking during the download step.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends unzip zip \
-    && rm -rf /var/lib/apt/lists/*
-
 # Download libsodium source (pinned release, identical for every PHP version)
 RUN mkdir -p /tmp/libsodium \
     && curl -sL https://github.com/jedisct1/libsodium/archive/1.0.18-RELEASE.tar.gz \
        | tar xzf - -C /tmp/libsodium
 
-# Download code-server deb and GitHub Copilot Chat VSIX.
-# Versions are resolved by CI and passed via CODESERVER_VERSION and
-# COPILOT_CHAT_VERSION build args; standalone builds use the Dockerfile defaults.
+# Download code-server deb.
+# The version is resolved by CI and passed via CODESERVER_VERSION;
+# standalone builds use the Dockerfile default.
 # /pre-downloaded (bind-mounted from the 'downloads' named context) holds files
 # pre-seeded by CI via actions/cache@v5 so they are never re-downloaded for the
 # same version even when Docker layers change.
 RUN --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sharing=locked \
-    --mount=type=cache,id=copilot-chat-vsix,target=/var/cache/copilot-chat-vsix,sharing=locked \
     --mount=type=bind,from=downloads,source=/pre-downloaded,target=/pre-downloaded,readonly \
   set -e; \
   # code-server is required: fail build if version is empty
@@ -126,89 +87,13 @@ RUN --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sh
     echo "  actual:   ${ACTUAL_SHA}" >&2; \
     echo "If you changed CODESERVER_VERSION, also update ${SHA_ARG} to match." >&2; \
     exit 1; \
-  fi; \
-  \
-  # Download GitHub Copilot Chat VSIX (not available in Open VSX marketplace). \
-  # COPILOT_CHAT_VERSION is always provided — CI resolves it before the build and \
-  # standalone builds fall back to the Dockerfile default. \
-  [ -n "$COPILOT_CHAT_VERSION" ] || { echo "COPILOT_CHAT_VERSION is empty" >&2; exit 1; }; \
-  # Validate the version matches semver major.minor.patch with optional pre-release/
-  # build metadata using only URL-safe characters. This prevents a malformed URL
-  # from being constructed: an empty string, path separator, or other unexpected
-  # value is caught here with a clear message rather than silently producing
-  # .../copilot-chat//vspackage or similar.
-  printf '%s\n' "$COPILOT_CHAT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z._-]*)?$' \
-    || { echo "COPILOT_CHAT_VERSION has unexpected format: '${COPILOT_CHAT_VERSION}' (expected semver e.g. 1.2.3)" >&2; exit 1; }; \
-  echo "Fetching Copilot Chat VSIX version: $COPILOT_CHAT_VERSION" >&2; \
-  VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/GitHub/vsextensions/copilot-chat/${COPILOT_CHAT_VERSION}/vspackage"; \
-  VSIX_CACHE="/var/cache/copilot-chat-vsix/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"; \
-  VSIX_CACHE_TMP="${VSIX_CACHE}.tmp"; \
-  if [ ! -f "$VSIX_CACHE" ]; then \
-    VSIX_PRELOADED="/pre-downloaded/copilot-chat-${COPILOT_CHAT_VERSION}.vsix"; \
-    if [ -f "$VSIX_PRELOADED" ]; then \
-      echo "Using pre-seeded Copilot Chat VSIX ${COPILOT_CHAT_VERSION} from downloads context" >&2; \
-      cp "$VSIX_PRELOADED" "$VSIX_CACHE"; \
-    else \
-      echo "Downloading Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
-      curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 "$VSIX_URL" -o "$VSIX_CACHE_TMP" \
-        && mv "$VSIX_CACHE_TMP" "$VSIX_CACHE" \
-        || { rm -f "$VSIX_CACHE_TMP"; echo "Failed to download Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; exit 1; }; \
-    fi; \
-  else \
-    echo "Using cached Copilot Chat VSIX ${COPILOT_CHAT_VERSION}" >&2; \
-  fi; \
-  cp "$VSIX_CACHE" /tmp/copilot-chat.vsix; \
-  [ -n "$COPILOT_CHAT_VSIX_SHA256" ] || { echo "COPILOT_CHAT_VSIX_SHA256 is empty — pass a matching hash when overriding COPILOT_CHAT_VERSION" >&2; exit 1; }; \
-  if ! echo "$COPILOT_CHAT_VSIX_SHA256  /tmp/copilot-chat.vsix" | sha256sum -c -; then \
-    ACTUAL_SHA="$(sha256sum /tmp/copilot-chat.vsix | awk '{print $1}')"; \
-    rm -f "$VSIX_CACHE"; \
-    echo "SHA256 mismatch for Copilot Chat VSIX ${COPILOT_CHAT_VERSION}:" >&2; \
-    echo "  expected: ${COPILOT_CHAT_VSIX_SHA256}" >&2; \
-    echo "  actual:   ${ACTUAL_SHA}" >&2; \
-    echo "If you changed COPILOT_CHAT_VERSION, also update COPILOT_CHAT_VSIX_SHA256 to match." >&2; \
-    exit 1; \
-  fi; \
-  # Verify the download is a valid ZIP (VSIX is a ZIP archive).
-  # A ZIP file starts with the PK magic bytes: 50 4b 03 04 (hex).
-  # If the Marketplace returned an error page or rate-limit HTML instead of
-  # the binary, this guard gives a clear diagnostic rather than a cryptic
-  # "cannot find zipfile directory" message from unzip.
-  if ! od -An -tx1 -N4 /tmp/copilot-chat.vsix | tr -d ' \n' | grep -qi '^504b0304'; then \
-    ACTUAL_MAGIC="$(od -An -tx1 -N8 /tmp/copilot-chat.vsix | tr -d ' \n')"; \
-    echo "Copilot Chat VSIX is not a valid ZIP (expected magic 504b0304, got: ${ACTUAL_MAGIC})." >&2; \
-    echo "The Marketplace may have returned a rate-limit/error page instead of the binary." >&2; \
-    echo "If the first bytes are 1f8b (gzip), re-run with --compressed on the curl command." >&2; \
-    rm -f "$VSIX_CACHE"; \
-    echo "Cache cleared, please retry" >&2; \
-    exit 1; \
-  fi; \
-  unzip -q /tmp/copilot-chat.vsix -d /tmp/_vsix_repack \
-    || { echo "Failed to extract copilot-chat.vsix — file may be invalid or not a valid ZIP/VSIX (check marketplace response)" >&2; \
-         exit 1; }
-
-# Repack the Copilot Chat VSIX to use only standard deflate (method 8) or stored
-# (method 0) compression.  Newer VS Marketplace packages may use Deflate64
-# (method 9) or other methods unsupported by the yauzl library bundled with
-# code-server, causing a fatal "Extract" error at install time.  Repacking with
-# the system zip utility (which only emits methods 0 and 8) ensures the VSIX can
-# be installed by any code-server version.
-# TODO: Remove this repack step once code-server upgrades yauzl (or its bundled
-# VS Code) to a version that supports Deflate64 (method 9) natively.
-# The files were already unpacked into /tmp/_vsix_repack by the download step
-# above.  The repack is skipped only if that directory does not exist (e.g. a
-# cache hit on a layer predating this code).  The original file is kept until the
-# repacked archive is fully written to avoid silently losing the VSIX on failure.
-RUN if [ -d /tmp/_vsix_repack ]; then \
-         ( cd /tmp/_vsix_repack && zip -r -9 /tmp/copilot-chat-repacked.vsix . ) \
-         && mv /tmp/copilot-chat-repacked.vsix /tmp/copilot-chat.vsix \
-         && rm -rf /tmp/_vsix_repack; \
-       fi
+  fi
 
 # ─── Common PHP extensions stage ──────────────────────────────────────────────
 # Builds the shared intermediate that all per-version Dockerfiles extend.
 # Only packages and extensions that are IDENTICAL across all PHP versions are
 # here.  Version-specific items (avif/pcre packages, gd configure flags,
-# igbinary version pin, imagick build method, oauth, xdebug) live in each
+# oauth, xdebug) live in each
 # {version}/base/Dockerfile.
 #
 # This stage is referenced as the 'common-php-ext' Bake named context.
@@ -344,14 +229,14 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
         pdo_mysql pdo_pgsql shmop soap sockets sysvmsg sysvsem sysvshm \
         tidy xsl zip pcntl \
     && for i in $(seq 1 3); do \
-      pecl channel-update pecl.php.net \
+      pecl channel-update https://pecl.php.net/channel.xml \
         && break \
       || { [ "$i" -lt 3 ] && sleep 5; }; \
     done \
     && pecl install -o -f \
-        redis-6.3.0 \
-        yaml-2.2.2 \
-        memcached-3.2.0 \
+        redis \
+        yaml \
+        memcached \
     && rm -f /usr/local/etc/php/conf.d/*sodium.ini \
     && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
     && apt-get remove libsodium* -y \
@@ -412,11 +297,6 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
               && rm -rf /var/lib/apt/lists/* && dpkg -i /tmp/code-server.deb; }; } \
     && rm /tmp/code-server.deb \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
-
-# Store the GitHub Copilot Chat VSIX (repacked with standard Deflate above) at
-# a persistent path outside APP_ROOT (which is a mounted volume) so it is
-# available at container startup for apache-start.sh to install.
-COPY --from=common-downloader /tmp/copilot-chat.vsix /usr/local/share/devpanel/copilot-chat.vsix
 
 # Install Composer 2.x (default 2.3.10; PHP 8.3 overrides to 2.7.7 via self-update)
 # and legacy Composer 1.x for projects that require it.
