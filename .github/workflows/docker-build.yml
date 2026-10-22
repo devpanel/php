@@ -216,7 +216,7 @@ jobs:
   #   - workflow_dispatch with no_cache=false uses the cache as normal.
   build:
     needs: detect
-    if: needs.detect.outputs.versions != ''
+    if: ${{ !cancelled() && needs.detect.result == 'success' && needs.detect.outputs.versions != '' }}
     name: build (${{ matrix.version }}, ${{ matrix.platform }})
     strategy:
       fail-fast: false
@@ -285,7 +285,7 @@ jobs:
   # and reduces the number of runners consumed during the build.
   merge:
     needs: detect
-    if: needs.detect.outputs.versions != ''
+    if: ${{ !cancelled() && needs.detect.result == 'success' && needs.detect.outputs.versions != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
