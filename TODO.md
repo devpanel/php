@@ -6,9 +6,12 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 
 ## Steps
 - [x] Identify the failing instruction and verify the bundled CLI architecture.
+- [x] Inspect all seven ARM64 build jobs in run 39835629916; PHP 7.4 and 8.0–8.5 all fail at the same shared `devpanel version` instruction.
 - [x] Keep the legacy CLI on AMD64, omit it on ARM64, and document the limitation.
 - [x] Add architecture-aware CLI functional checks.
-- [ ] Run existing lint/build checks, secret scanning, and code/security validation.
+- [x] Run Dockerfile/shell lint, shell syntax, ARM64 Bake parsing, and secret scanning.
+- [x] Attempt the PHP 8.5 build; the existing libsodium download returns an incomplete archive before the changed layer.
+- [x] Complete independent code review (no significant issues); automated review unavailable and CodeQL has no analyzable changes.
 
 ## Definition of Done
 - ARM64 builds do not copy or execute the incompatible legacy CLI.
