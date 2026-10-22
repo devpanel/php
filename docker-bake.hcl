@@ -69,12 +69,12 @@ variable "VERSIONS_SECURE"               { default = "7.4 8.0 8.1 8.2 8.3"    }
 
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 # DOWNLOADS_DIR: path to a directory whose pre-downloaded/ subdirectory contains
-# pre-seeded build artifacts (code-server .deb files).
-# When set by CI to a runner-local path pre-populated by actions/cache@v5, the
-# downloader stage bind-mounts /pre-downloaded from it instead of downloading.
-# When empty (default), no named context override is provided and the Dockerfile's
-# 'downloads' stage (FROM alpine:3 with an empty /pre-downloaded dir) is used,
-# causing all downloads to fall through to the normal network path.
+# pre-seeded build artifacts (code-server .deb files). When set by CI to a
+# runner-local path pre-populated by actions/cache@v5, the downloader stage
+# bind-mounts /pre-downloaded from it instead of downloading. When empty (default),
+# no named context override is provided and the Dockerfile's 'downloads' stage
+# (FROM alpine:3 with an empty /pre-downloaded dir) is used, causing all downloads
+# to fall through to the normal network path.
 variable "DOWNLOADS_DIR"                 { default = ""                        }
 variable "CACHE_FROM_ENABLED"            { default = "true"                    }
 # GHCR_WRITABLE is set by the detect-versions action (runs once centrally

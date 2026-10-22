@@ -24,8 +24,7 @@ on:
       no_cache:
         description: >
           Disable Docker layer cache and force a fresh download of all build
-          artefacts (code-server).
-          When false, the cache is used as normal.
+          artefacts (code-server). When false, the cache is used as normal.
         type: boolean
         default: true
 
@@ -189,11 +188,11 @@ jobs:
           retention-days: 1
 
       # Upload the flat pre-downloaded/ directory (code-server .deb files)
-      # as a workflow artifact so build jobs can download it
-      # directly.  Using an artifact (rather than the GHA preseed cache) is
-      # more reliable because artifacts are guaranteed to persist for the
-      # lifetime of the workflow run; the GHA cache can be evicted mid-run
-      # and a cache miss would silently produce an empty pre-downloaded/ dir.
+      # as a workflow artifact so build jobs can download it directly.  Using
+      # an artifact (rather than the GHA preseed cache) is more reliable because
+      # artifacts are guaranteed to persist for the lifetime of the workflow
+      # run; the GHA cache can be evicted mid-run and a cache miss would silently
+      # produce an empty pre-downloaded/ dir.
       - name: Upload preseed pre-downloaded artifacts
         if: steps.detect.outputs.versions != ''
         uses: actions/upload-artifact@v7
@@ -231,11 +230,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      # Download the pre-seeded code-server .deb files
-      # that the detect job assembled and uploaded.  Using a workflow artifact
-      # (not the GHA preseed cache) guarantees these files are present for the
-      # lifetime of the run; a cache miss would silently produce an empty
-      # pre-downloaded/ directory and fail the Docker build.
+      # Download the pre-seeded code-server .deb files that the detect job
+      # assembled and uploaded.  Using a workflow artifact (not the GHA preseed
+      # cache) guarantees these files are present for the lifetime of the run;
+      # a cache miss would silently produce an empty pre-downloaded/ directory
+      # and fail the Docker build.
       - name: Download preseed pre-downloaded artifacts
         uses: actions/download-artifact@v8
         with:

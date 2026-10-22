@@ -43,9 +43,8 @@ RUN mkdir -p /tmp/libsodium \
     && curl -sL https://github.com/jedisct1/libsodium/archive/1.0.18-RELEASE.tar.gz \
        | tar xzf - -C /tmp/libsodium
 
-# Download code-server deb.
-# The version is resolved by CI and passed via CODESERVER_VERSION;
-# standalone builds use the Dockerfile default.
+# Download code-server deb. The version is resolved by CI and passed via
+# CODESERVER_VERSION; standalone builds use the Dockerfile default.
 # /pre-downloaded (bind-mounted from the 'downloads' named context) holds files
 # pre-seeded by CI via actions/cache@v5 so they are never re-downloaded for the
 # same version even when Docker layers change.
