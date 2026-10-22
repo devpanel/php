@@ -2,20 +2,17 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
-# Task: Fix ARM64 builds executing an AMD64-only CLI
+# Task: Restore DevPanel CLI and enable QEMU on ARM runners
 
 ## Steps
-- [x] Identify the failing instruction and verify the bundled CLI architecture.
-- [x] Inspect all seven ARM64 build jobs in run 39835629916; PHP 7.4 and 8.0–8.5 all fail at the same shared `devpanel version` instruction.
-- [x] Keep the legacy CLI on AMD64, omit it on ARM64, and document the limitation.
-- [x] Add architecture-aware CLI functional checks.
-- [x] Run Dockerfile/shell lint, shell syntax, ARM64 Bake parsing, and secret scanning.
-- [x] Attempt the PHP 8.5 build; the existing libsodium download returns an incomplete archive before the changed layer.
-- [x] Complete independent code review (no significant issues); automated review unavailable and CodeQL has no analyzable changes.
+- [x] Restore unconditional CLI installation and remove architecture-specific omission tests.
+- [x] Enable QEMU on ARM runners and document the runtime emulation requirement.
+- [ ] Restore the Dockerfile lint baseline and run focused checks.
+- [ ] Scan changed files for secrets and complete code/security review.
 
 ## Definition of Done
-- ARM64 builds do not copy or execute the incompatible legacy CLI.
-- AMD64 builds still install and verify the bundled CLI.
+- All image builds install and verify the bundled CLI.
+- ARM runners register QEMU before Buildx; native AMD64 builds still skip it.
 - Focused checks pass; unavailable full-build verification is explicitly reported.
 
 # Task: Use native ARM runners for ARM64 builds
