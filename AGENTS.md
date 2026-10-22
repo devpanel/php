@@ -125,7 +125,7 @@ Baseline JSON files in `tests/baselines/` track pre-existing lint violations per
 
 #### Composite Actions
 - **`.github/actions/build-php-images`** — detects changed PHP versions and runs `docker buildx bake` using `docker-bake.hcl`. Called directly by the trigger workflows below.
-- **`.github/actions/preseed-downloads`** — resolves code-server and Copilot Chat versions, restores/downloads artifacts into `$RUNNER_TEMP/build-downloads/pre-downloaded/`, and exposes `DOWNLOADS_DIR` + SHA256 outputs for Docker builds.
+- **`.github/actions/preseed-downloads`** — resolves code-server versions, restores/downloads artifacts into `$RUNNER_TEMP/build-downloads/pre-downloaded/`, and exposes `DOWNLOADS_DIR` + SHA256 outputs for Docker builds.
 
 #### Workflows
 - **`docker-build.yml`** — triggered on pushes to `main` or `develop` and by manual `workflow_dispatch`; detects changed versions, builds images per-platform in parallel, and merges platform-specific digests into multi-arch manifests.
