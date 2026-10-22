@@ -21,11 +21,14 @@ ARG PHP_VERSION=8.3
 FROM alpine:3 AS downloads
 RUN mkdir -p /pre-downloaded
 
-# Debian Bullseye reached end of LTS in August 2026 and its repositories are
-# archived. Keep both downloader and PHP extension stages on the same sources.
+# Debian Bullseye reached end of LTS in August 2026. Its main repository is
+# archived, while the security suite is pinned to its final available snapshot.
 FROM php:${PHP_VERSION}-apache AS php-base
 RUN if grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release; then \
-      sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list \
+      sed -i \
+        -e 's|deb.debian.org/debian-security|snapshot.debian.org/archive/debian-security/20260903T220410Z|g' \
+        -e 's|deb.debian.org|archive.debian.org|g' \
+        /etc/apt/sources.list \
       && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive; \
     fi
 
