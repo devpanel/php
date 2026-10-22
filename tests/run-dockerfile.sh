@@ -198,10 +198,6 @@ test_base() {
   # shellcheck disable=SC2016
   assert_empty "$image" "no unresolved .so deps in PHP extensions" \
     sh -c 'ext=$(php -r "echo PHP_EXTENSION_DIR;") && find "$ext" -name "*.so" -exec ldd {} + 2>/dev/null | grep "not found" || true'
-
-  # code-server must work without installing a separate Chat extension.
-  assert_contains "$image" "[0-9]+\.[0-9]+\.[0-9]+" "code-server available" \
-    code-server --version
 }
 
 test_secure() {

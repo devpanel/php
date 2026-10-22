@@ -92,9 +92,8 @@ RUN --mount=type=cache,id=code-server-debs,target=/var/cache/code-server-debs,sh
 # ─── Common PHP extensions stage ──────────────────────────────────────────────
 # Builds the shared intermediate that all per-version Dockerfiles extend.
 # Only packages and extensions that are IDENTICAL across all PHP versions are
-# here.  Version-specific items (avif/pcre packages, gd configure flags,
-# oauth, xdebug) live in each
-# {version}/base/Dockerfile.
+# here. Version-specific items (avif/pcre packages, gd configure flags, oauth,
+# xdebug) live in each {version}/base/Dockerfile.
 #
 # This stage is referenced as the 'common-php-ext' Bake named context.
 # It is cached in GitHub Actions (type=gha) but never pushed to Docker Hub.
@@ -181,12 +180,16 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
 
 #== Update PEAR for HTTP chunked response support in legacy PHP images
 ARG PEAR_VERSION=1.10.18
-RUN curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
-      "https://pear.php.net/get/PEAR-${PEAR_VERSION}.tgz" -o /tmp/pear.tgz \
-    && pear upgrade --offline --loose /tmp/pear.tgz \
-    && mkdir -p "$(pear config-get cache_dir)" \
-    && pear clear-cache \
-    && rm -f /tmp/pear.tgz
+RUN installed_pear="$(pear version)" \
+    && installed_pear="${installed_pear#PEAR Version: }" \
+    && if dpkg --compare-versions "${installed_pear%%[[:space:]]*}" lt "$PEAR_VERSION"; then \
+      curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
+        "https://pear.php.net/get/PEAR-${PEAR_VERSION}.tgz" -o /tmp/pear.tgz \
+      && pear upgrade --offline --loose /tmp/pear.tgz \
+      && mkdir -p "$(pear config-get cache_dir)" \
+      && pear clear-cache \
+      && rm -f /tmp/pear.tgz; \
+    fi
 
 # Install development libraries, build all common PHP and PECL extensions,
 # build libsodium from source, then remove the dev libraries and their
