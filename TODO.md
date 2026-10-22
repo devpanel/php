@@ -38,8 +38,8 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Refresh PECL channel metadata before extension installs.
 - [x] Scope the best-effort apt-mark fallback in all PHP version Dockerfiles.
 - [x] Run Dockerfile/shell lint, shell syntax, Bake checks, and secret scanning; attempt a PHP 8.1 image build (sandbox DNS prevented GitHub download).
-- [ ] Run parallel code/security validation on the final patch.
-- [ ] Confirm the GitHub Actions rerun after approval.
+- [x] Run parallel code/security validation; no review findings, and CodeQL had no analyzable code.
+- [ ] Confirm the current Test run after approval (run 39724221886 is action-required and has not started jobs).
 
 ## Definition of Done
 - The CI failures from Test run 39719313157 have targeted fixes.
