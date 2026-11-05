@@ -1,11 +1,11 @@
 name: Update DevPanel CLI binaries
 
 # Build linux/amd64 and linux/arm64 devpanel binaries from
-# https://github.com/devpanel/cli and commit base/bin/devpanel-amd64 and
-# base/bin/devpanel-arm64.
+# https://github.com/devpanel/cli/tree/HEAD/cmd/devpanel-client and commit
+# base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
 #
 # Run it manually. A commit pushed to main or develop starts the image build.
-# The Actions cache records the devpanel/cli commit that was last built.
+# The Actions cache records the latest commit that changed cmd/devpanel-client.
 # Delete that cache entry to rebuild the same commit. This workflow does not
 # commit a revision file.
 #
@@ -17,23 +17,19 @@ on:
 
 concurrency:
   group: update-devpanel-cli-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   plan:
-    name: Check cached devpanel/cli revision
+    name: Check cached devpanel-client revision
     runs-on: ubuntu-26.04
     permissions:
       actions: read
       contents: read
     outputs:
       sha: ${{ steps.upstream.outputs.sha }}
-      ref: ${{ steps.upstream.outputs.ref }}
       changed: ${{ steps.decision.outputs.changed }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
       - name: Require GHCR_TOKEN
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
@@ -43,18 +39,43 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve devpanel/cli commit
+      - name: Resolve latest cmd/devpanel-client commit
         id: upstream
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-        run: bash .github/scripts/resolve-devpanel-cli.sh
+        run: |
+          set -euo pipefail
+          body=$(mktemp)
+          code=$(
+            curl -sS \
+              -H "Authorization: Bearer ${GHCR_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -o "$body" \
+              -w "%{http_code}" \
+              "https://api.github.com/repos/devpanel/cli/commits?path=cmd/devpanel-client&per_page=1" \
+              || true
+          )
+          if [[ "$code" != "200" ]]; then
+            echo "::error::Unable to read cmd/devpanel-client history (HTTP ${code:-unknown})."
+            jq -r '.message // empty' "$body" >&2 || true
+            exit 1
+          fi
+          sha=$(jq -r '.[0].sha // empty' "$body")
+          rm -f "$body"
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::cmd/devpanel-client has no commits on the default branch."
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Latest cmd/devpanel-client commit is ${sha}"
 
       - name: Restore the built revision
         id: revision-cache
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: devpanel-cli-${{ steps.upstream.outputs.sha }}
+          key: devpanel-client-${{ steps.upstream.outputs.sha }}
 
       - name: Decide whether to rebuild
         id: decision
@@ -68,10 +89,10 @@ jobs:
             echo "Tagged commits are left unchanged."
           elif [[ "${CACHE_HIT}" == "true" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "devpanel/cli ${UPSTREAM_SHA} is already built."
+            echo "cmd/devpanel-client ${UPSTREAM_SHA} is already built."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "devpanel/cli ${UPSTREAM_SHA} is not in the Actions cache."
+            echo "cmd/devpanel-client ${UPSTREAM_SHA} is not in the Actions cache."
           fi
 
   build:
@@ -90,14 +111,19 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
       - name: Clone devpanel/cli
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
-        run: bash .github/scripts/fetch-devpanel-source.sh "${RUNNER_TEMP}/devpanel-cli" "${UPSTREAM_SHA}"
+        run: |
+          set -euo pipefail
+          dest="${RUNNER_TEMP}/devpanel-cli"
+          mkdir "$dest"
+          git -C "$dest" init
+          git -C "$dest" remote add origin https://github.com/devpanel/cli.git
+          git -C "$dest" -c "http.extraheader=AUTHORIZATION: bearer ${GHCR_TOKEN}" \
+            fetch --depth 1 origin "$UPSTREAM_SHA"
+          git -C "$dest" checkout --detach FETCH_HEAD
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -108,10 +134,19 @@ jobs:
       - name: Build native binary
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-        run: >
-          bash .github/scripts/build-devpanel-cli.sh
-          ${{ runner.temp }}/devpanel-cli
-          ${{ runner.temp }}/devpanel-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${GHCR_TOKEN}" ]]; then
+            git config --global url."https://x-access-token:${GHCR_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+          dest="${RUNNER_TEMP}/devpanel-${{ matrix.arch }}"
+          (
+            cd "${RUNNER_TEMP}/devpanel-cli"
+            env -u GOOS -u GOARCH CGO_ENABLED=0 \
+              go build -trimpath -buildvcs=false -o "$dest" ./cmd/devpanel-client
+          )
+          chmod 0755 "$dest"
+          "$dest" version
 
       - name: Upload binary
         uses: actions/upload-artifact@v7
@@ -150,7 +185,6 @@ jobs:
       - name: Commit binaries
         env:
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
-          UPSTREAM_REF: ${{ needs.plan.outputs.ref }}
         run: |
           set -euo pipefail
           install -m 0755 dist/amd64/devpanel-amd64 base/bin/devpanel-amd64
@@ -163,7 +197,7 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit \
               -m "Update devpanel CLI from devpanel/cli@${UPSTREAM_SHA}" \
-              -m "Built linux/amd64 and linux/arm64 from https://github.com/devpanel/cli (${UPSTREAM_REF})."
+              -m "Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit."
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
@@ -178,4 +212,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: devpanel-cli-${{ needs.plan.outputs.sha }}
+          key: devpanel-client-${{ needs.plan.outputs.sha }}

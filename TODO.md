@@ -107,7 +107,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 
 ## Steps
 - [x] Add a manual workflow based on `main`. A binary commit starts the image build.
-- [x] Cache the built `devpanel/cli` commit and skip the build when that entry exists.
+- [x] Cache the latest commit that changed `cmd/devpanel-client` and skip the build when that entry exists.
 - [x] Build linux/amd64 and linux/arm64 in parallel on native runners.
 - [x] Clone `devpanel/cli` outside this repository and commit only the two binaries.
 
