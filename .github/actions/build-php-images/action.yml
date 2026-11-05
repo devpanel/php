@@ -113,8 +113,10 @@ runs:
         username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
         password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
 
+    # QEMU is required only when this runner cannot execute the target
+    # architecture. Native amd64 and arm64 builds skip it.
     - name: Set up QEMU
-      if: ${{ !(runner.arch == 'X64' && startsWith(inputs.platform, 'linux/amd64')) }}
+      if: ${{ (runner.arch == 'X64' && !startsWith(inputs.platform, 'linux/amd64')) || (runner.arch == 'ARM64' && !startsWith(inputs.platform, 'linux/arm64')) }}
       uses: docker/setup-qemu-action@v4
 
     - name: Set up Docker Buildx

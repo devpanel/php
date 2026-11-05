@@ -102,3 +102,41 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - Legacy images use a PEAR release with HTTP chunked response decoding.
 - OPcache remains loaded on every PHP version without enabling a nonexistent PHP 8.5 shared module.
 - Focused checks pass; any remaining build or CI blockers are explicitly reported.
+
+# Task: Install the platform-matching DevPanel CLI
+
+## Steps
+- [x] Copy `base/bin/devpanel-${TARGETARCH}` in the shared image build.
+- [x] Download the matching release asset from `devpanel/dp-cli` before publish builds.
+- [x] Register QEMU only when the runner architecture differs from the target platform.
+- [x] Document the architecture-specific CLI and the native-build QEMU skip.
+- [x] Run YAML, shell, and Dockerfile lint; self-test asset selection and the amd64 fallback.
+
+## Definition of Done
+- ARM64 image builds install an arm64 `devpanel` binary from `devpanel/dp-cli`.
+- Native AMD64 and ARM64 builds do not register QEMU. Cross-architecture builds still do.
+- YAML, shell, and Dockerfile lint baselines match, and the changed files contain no secrets.
+
+# Task: Use GHCR_TOKEN for the latest DevPanel CLI
+
+## Steps
+- [x] Download the latest `devpanel/dp-cli` release with `GHCR_TOKEN` when that secret is set.
+- [x] Remove the release-version input.
+- [x] Verify the committed fallback CLIs with `devpanel cli:version`.
+- [x] Keep the committed `base/bin/devpanel-amd64` and `devpanel-arm64` binaries when `GHCR_TOKEN` is unset.
+
+## Definition of Done
+- Builds with `GHCR_TOKEN` install the latest platform-matching CLI from `devpanel/dp-cli`.
+- Builds without that token use the committed fallback binary and `devpanel cli:version` succeeds.
+- There is no input for pinning a CLI release.
+
+# Task: Build the DevPanel CLI from devpanel/cli
+
+## Steps
+- [x] Confirm the original `base/bin/devpanel` binary is `github.com/devpanel/cli/cmd/devpanel-client`.
+- [x] Restore that amd64 binary and stop downloading `devpanel/dp-cli` during image builds.
+- [x] Verify the restored amd64 binary with `devpanel version`.
+
+## Definition of Done
+- Image builds copy `base/bin/devpanel-$TARGETARCH` and run `devpanel version`.
+- The committed amd64 binary is the original `github.com/devpanel/cli` executable.

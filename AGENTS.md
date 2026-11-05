@@ -20,7 +20,7 @@ Images are published to Docker Hub as `devpanel/php:<version>-<variant>` (e.g. `
 ```
 base/                         # Shared base Dockerfile (PHP + Apache)
   Dockerfile
-  bin/                        # DevPanel CLI binary
+  bin/                        # devpanel CLI binaries from devpanel/cli, named devpanel-$arch
   drush/                      # Drush version directories (drush7–drush11)
   scripts/                    # Apache startup scripts
   templates/                  # Apache/PHP config templates
