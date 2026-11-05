@@ -291,8 +291,9 @@ for setup instructions.
   Native AMD64 builds skip QEMU.
 - `update-devpanel-cli.yml` rebuilds `base/bin/devpanel-amd64` and
   `base/bin/devpanel-arm64` from [devpanel/cli](https://github.com/devpanel/cli).
-  Run it manually, or call it with `workflow_call`. It caches the upstream
-  commit it last built and skips the build when that cache entry exists.
+  Run it manually. It caches the upstream commit it last built and skips
+  the build when that cache entry exists. A push to `main` or `develop`
+  starts the image build.
   Delete the cache entry to rebuild the same commit. The `devpanel/cli`
   checkout is placed outside this repository. AMD64 and ARM64 binaries build
   in parallel on `ubuntu-26.04` and `ubuntu-26.04-arm`.

@@ -4,25 +4,16 @@ name: Update DevPanel CLI binaries
 # https://github.com/devpanel/cli and commit base/bin/devpanel-amd64 and
 # base/bin/devpanel-arm64.
 #
-# Run it manually, or call it from another workflow with workflow_call.
+# Run it manually. A commit pushed to main or develop starts the image build.
 # The Actions cache records the devpanel/cli commit that was last built.
 # Delete that cache entry to rebuild the same commit. This workflow does not
 # commit a revision file.
 #
 # devpanel/cli is cloned under RUNNER_TEMP, outside this repository.
 # GHCR_TOKEN must be able to read devpanel/cli and push to this repository.
-# Binary commits include [skip ci].
 
 on:
   workflow_dispatch:
-  workflow_call:
-    secrets:
-      GHCR_TOKEN:
-        required: true
-    outputs:
-      head_sha:
-        description: Commit that contains the devpanel binaries after this run.
-        value: ${{ jobs.commit.outputs.head_sha || github.sha }}
 
 concurrency:
   group: update-devpanel-cli-${{ github.ref }}
@@ -139,8 +130,6 @@ jobs:
     permissions:
       actions: write
       contents: read
-    outputs:
-      head_sha: ${{ steps.push.outputs.head_sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -160,7 +149,6 @@ jobs:
           path: dist/arm64
 
       - name: Commit binaries
-        id: push
         env:
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
           UPSTREAM_REF: ${{ needs.plan.outputs.ref }}
@@ -176,11 +164,9 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit \
               -m "Update devpanel CLI from devpanel/cli@${UPSTREAM_SHA}" \
-              -m "Built linux/amd64 and linux/arm64 from https://github.com/devpanel/cli (${UPSTREAM_REF})." \
-              -m "[skip ci]"
+              -m "Built linux/amd64 and linux/arm64 from https://github.com/devpanel/cli (${UPSTREAM_REF})."
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
-          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Record the built revision
         env:
