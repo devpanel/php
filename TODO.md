@@ -113,3 +113,12 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 
 ## Definition of Done
 - A cache miss builds both binaries on `ubuntu-26.04` and `ubuntu-26.04-arm` and commits `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64`.
+
+# Task: Find the latest cmd/devpanel-client commit with git
+
+## Steps
+- [x] Stop using the commits API result that reported no history for that path.
+- [x] Read the latest commit that changes `cmd/devpanel-client` from a clone of the default branch.
+
+## Definition of Done
+- The plan job records the commit `git log` reports for `cmd/devpanel-client`.
