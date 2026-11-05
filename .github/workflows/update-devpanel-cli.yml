@@ -1,0 +1,113 @@
+name: Update DevPanel CLI binaries
+
+# The devpanel binary copied into the PHP images comes from
+# https://github.com/devpanel/cli (module github.com/devpanel/cli,
+# package cmd/devpanel-client). This workflow rebuilds the linux/amd64 and
+# linux/arm64 binaries and commits them when that repository changes.
+#
+# GHCR_TOKEN must be able to read devpanel/cli and push to this repository.
+
+on:
+  schedule:
+    # 11:17 UTC every day. GitHub runs this from the default branch.
+    - cron: "17 11 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: >
+          Branch, tag, or commit in devpanel/cli. Leave empty to use the
+          default branch.
+        required: false
+        default: ""
+      force:
+        description: Rebuild and commit even when this commit is already recorded.
+        type: boolean
+        default: false
+
+concurrency:
+  group: update-devpanel-cli
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Build and commit devpanel binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Require GHCR_TOKEN
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          if [[ -z "${GHCR_TOKEN}" ]]; then
+            echo "::error::GHCR_TOKEN is required to read devpanel/cli and commit the binaries."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Resolve devpanel/cli commit
+        id: upstream
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          REQUESTED_REF: ${{ inputs.ref }}
+        run: bash .github/scripts/resolve-devpanel-cli.sh
+
+      - name: Decide whether to rebuild
+        id: plan
+        env:
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
+        run: bash .github/scripts/plan-devpanel-cli-update.sh >/tmp/devpanel-cli-plan.txt
+
+      - name: Checkout devpanel/cli
+        if: steps.plan.outputs.changed == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: devpanel/cli
+          token: ${{ secrets.GHCR_TOKEN }}
+          ref: ${{ steps.upstream.outputs.sha }}
+          path: .devpanel-cli-src
+          persist-credentials: false
+
+      - name: Set up Go
+        if: steps.plan.outputs.changed == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: .devpanel-cli-src/go.mod
+          cache: false
+
+      - name: Install QEMU user emulation
+        if: steps.plan.outputs.changed == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user-static
+
+      - name: Build linux/amd64 and linux/arm64 binaries
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          REQUIRE_ARM64_RUN: "true"
+        run: >
+          bash .github/scripts/build-devpanel-cli.sh
+          .devpanel-cli-src
+          ${{ steps.upstream.outputs.sha }}
+          ${{ steps.upstream.outputs.ref }}
+
+      - name: Commit binaries
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          UPSTREAM_REF: ${{ steps.upstream.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git add -- base/bin/devpanel-amd64 base/bin/devpanel-arm64 base/bin/devpanel.rev
+          if git diff --cached --quiet; then
+            echo "Build produced no changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update devpanel CLI from devpanel/cli@${UPSTREAM_SHA}" -m "Built linux/amd64 and linux/arm64 from https://github.com/devpanel/cli (${UPSTREAM_REF})."
+          git push origin "HEAD:${GITHUB_REF_NAME}"

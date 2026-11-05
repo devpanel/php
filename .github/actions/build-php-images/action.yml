@@ -32,12 +32,6 @@ inputs:
       passes exactly one platform here so that per-platform digest artifacts
       can be uploaded and merged independently.
     required: true
-  devpanel_token:
-    description: >
-      Token that can read devpanel/dp-cli releases. Pass secrets.GHCR_TOKEN.
-      When empty, the build keeps the committed base/bin/devpanel-$arch
-      fallback for the platform being built.
-    default: ''
   repo:
     description: >
       Docker Hub repository to push images to (e.g. "devpanel/php").
@@ -118,32 +112,6 @@ runs:
         registry: ghcr.io
         username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
         password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
-
-    # Install the devpanel CLI that matches the image platform. When
-    # GHCR_TOKEN is set, this downloads the latest devpanel/dp-cli release.
-    # Native runners then execute `devpanel cli:version` during the image build.
-    - name: Install platform-matching DevPanel CLI
-      shell: bash
-      working-directory: ${{ github.workspace }}
-      env:
-        PLATFORM: ${{ inputs.platform }}
-        GHCR_TOKEN: ${{ inputs.devpanel_token }}
-      run: |
-        set -euo pipefail
-        platform="${PLATFORM// /}"
-        case "${platform}" in
-          */arm64/v8) platform="${platform%/v8}" ;;
-          */amd64/v1) platform="${platform%/v1}" ;;
-        esac
-        case "${platform}" in
-          linux/arm64*) arch=arm64 ;;
-          linux/amd64*) arch=amd64 ;;
-          *)
-            echo "::error::No devpanel binary mapping for platform '${PLATFORM}'."
-            exit 1
-            ;;
-        esac
-        bash .github/scripts/fetch-devpanel.sh "${arch}" "base/bin/devpanel-${arch}"
 
     # QEMU is required only when this runner cannot execute the target
     # architecture. Native amd64 and arm64 builds skip it.

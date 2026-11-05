@@ -262,7 +262,6 @@ jobs:
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ghcr_token: ${{ needs.detect.outputs.ghcr_cred_source == 'ghcr_token' && secrets.GHCR_TOKEN || '' }}
-          devpanel_token: ${{ secrets.GHCR_TOKEN }}
           ghcr_user: ${{ vars.GHCR_USER }}
           ghcr_writable: ${{ needs.detect.outputs.ghcr_writable }}
           ghcr_repo: ${{ needs.detect.outputs.ghcr_repo }}

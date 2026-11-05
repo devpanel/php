@@ -246,7 +246,6 @@ jobs:
         env:
           CACHE_FROM_ENABLED: ${{ inputs.no_cache != true && 'true' || 'false' }}
           GHCR_REPO: ${{ needs.detect.outputs.ghcr_repo }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           PLATFORMS: linux/amd64
           DOWNLOADS_DIR: ${{ runner.temp }}/build-downloads
           BAKE_OVERRIDES_FILE: ${{ runner.temp }}/preseed-bake-overrides.json
