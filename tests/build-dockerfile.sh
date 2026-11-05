@@ -105,6 +105,20 @@ case "$NORMALIZED_PLATFORM" in
 esac
 PLATFORM_KEY="${NORMALIZED_PLATFORM//\//-}"
 
+# The image copies base/bin/devpanel-$arch. The amd64 binary is committed.
+# Download a missing binary (the arm64 build, on an arm64 host) from dp-cli.
+cli_arch=""
+case "$NORMALIZED_PLATFORM" in
+  linux/amd64*) cli_arch="amd64" ;;
+  linux/arm64*) cli_arch="arm64" ;;
+esac
+if [[ -n "$cli_arch" && ! -f "${REPO_ROOT}/base/bin/devpanel-${cli_arch}" ]]; then
+  echo "Fetching ${cli_arch} devpanel CLI from devpanel/dp-cli..."
+  GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
+    bash "${REPO_ROOT}/.github/scripts/fetch-devpanel.sh" \
+      "$cli_arch" "${REPO_ROOT}/base/bin/devpanel-${cli_arch}"
+fi
+
 # ---------------------------------------------------------------------------
 # Build using docker-bake.hcl in test mode
 # ---------------------------------------------------------------------------
