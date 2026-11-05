@@ -111,7 +111,6 @@ jobs:
         run: >
           bash .github/scripts/build-devpanel-cli.sh
           ${{ runner.temp }}/devpanel-cli
-          ${{ matrix.arch }}
           ${{ runner.temp }}/devpanel-${{ matrix.arch }}
 
       - name: Upload binary
