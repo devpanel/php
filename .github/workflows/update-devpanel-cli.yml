@@ -4,11 +4,7 @@ name: Update DevPanel CLI binaries
 # https://github.com/devpanel/cli/tree/HEAD/cmd/devpanel-client and commit
 # base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
 #
-# Run it manually, or call it from another workflow. The caller passes
-# GHCR_TOKEN and grants contents: write. head_sha is the commit that
-# contains the binaries.
-#
-# The Actions cache records the latest commit that changed
+# Run it manually. The Actions cache records the latest commit that changed
 # cmd/devpanel-client. Delete that cache entry to rebuild the same commit.
 #
 # devpanel/cli is cloned under RUNNER_TEMP, outside this repository.
@@ -17,14 +13,6 @@ name: Update DevPanel CLI binaries
 
 on:
   workflow_dispatch:
-  workflow_call:
-    secrets:
-      GHCR_TOKEN:
-        required: true
-    outputs:
-      head_sha:
-        description: Commit that contains the devpanel binaries after this run.
-        value: ${{ jobs.commit.outputs.head_sha || github.sha }}
 
 concurrency:
   group: update-devpanel-cli-${{ github.ref }}
@@ -175,8 +163,6 @@ jobs:
     permissions:
       actions: write
       contents: write
-    outputs:
-      head_sha: ${{ steps.push.outputs.head_sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -194,7 +180,6 @@ jobs:
           path: dist/arm64
 
       - name: Commit binaries
-        id: push
         env:
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
         run: |
@@ -212,7 +197,6 @@ jobs:
               -m "Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit."
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
-          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Record the built revision
         env:
