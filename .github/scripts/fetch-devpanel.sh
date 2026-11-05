@@ -5,9 +5,9 @@
 #   fetch-devpanel.sh <amd64|arm64> <dest-file>
 #   fetch-devpanel.sh --self-test
 #
-# DEVPANEL_VERSION          Release tag. Empty selects the latest release.
-# GH_TOKEN or GITHUB_TOKEN  Token used to read https://github.com/devpanel/dp-cli.
-# DEVPANEL_TOKEN_FALLBACK   Tried when the primary token cannot read releases.
+# GHCR_TOKEN  When set, download the latest release from
+#             https://github.com/devpanel/dp-cli. When unset, keep dest if it
+#             is already an executable for the requested architecture.
 set -euo pipefail
 
 asset_filter() {
@@ -212,23 +212,11 @@ http_get() {
 
 fetch_release() {
   local out="$1"
-  local -a tokens=()
-  local token status
-  if [[ -n "${GH_TOKEN:-}" ]]; then
-    tokens+=("${GH_TOKEN}")
+  local status
+  status=$(http_get "$GHCR_TOKEN" "application/vnd.github+json" "$release_url" "$out" || true)
+  if [[ "$status" == "200" ]]; then
+    return 0
   fi
-  if [[ -n "${DEVPANEL_TOKEN_FALLBACK:-}" && "${DEVPANEL_TOKEN_FALLBACK}" != "${GH_TOKEN:-}" ]]; then
-    tokens+=("${DEVPANEL_TOKEN_FALLBACK}")
-  fi
-  tokens+=("")
-  status=""
-  for token in "${tokens[@]}"; do
-    status=$(http_get "$token" "application/vnd.github+json" "$release_url" "$out" || true)
-    if [[ "$status" == "200" ]]; then
-      working_token=$token
-      return 0
-    fi
-  done
   echo "ERROR: GitHub API returned HTTP ${status:-unknown} for ${release_url}." >&2
   if [[ -s "$out" ]]; then
     jq -r '.message // empty' "$out" >&2 || true
@@ -236,20 +224,25 @@ fetch_release() {
   return 1
 }
 
-die_or_keep_existing() {
+fail() {
+  local reason="$1"
+  echo "ERROR: ${reason}" >&2
+  echo "::error::${reason}"
+  exit 1
+}
+
+use_committed_fallback() {
   local reason="$1"
   local desc
   if [[ -n "$dest" && -f "$dest" ]]; then
     desc=$(file -b "$dest")
     if elf_matches "$desc" "$arch"; then
-      echo "::warning::${reason} Using the existing ${dest}."
+      echo "${reason} Using committed fallback ${dest}."
       exit 0
     fi
     echo "ERROR: Existing ${dest} is not a ${arch} executable (${desc})." >&2
   fi
-  echo "ERROR: ${reason}" >&2
-  echo "::error::${reason}"
-  exit 1
+  fail "$reason"
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
@@ -272,63 +265,57 @@ case "$arch" in
     ;;
 esac
 
-if [[ -z "${GH_TOKEN:-}" && -n "${GITHUB_TOKEN:-}" ]]; then
-  GH_TOKEN=$GITHUB_TOKEN
+release_url="https://api.github.com/repos/devpanel/dp-cli/releases/latest"
+
+if ! command -v file >/dev/null 2>&1; then
+  fail "Required command not found: file"
 fi
 
-if [[ -n "${DEVPANEL_VERSION:-}" ]]; then
-  if [[ ! "$DEVPANEL_VERSION" =~ ^[A-Za-z0-9._+-]+$ ]]; then
-    echo "ERROR: DEVPANEL_VERSION contains unsupported characters." >&2
-    exit 1
-  fi
-  release_url="https://api.github.com/repos/devpanel/dp-cli/releases/tags/${DEVPANEL_VERSION}"
-else
-  release_url="https://api.github.com/repos/devpanel/dp-cli/releases/latest"
+if [[ -z "${GHCR_TOKEN:-}" ]]; then
+  use_committed_fallback "GHCR_TOKEN is unset, so the latest devpanel/dp-cli release was not downloaded."
 fi
 
-for cmd in curl jq file tar gzip; do
+for cmd in curl jq tar gzip; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "ERROR: Required command not found: ${cmd}" >&2
-    exit 1
+    fail "Required command not found: ${cmd}"
   fi
 done
 
 work=""
-working_token=""
 trap '[[ -n "${work}" ]] && rm -rf "${work}"' EXIT
 work=$(mktemp -d)
 release_json="${work}/release.json"
 
 if ! fetch_release "$release_json"; then
-  die_or_keep_existing "Unable to read devpanel/dp-cli releases. Grant the workflow token access to https://github.com/devpanel/dp-cli."
+  fail "Unable to read the latest devpanel/dp-cli release with GHCR_TOKEN."
 fi
 
 selection=""
 if ! selection=$(jq -er --arg arch "$arch" "$(asset_filter)" "$release_json"); then
   echo "Release assets:" >&2
   jq -r '.assets[]?.name' "$release_json" >&2 || true
-  die_or_keep_existing "No ${arch} Linux devpanel asset was found in the dp-cli release."
+  fail "No ${arch} Linux devpanel asset was found in the latest dp-cli release."
 fi
 
 IFS=$'\t' read -r asset_id asset_name asset_url <<<"$selection"
 if [[ -z "${asset_url}" || -z "${asset_name}" ]]; then
-  die_or_keep_existing "Release asset metadata for ${arch} was incomplete."
+  fail "Release asset metadata for ${arch} was incomplete."
 fi
 
 asset_path="${work}/asset"
-download_status=$(http_get "$working_token" "application/octet-stream" "$asset_url" "$asset_path" || true)
+download_status=$(http_get "$GHCR_TOKEN" "application/octet-stream" "$asset_url" "$asset_path" || true)
 if [[ "$download_status" != "200" ]]; then
-  die_or_keep_existing "Download of ${asset_name} failed with HTTP ${download_status:-unknown}."
+  fail "Download of ${asset_name} failed with HTTP ${download_status:-unknown}."
 fi
 
 extract_dir="${work}/extract"
 if ! extract_into "$asset_path" "$extract_dir"; then
-  die_or_keep_existing "Could not unpack ${asset_name}."
+  fail "Could not unpack ${asset_name}."
 fi
 
 binary_path=""
 if ! binary_path=$(choose_elf "$extract_dir" "$arch"); then
-  die_or_keep_existing "No ${arch} executable was found inside ${asset_name}."
+  fail "No ${arch} executable was found inside ${asset_name}."
 fi
 
 mkdir -p "$(dirname "$dest")"

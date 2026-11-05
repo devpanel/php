@@ -32,10 +32,11 @@ inputs:
       passes exactly one platform here so that per-platform digest artifacts
       can be uploaded and merged independently.
     required: true
-  devpanel_version:
+  devpanel_token:
     description: >
-      Optional devpanel/dp-cli release tag to install (for example "v1.2.3").
-      Empty installs the latest release for the platform being built.
+      Token that can read devpanel/dp-cli releases. Pass secrets.GHCR_TOKEN.
+      When empty, the build keeps the committed base/bin/devpanel-$arch
+      fallback for the platform being built.
     default: ''
   repo:
     description: >
@@ -118,16 +119,15 @@ runs:
         username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
         password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
 
-    # Install the devpanel CLI that matches the image platform. Native
-    # runners can then execute `devpanel version` during the image build.
+    # Install the devpanel CLI that matches the image platform. When
+    # GHCR_TOKEN is set, this downloads the latest devpanel/dp-cli release.
+    # Native runners then execute `devpanel cli:version` during the image build.
     - name: Install platform-matching DevPanel CLI
       shell: bash
       working-directory: ${{ github.workspace }}
       env:
         PLATFORM: ${{ inputs.platform }}
-        GH_TOKEN: ${{ inputs.github_token }}
-        DEVPANEL_TOKEN_FALLBACK: ${{ inputs.ghcr_token }}
-        DEVPANEL_VERSION: ${{ inputs.devpanel_version }}
+        GHCR_TOKEN: ${{ inputs.devpanel_token }}
       run: |
         set -euo pipefail
         platform="${PLATFORM// /}"

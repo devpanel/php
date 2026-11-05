@@ -131,7 +131,7 @@ Baseline JSON files in `tests/baselines/` track pre-existing lint violations per
 - **`docker-build.yml`** — triggered on pushes to `main` or `develop` and by manual `workflow_dispatch`; detects changed versions, builds images per-platform in parallel, and merges platform-specific digests into multi-arch manifests.
 - **`test.yml`** — runs YAML, shell, and Dockerfile linting plus build/run tests on pushes and pull requests.
 - Production images are tagged without suffix (e.g. `devpanel/php:8.3-base`); `develop` branch builds use the `-rc` suffix.
-- Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Optional: `GHCR_TOKEN` (falls back to `GITHUB_TOKEN` for GHCR pushes).
+- Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Optional: `GHCR_TOKEN` (falls back to `GITHUB_TOKEN` for GHCR pushes). When `GHCR_TOKEN` is set, image builds download the latest `devpanel` CLI from `devpanel/dp-cli`; otherwise they use the committed `base/bin/devpanel-$arch` fallback.
 
 ## Environment Variables (base images)
 

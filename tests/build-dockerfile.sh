@@ -10,6 +10,8 @@
 # Environment variables:
 #   GITHUB_TOKEN    Optional; forwarded to the downloader build stage for
 #                   authenticated GitHub API calls.
+#   GHCR_TOKEN      Optional. When set, replace the committed devpanel CLI
+#                   with the latest devpanel/dp-cli release for this platform.
 #   PLATFORMS       Target platform(s).  Defaults to the current host platform.
 #                   Must be a single platform to use --load.
 #
@@ -105,18 +107,17 @@ case "$NORMALIZED_PLATFORM" in
 esac
 PLATFORM_KEY="${NORMALIZED_PLATFORM//\//-}"
 
-# The image copies base/bin/devpanel-$arch. The amd64 binary is committed.
-# Download a missing binary (the arm64 build, on an arm64 host) from dp-cli.
+# The image copies base/bin/devpanel-$arch. When GHCR_TOKEN is set, replace
+# that file with the latest devpanel/dp-cli release. Otherwise keep the
+# committed fallback.
 cli_arch=""
 case "$NORMALIZED_PLATFORM" in
   linux/amd64*) cli_arch="amd64" ;;
   linux/arm64*) cli_arch="arm64" ;;
 esac
-if [[ -n "$cli_arch" && ! -f "${REPO_ROOT}/base/bin/devpanel-${cli_arch}" ]]; then
-  echo "Fetching ${cli_arch} devpanel CLI from devpanel/dp-cli..."
-  GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
-    bash "${REPO_ROOT}/.github/scripts/fetch-devpanel.sh" \
-      "$cli_arch" "${REPO_ROOT}/base/bin/devpanel-${cli_arch}"
+if [[ -n "$cli_arch" ]]; then
+  bash "${REPO_ROOT}/.github/scripts/fetch-devpanel.sh" \
+    "$cli_arch" "${REPO_ROOT}/base/bin/devpanel-${cli_arch}"
 fi
 
 # ---------------------------------------------------------------------------

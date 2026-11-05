@@ -116,3 +116,16 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - ARM64 image builds install an arm64 `devpanel` binary from `devpanel/dp-cli`.
 - Native AMD64 and ARM64 builds do not register QEMU. Cross-architecture builds still do.
 - YAML, shell, and Dockerfile lint baselines match, and the changed files contain no secrets.
+
+# Task: Use GHCR_TOKEN for the latest DevPanel CLI
+
+## Steps
+- [x] Download the latest `devpanel/dp-cli` release with `GHCR_TOKEN` when that secret is set.
+- [x] Remove the release-version input.
+- [x] Verify the committed fallback CLIs with `devpanel cli:version`.
+- [x] Keep the committed `base/bin/devpanel-amd64` and `devpanel-arm64` binaries when `GHCR_TOKEN` is unset.
+
+## Definition of Done
+- Builds with `GHCR_TOKEN` install the latest platform-matching CLI from `devpanel/dp-cli`.
+- Builds without that token use the committed fallback binary and `devpanel cli:version` succeeds.
+- There is no input for pinning a CLI release.
