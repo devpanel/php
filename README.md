@@ -292,11 +292,13 @@ for setup instructions.
 - `update-devpanel-cli.yml` rebuilds `base/bin/devpanel-amd64` and
   `base/bin/devpanel-arm64` from the latest
   [devpanel/cli](https://github.com/devpanel/cli) commit that changed
-  `cmd/devpanel-client`. Run it manually. It caches that commit and skips
-  the build when the cache entry exists. A new run cancels one already in
-  progress. The workflow token commits the binaries. Delete the cache
-  entry to rebuild the same commit. The `devpanel/cli` checkout is placed
-  outside this repository. AMD64 and ARM64 binaries build in
+  `cmd/devpanel-client`. Run it manually, or call it from another workflow
+  with `workflow_call` (pass `GHCR_TOKEN` and grant `contents: write`).
+  It caches that commit and skips the build when the cache entry exists.
+  A new run cancels one already in progress. The workflow token commits
+  the binaries and the call returns that commit as `head_sha`. Delete the
+  cache entry to rebuild the same commit. The `devpanel/cli` checkout is
+  placed outside this repository. AMD64 and ARM64 binaries build in
   parallel on `ubuntu-26.04` and `ubuntu-26.04-arm`.
 - The `advance` variant depends on `secure`, which depends on `base`.
   The build chain is enforced via the bake target dependency graph.
