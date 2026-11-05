@@ -289,6 +289,15 @@ for setup instructions.
   runners; AMD64 builds use `ubuntu-26.04`. QEMU is set up on ARM runners
   to execute the bundled AMD64 DevPanel CLI, and for cross-platform builds.
   Native AMD64 builds skip QEMU.
+- `update-devpanel-cli.yml` rebuilds `base/bin/devpanel-amd64` and
+  `base/bin/devpanel-arm64` from the latest
+  [devpanel/cli](https://github.com/devpanel/cli) commit that changed
+  `cmd/devpanel-client`. Run it manually. It caches that commit and skips
+  the build when the cache entry exists. A new run cancels one already in
+  progress. The workflow token commits the binaries. Delete the cache
+  entry to rebuild the same commit. The `devpanel/cli` checkout is
+  placed outside this repository. AMD64 and ARM64 binaries build in
+  parallel on `ubuntu-26.04` and `ubuntu-26.04-arm`.
 - The `advance` variant depends on `secure`, which depends on `base`.
   The build chain is enforced via the bake target dependency graph.
 

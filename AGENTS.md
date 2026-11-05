@@ -20,7 +20,7 @@ Images are published to Docker Hub as `devpanel/php:<version>-<variant>` (e.g. `
 ```
 base/                         # Shared base Dockerfile (PHP + Apache)
   Dockerfile
-  bin/                        # DevPanel CLI binary
+  bin/                        # DevPanel CLI binary; update-devpanel-cli.yml commits devpanel-$arch
   drush/                      # Drush version directories (drush7–drush11)
   scripts/                    # Apache startup scripts
   templates/                  # Apache/PHP config templates
@@ -129,9 +129,10 @@ Baseline JSON files in `tests/baselines/` track pre-existing lint violations per
 
 #### Workflows
 - **`docker-build.yml`** — triggered on pushes to `main` or `develop` and by manual `workflow_dispatch`; detects changed versions, builds images per-platform in parallel, and merges platform-specific digests into multi-arch manifests.
+- **`update-devpanel-cli.yml`** — manual `workflow_dispatch`. Builds `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64` from the latest `devpanel/cli` commit that changed `cmd/devpanel-client`, when the Actions cache does not already contain that commit. A new run cancels one already in progress. The workflow token commits the binaries.
 - **`test.yml`** — runs YAML, shell, and Dockerfile linting plus build/run tests on pushes and pull requests.
 - Production images are tagged without suffix (e.g. `devpanel/php:8.3-base`); `develop` branch builds use the `-rc` suffix.
-- Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Optional: `GHCR_TOKEN` (falls back to `GITHUB_TOKEN` for GHCR pushes).
+- Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Optional: `GHCR_TOKEN` (falls back to `GITHUB_TOKEN` for GHCR pushes). `update-devpanel-cli.yml` requires `GHCR_TOKEN` with access to `devpanel/cli`.
 
 ## Environment Variables (base images)
 
