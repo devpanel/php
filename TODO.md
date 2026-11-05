@@ -102,3 +102,17 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - Legacy images use a PEAR release with HTTP chunked response decoding.
 - OPcache remains loaded on every PHP version without enabling a nonexistent PHP 8.5 shared module.
 - Focused checks pass; any remaining build or CI blockers are explicitly reported.
+
+# Task: Install the platform-matching DevPanel CLI
+
+## Steps
+- [x] Copy `base/bin/devpanel-${TARGETARCH}` in the shared image build.
+- [x] Download the matching release asset from `devpanel/dp-cli` before publish builds.
+- [x] Register QEMU only when the runner architecture differs from the target platform.
+- [x] Document the architecture-specific CLI and the native-build QEMU skip.
+- [x] Run YAML, shell, and Dockerfile lint; self-test asset selection and the amd64 fallback.
+
+## Definition of Done
+- ARM64 image builds install an arm64 `devpanel` binary from `devpanel/dp-cli`.
+- Native AMD64 and ARM64 builds do not register QEMU. Cross-architecture builds still do.
+- YAML, shell, and Dockerfile lint baselines match, and the changed files contain no secrets.

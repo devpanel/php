@@ -31,9 +31,10 @@ Each PHP version ships three layered variants.
 
 Release candidate tags end with `-rc` (e.g. `8.3-base-rc`).
 
-The bundled legacy `devpanel` CLI is AMD64-only, including in ARM64 images.
-Executing it on an ARM64 host requires AMD64 emulation on that host; CI runner
-emulation is not included in the published images.
+Each image includes the `devpanel` CLI for its own architecture. Publish
+builds install that binary from
+[devpanel/dp-cli](https://github.com/devpanel/dp-cli): AMD64 images get the
+amd64 build and ARM64 images get the arm64 build.
 
 Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3**
 
@@ -184,6 +185,11 @@ removed).  To remove all `devpanel-php-test:*` images at once, run:
 bash tests/cleanup-test-images.sh
 ```
 
+AMD64 builds use the committed `base/bin/devpanel-amd64` binary. An ARM64
+build downloads `base/bin/devpanel-arm64` from
+[devpanel/dp-cli](https://github.com/devpanel/dp-cli) when that file is not
+already present. `GH_TOKEN` must be able to read that repository.
+
 Build tests take several minutes per PHP version because the images download
 packages (code-server, composer, etc.).  Run a single version during
 development to keep the feedback loop short:
@@ -286,9 +292,10 @@ for setup instructions.
 - The build workflow is `docker-build.yml`, which handles both push-triggered
   and manual dispatch builds.  It runs a detect → build (per-platform,
   parallel) → merge pipeline.  ARM64 builds use native `ubuntu-26.04-arm`
-  runners; AMD64 builds use `ubuntu-26.04`. QEMU is set up on ARM runners
-  to execute the bundled AMD64 DevPanel CLI, and for cross-platform builds.
-  Native AMD64 builds skip QEMU.
+  runners; AMD64 builds use `ubuntu-26.04`. Each build installs the
+  `devpanel` CLI from `devpanel/dp-cli` for the platform it is building.
+  QEMU is set up only when the runner architecture differs from that
+  platform. Native AMD64 and ARM64 builds skip QEMU.
 - The `advance` variant depends on `secure`, which depends on `base`.
   The build chain is enforced via the bake target dependency graph.
 
