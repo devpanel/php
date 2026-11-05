@@ -150,3 +150,13 @@ Baseline JSON files in `tests/baselines/` track pre-existing lint violations per
 - If a change applies to all versions (e.g. bumping a shared tool version), update the shared Dockerfile(s) in `base/`, `secure/`, or `advance/` — plus any per-version overrides that pin a different value.
 - Describe which image tags are affected in the PR description.
 - Verify the Docker build locally before opening a PR: `docker buildx bake --no-push` (uses `docker-bake.hcl`), or run `./test.sh` for full linting and build tests.
+
+## Cursor Cloud specific instructions
+
+The Cloud Agent VM has no systemd. Environment install puts Docker, Buildx, shellcheck, yamllint, and hadolint 2.12.0 on the machine. Environment start launches `dockerd` and selects the Buildx builder `devpanel` (`docker-container` driver). `./test.sh build` exports cache from `docker-bake.hcl`, and the default `docker` driver rejects that export.
+
+- If `docker info` fails, read `/tmp/cursor/start-user/start-user.log` and `/var/log/dockerd.log`. `ubuntu` is in the `docker` group. A shell that was opened before that membership existed needs a new login.
+- Fast checks: `./test.sh yaml shell dockerfile`.
+- One-version image check: `./test.sh build run --version 8.3`. That builds `base`, `secure`, and `advance`, then runs `tests/run-dockerfile.sh`. `./test.sh build` with no `--version` builds every version directory and takes much longer.
+- Local test builds point registry cache at an unreachable `localhost:0` address. Those cache-export errors are ignored. Images are still loaded as `devpanel-php-test:<version>-<variant>` for the run suite, which removes them afterward.
+- `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` are only needed to publish. AMD64 builds use the committed `base/bin/devpanel-amd64` binary. An ARM64 build downloads `base/bin/devpanel-arm64` and needs `GH_TOKEN` with read access to `devpanel/dp-cli`.
