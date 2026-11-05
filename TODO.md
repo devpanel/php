@@ -102,3 +102,16 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - Legacy images use a PEAR release with HTTP chunked response decoding.
 - OPcache remains loaded on every PHP version without enabling a nonexistent PHP 8.5 shared module.
 - Focused checks pass; any remaining build or CI blockers are explicitly reported.
+
+# Task: Rebuild the DevPanel CLI from devpanel/cli
+
+## Steps
+- [x] Add a workflow based on `main` that runs manually or through `workflow_call`.
+- [x] Cache the built `devpanel/cli` commit and skip the build when that entry exists.
+- [x] Build linux/amd64 and linux/arm64 in parallel on native runners.
+- [x] Clone `devpanel/cli` outside this repository and commit only the two binaries.
+
+## Definition of Done
+- `update-devpanel-cli.yml` does not change the image build workflow or Dockerfiles.
+- There is no `force` input and no committed revision file.
+- A cache miss builds both binaries on `ubuntu-26.04` and `ubuntu-26.04-arm` and commits `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64`.
