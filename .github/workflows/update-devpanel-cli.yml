@@ -4,13 +4,12 @@ name: Update DevPanel CLI binaries
 # https://github.com/devpanel/cli/tree/HEAD/cmd/devpanel-client and commit
 # base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
 #
-# Run it manually. A commit pushed to main or develop starts the image build.
-# The Actions cache records the latest commit that changed cmd/devpanel-client.
-# Delete that cache entry to rebuild the same commit. This workflow does not
-# commit a revision file.
+# Run it manually. The Actions cache records the latest commit that changed
+# cmd/devpanel-client. Delete that cache entry to rebuild the same commit.
 #
 # devpanel/cli is cloned under RUNNER_TEMP, outside this repository.
-# GHCR_TOKEN must be able to read devpanel/cli and push to this repository.
+# GHCR_TOKEN must be able to read devpanel/cli. The workflow token commits
+# the binaries.
 
 on:
   workflow_dispatch:
@@ -35,7 +34,7 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
           if [[ -z "${GHCR_TOKEN}" ]]; then
-            echo "::error::GHCR_TOKEN is required to read devpanel/cli and commit the binaries."
+            echo "::error::GHCR_TOKEN is required to read devpanel/cli."
             exit 1
           fi
 
@@ -163,12 +162,10 @@ jobs:
     runs-on: ubuntu-26.04
     permissions:
       actions: write
-      contents: read
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-        with:
-          token: ${{ secrets.GHCR_TOKEN }}
 
       - name: Download amd64 binary
         uses: actions/download-artifact@v8

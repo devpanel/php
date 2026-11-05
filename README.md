@@ -294,9 +294,9 @@ for setup instructions.
   [devpanel/cli](https://github.com/devpanel/cli) commit that changed
   `cmd/devpanel-client`. Run it manually. It caches that commit and skips
   the build when the cache entry exists. A new run cancels one already in
-  progress. A push to `main` or `develop` starts the image build. Delete
-  the cache entry to rebuild the same commit. The `devpanel/cli` checkout
-  is placed outside this repository. AMD64 and ARM64 binaries build in
+  progress. The workflow token commits the binaries. Delete the cache
+  entry to rebuild the same commit. The `devpanel/cli` checkout is placed
+  outside this repository. AMD64 and ARM64 binaries build in
   parallel on `ubuntu-26.04` and `ubuntu-26.04-arm`.
 - The `advance` variant depends on `secure`, which depends on `base`.
   The build chain is enforced via the bake target dependency graph.
