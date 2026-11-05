@@ -32,9 +32,8 @@ Each PHP version ships three layered variants.
 Release candidate tags end with `-rc` (e.g. `8.3-base-rc`).
 
 Each image includes the `devpanel` CLI built from
-[devpanel/cli](https://github.com/devpanel/cli) for its own architecture.
-`base/bin/devpanel-amd64` and `base/bin/devpanel-arm64` are rebuilt and
-committed by the `update-devpanel-cli` workflow when that repository changes.
+[devpanel/cli](https://github.com/devpanel/cli) for its own architecture
+(`base/bin/devpanel-amd64` or `base/bin/devpanel-arm64`).
 
 Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3**
 
@@ -186,9 +185,8 @@ bash tests/cleanup-test-images.sh
 ```
 
 The image build copies the committed `base/bin/devpanel-amd64` or
-`base/bin/devpanel-arm64` binary. Those files are produced from
-[devpanel/cli](https://github.com/devpanel/cli) by
-`.github/workflows/update-devpanel-cli.yml`.
+`base/bin/devpanel-arm64` binary from
+[devpanel/cli](https://github.com/devpanel/cli).
 
 Build tests take several minutes per PHP version because the images download
 packages (code-server, composer, etc.).  Run a single version during
@@ -293,8 +291,7 @@ for setup instructions.
   and manual dispatch builds.  It runs a detect → build (per-platform,
   parallel) → merge pipeline.  ARM64 builds use native `ubuntu-26.04-arm`
   runners; AMD64 builds use `ubuntu-26.04`. Each image copies the committed
-  `devpanel` binary for its platform. `update-devpanel-cli.yml` rebuilds
-  those binaries from `devpanel/cli` when that repository changes.
+  `devpanel` binary for its platform.
   QEMU is set up only when the runner architecture differs from that
   platform. Native AMD64 and ARM64 builds skip QEMU.
 - The `advance` variant depends on `secure`, which depends on `base`.

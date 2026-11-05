@@ -135,10 +135,8 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 ## Steps
 - [x] Confirm the original `base/bin/devpanel` binary is `github.com/devpanel/cli/cmd/devpanel-client`.
 - [x] Restore that amd64 binary and stop downloading `devpanel/dp-cli` during image builds.
-- [x] Add a workflow that builds linux/amd64 and linux/arm64 from `devpanel/cli` and commits them when the upstream commit changes.
-- [x] Verify the restored amd64 binary with `devpanel version`, and self-test the plan and build scripts.
+- [x] Verify the restored amd64 binary with `devpanel version`.
 
 ## Definition of Done
 - Image builds copy `base/bin/devpanel-$TARGETARCH` and run `devpanel version`.
-- `update-devpanel-cli.yml` rebuilds both binaries only when `devpanel/cli` changes, using `GHCR_TOKEN`.
-- The committed amd64 binary is the original `github.com/devpanel/cli` executable. The arm64 binary is produced by the first successful workflow run.
+- The committed amd64 binary is the original `github.com/devpanel/cli` executable.
