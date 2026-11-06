@@ -122,3 +122,12 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 
 ## Definition of Done
 - The plan job records the commit `git log` reports for `cmd/devpanel-client`.
+
+# Task: Authenticate to devpanel/cli with GHCR_USER
+
+## Steps
+- [x] Require the `GHCR_USER` repository variable with `GHCR_TOKEN`.
+- [x] Clone and fetch `devpanel/cli` with Basic auth for that username and token.
+
+## Definition of Done
+- The plan and build jobs authenticate to `devpanel/cli` as `vars.GHCR_USER`.

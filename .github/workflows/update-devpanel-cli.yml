@@ -8,8 +8,8 @@ name: Update DevPanel CLI binaries
 # cmd/devpanel-client. Delete that cache entry to rebuild the same commit.
 #
 # devpanel/cli is cloned under RUNNER_TEMP, outside this repository.
-# GHCR_TOKEN must be able to read devpanel/cli. The workflow token commits
-# the binaries.
+# GHCR_TOKEN must be able to read that repository. GHCR_USER is the username
+# that owns the token. The workflow token commits the binaries.
 
 on:
   workflow_dispatch:
@@ -29,12 +29,17 @@ jobs:
       sha: ${{ steps.upstream.outputs.sha }}
       changed: ${{ steps.decision.outputs.changed }}
     steps:
-      - name: Require GHCR_TOKEN
+      - name: Require GHCR credentials
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USER: ${{ vars.GHCR_USER }}
         run: |
           if [[ -z "${GHCR_TOKEN}" ]]; then
             echo "::error::GHCR_TOKEN is required to read devpanel/cli."
+            exit 1
+          fi
+          if [[ -z "${GHCR_USER}" ]]; then
+            echo "::error::GHCR_USER is required. Set it to the username that owns GHCR_TOKEN."
             exit 1
           fi
 
@@ -42,12 +47,14 @@ jobs:
         id: upstream
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USER: ${{ vars.GHCR_USER }}
           GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
           dest="${RUNNER_TEMP}/devpanel-cli-history"
           rm -rf "$dest"
-          git -c "http.extraheader=AUTHORIZATION: bearer ${GHCR_TOKEN}" \
+          auth=$(printf '%s:%s' "${GHCR_USER}" "${GHCR_TOKEN}" | base64 -w0)
+          git -c "http.extraheader=AUTHORIZATION: basic ${auth}" \
             clone --filter=blob:none --no-checkout \
             https://github.com/devpanel/cli.git "$dest"
           sha=$(git -C "$dest" log -1 --format=%H -- cmd/devpanel-client)
@@ -104,14 +111,17 @@ jobs:
       - name: Clone devpanel/cli
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USER: ${{ vars.GHCR_USER }}
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
+          GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
           dest="${RUNNER_TEMP}/devpanel-cli"
           mkdir "$dest"
+          auth=$(printf '%s:%s' "${GHCR_USER}" "${GHCR_TOKEN}" | base64 -w0)
           git -C "$dest" init
           git -C "$dest" remote add origin https://github.com/devpanel/cli.git
-          git -C "$dest" -c "http.extraheader=AUTHORIZATION: bearer ${GHCR_TOKEN}" \
+          git -C "$dest" -c "http.extraheader=AUTHORIZATION: basic ${auth}" \
             fetch --depth 1 origin "$UPSTREAM_SHA"
           git -C "$dest" checkout --detach FETCH_HEAD
 
@@ -124,11 +134,10 @@ jobs:
       - name: Build native binary
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USER: ${{ vars.GHCR_USER }}
         run: |
           set -euo pipefail
-          if [[ -n "${GHCR_TOKEN}" ]]; then
-            git config --global url."https://x-access-token:${GHCR_TOKEN}@github.com/".insteadOf "https://github.com/"
-          fi
+          git config --global url."https://${GHCR_USER}:${GHCR_TOKEN}@github.com/".insteadOf "https://github.com/"
           dest="${RUNNER_TEMP}/devpanel-${{ matrix.arch }}"
           (
             cd "${RUNNER_TEMP}/devpanel-cli"
