@@ -136,3 +136,15 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 ## Definition of Done
 - The plan job resolves the latest `cmd/devpanel-client` commit via authenticated Git history.
 - Focused validation passes and changed files contain no secrets.
+
+# Task: Use GraphQL for DevPanel CLI revision lookup
+
+## Steps
+- [x] Query `Commit.history(path: ...)` on the upstream default branch with `GHCR_TOKEN` as a bearer token.
+- [x] Validate GraphQL success, API-error, and empty-history handling plus workflow syntax.
+- [x] Scan changed files for secrets.
+- [ ] Run CodeQL.
+
+## Definition of Done
+- The plan job resolves the latest `cmd/devpanel-client` commit using GraphQL without cloning the upstream repository in the plan step.
+- Workflow validation passes and changed files contain no secrets.

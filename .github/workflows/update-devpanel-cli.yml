@@ -7,7 +7,7 @@ name: Update DevPanel CLI binaries
 # Run it manually. The Actions cache records the latest commit that changed
 # cmd/devpanel-client. Delete that cache entry to rebuild the same commit.
 #
-# The plan job reads the latest cmd/devpanel-client commit from Git history.
+# The plan job reads the latest cmd/devpanel-client commit from GitHub GraphQL.
 # The build clones devpanel/cli under RUNNER_TEMP, outside this repository.
 # GHCR_TOKEN must be able to read that repository. GHCR_USER is the username
 # that owns the token. The workflow token commits the binaries.
@@ -48,17 +48,49 @@ jobs:
         id: upstream
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GHCR_USER: ${{ vars.GHCR_USER }}
-          GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
-          dest="${RUNNER_TEMP}/devpanel-cli-history"
-          auth=$(printf '%s:%s' "${GHCR_USER}" "${GHCR_TOKEN}" | base64 -w0)
-          git -c "http.extraheader=AUTHORIZATION: basic ${auth}" \
-            clone --filter=blob:none --no-checkout \
-            https://github.com/devpanel/cli.git "$dest"
-          unset auth
-          sha=$(git -C "$dest" log -1 --format=%H -- cmd/devpanel-client)
+          query='query {
+            repository(owner: "devpanel", name: "cli") {
+              defaultBranchRef {
+                target {
+                  ... on Commit {
+                    history(first: 1, path: "cmd/devpanel-client") {
+                      nodes { oid }
+                    }
+                  }
+                }
+              }
+            }
+          }'
+          auth=$(printf '%s %s' 'Bearer' "$GHCR_TOKEN")
+          body=$(mktemp)
+          code=$(
+            curl -sS \
+              -H "Authorization: ${auth}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -o "$body" \
+              -w "%{http_code}" \
+              https://api.github.com/graphql \
+              --data "$(jq -n --arg query "$query" '{query: $query}')" \
+              || true
+          )
+          if [[ "$code" != "200" ]]; then
+            echo "::error::Unable to read cmd/devpanel-client history from GitHub GraphQL (HTTP ${code:-unknown})."
+            jq -r '.message // empty' "$body" >&2 || true
+            rm -f "$body"
+            exit 1
+          fi
+          if jq -e '.errors | length > 0' "$body" >/dev/null; then
+            echo "::error::GitHub GraphQL returned an error while reading cmd/devpanel-client history."
+            jq -r '.errors[].message' "$body" >&2
+            rm -f "$body"
+            exit 1
+          fi
+          sha=$(jq -r '.data.repository.defaultBranchRef.target.history.nodes[0].oid // empty' "$body")
+          rm -f "$body"
           if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::No commit on the default branch changes cmd/devpanel-client."
             exit 1
