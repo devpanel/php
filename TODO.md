@@ -143,7 +143,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Query `Commit.history(path: ...)` on the upstream default branch with `GHCR_TOKEN` as a bearer token.
 - [x] Validate GraphQL success, API-error, and empty-history handling plus workflow syntax.
 - [x] Scan changed files for secrets.
-- [ ] Run CodeQL.
+- [x] Run CodeQL; no alerts found.
 
 ## Definition of Done
 - The plan job resolves the latest `cmd/devpanel-client` commit using GraphQL without cloning the upstream repository in the plan step.
