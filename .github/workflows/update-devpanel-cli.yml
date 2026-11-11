@@ -1,16 +1,16 @@
 name: Update DevPanel CLI binaries
 
 # Build linux/amd64 and linux/arm64 devpanel binaries from
-# https://github.com/devpanel/cli using its go-build Make target and commit
+# https://gitlab.com/devpanel-vn/cli and commit
 # base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
 #
 # Run it manually on a branch. The Actions cache records the upstream default
 # branch HEAD after both binaries are committed to this branch. Delete that
 # cache entry to rebuild the same commit.
 #
-# The build clones devpanel/cli under RUNNER_TEMP, outside this repository.
-# GHCR_TOKEN must be able to read that repository. GHCR_USER is the username
-# that owns the token. The workflow token commits the binaries.
+# The build clones the GitLab repository under RUNNER_TEMP.
+# GITLAB_TOKEN and GITLAB_USER must authenticate with read_repository access.
+# The workflow token commits the binaries.
 
 on:
   workflow_dispatch:
@@ -34,38 +34,38 @@ jobs:
       - name: Resolve upstream default branch HEAD
         id: upstream
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GHCR_USER: ${{ vars.GHCR_USER }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_USER: ${{ vars.GITLAB_USER }}
           GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
-          if [[ -z "${GHCR_TOKEN}" ]]; then
-            echo "::error::GHCR_TOKEN is required to read devpanel/cli."
+          if [[ -z "${GITLAB_TOKEN}" ]]; then
+            echo "::error::GITLAB_TOKEN is required to read gitlab.com/devpanel-vn/cli."
             exit 1
           fi
-          if [[ -z "${GHCR_USER}" ]]; then
-            echo "::error::GHCR_USER is required. Set it to the username that owns GHCR_TOKEN."
+          if [[ -z "${GITLAB_USER}" ]]; then
+            echo "::error::GITLAB_USER is required. Set it to the GitLab token username."
             exit 1
           fi
 
-          auth=$(printf '%s:%s' "${GHCR_USER}" "${GHCR_TOKEN}" | base64 -w0)
+          auth=$(printf '%s:%s' "${GITLAB_USER}" "${GITLAB_TOKEN}" | base64 -w0)
           echo "::add-mask::${auth}"
-          head=$(git -c "http.extraheader=AUTHORIZATION: basic ${auth}" \
-            ls-remote https://github.com/devpanel/cli.git HEAD)
+          head=$(git -c "http.https://gitlab.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+            ls-remote https://gitlab.com/devpanel-vn/cli.git HEAD)
           sha=$(awk '$2 == "HEAD" {print $1}' <<< "$head")
           if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Unable to resolve the devpanel/cli default branch HEAD."
+            echo "::error::Unable to resolve the GitLab CLI default branch HEAD."
             exit 1
           fi
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
-          echo "devpanel/cli default branch HEAD is ${sha}"
+          echo "GitLab CLI default branch HEAD is ${sha}"
 
       - name: Restore the built revision
         id: revision-cache
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: devpanel-cli-go-build-v1-${{ github.ref }}-${{ steps.upstream.outputs.sha }}
+          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ steps.upstream.outputs.sha }}
           lookup-only: true
 
       - name: Decide whether to rebuild
@@ -76,10 +76,10 @@ jobs:
         run: |
           if [[ "${CACHE_HIT}" == "true" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "devpanel/cli ${UPSTREAM_SHA} is already built for this branch."
+            echo "GitLab CLI ${UPSTREAM_SHA} is already built for this branch."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "devpanel/cli ${UPSTREAM_SHA} has not been built for this branch."
+            echo "GitLab CLI ${UPSTREAM_SHA} has not been built for this branch."
           fi
 
   build:
@@ -98,21 +98,21 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Clone devpanel/cli
+      - name: Fetch GitLab CLI
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GHCR_USER: ${{ vars.GHCR_USER }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_USER: ${{ vars.GITLAB_USER }}
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
           GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
           dest="${RUNNER_TEMP}/devpanel-cli"
           mkdir "$dest"
-          auth=$(printf '%s:%s' "${GHCR_USER}" "${GHCR_TOKEN}" | base64 -w0)
+          auth=$(printf '%s:%s' "${GITLAB_USER}" "${GITLAB_TOKEN}" | base64 -w0)
           echo "::add-mask::${auth}"
           git -C "$dest" init
-          git -C "$dest" remote add origin https://github.com/devpanel/cli.git
-          git -C "$dest" -c "http.extraheader=AUTHORIZATION: basic ${auth}" \
+          git -C "$dest" remote add origin https://gitlab.com/devpanel-vn/cli.git
+          git -C "$dest" -c "http.https://gitlab.com/.extraheader=AUTHORIZATION: basic ${auth}" \
             fetch --depth 1 origin "$UPSTREAM_SHA"
           git -C "$dest" checkout --detach FETCH_HEAD
 
@@ -122,17 +122,32 @@ jobs:
           go-version-file: ${{ runner.temp }}/devpanel-cli/go.mod
           cache: false
 
-      - name: Build native binary with upstream go-build target
+      - name: Build native client binary
         working-directory: ${{ runner.temp }}/devpanel-cli
         env:
           ARCH: ${{ matrix.arch }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_USER: ${{ vars.GITLAB_USER }}
+          GIT_TERMINAL_PROMPT: "0"
+          GOPRIVATE: gitlab.com/devpanel-vn/*
         run: |
           set -euo pipefail
-          mkdir -p bin
-          env -u GOOS -u GOARCH make go-build
+          if [[ ! -d cmd/devpanel-client ]]; then
+            echo "::error::GitLab source does not contain cmd/devpanel-client; verify the client build path."
+            exit 1
+          fi
+          auth=$(printf '%s:%s' "${GITLAB_USER}" "${GITLAB_TOKEN}" | base64 -w0)
+          echo "::add-mask::${auth}"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://gitlab.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}"
           dest="${RUNNER_TEMP}/devpanel-${ARCH}"
-          install -m 0755 bin/devpanel "$dest"
-          "$dest" --callback=false version
+          env -u GOOS -u GOARCH CGO_ENABLED=0 \
+            go build -trimpath -o "$dest" ./cmd/devpanel-client
+          unset GITLAB_TOKEN GITLAB_USER GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 auth
+          chmod 0755 "$dest"
+          "$dest" version
+          "$dest" app trigger --help
 
       - name: Upload binary
         uses: actions/upload-artifact@v7
@@ -180,8 +195,8 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit \
-              -m "Update devpanel CLI from devpanel/cli@${UPSTREAM_SHA}" \
-              -m "Built linux/amd64 and linux/arm64 with make go-build (main.go) at that commit."
+              -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
+              -m "Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit."
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
@@ -196,4 +211,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: devpanel-cli-go-build-v1-${{ github.ref }}-${{ needs.plan.outputs.sha }}
+          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ needs.plan.outputs.sha }}

@@ -103,25 +103,26 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - OPcache remains loaded on every PHP version without enabling a nonexistent PHP 8.5 shared module.
 - Focused checks pass; any remaining build or CI blockers are explicitly reported.
 
-# Task: Rebuild the DevPanel CLI from devpanel/cli
+# Task: Rebuild the DevPanel CLI from GitLab
 
 ## Steps
 - [x] Add a manual workflow based on `main`. The workflow token commits the binaries.
 - [x] Resolve and cache the upstream default branch HEAD per destination branch, and skip the build when that entry exists.
 - [x] Build linux/amd64 and linux/arm64 in parallel on native runners.
-- [x] Create `bin/` and run the upstream `make go-build` target to compile the root `main.go` for Linux with CGO disabled.
-- [x] Clone `devpanel/cli` outside this repository and commit only the two binaries.
+- [x] Configure GitLab authentication and fetch the resolved revision outside this repository.
+- [ ] Confirm `cmd/devpanel-client`, Go setup, build dependencies and smoke checks against the actual GitLab source.
+- [ ] Run the workflow with GitLab credentials and verify both binaries and revision caching.
 
 ## Definition of Done
 - A cache miss builds both binaries on `ubuntu-26.04` and `ubuntu-26.04-arm` and commits `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64`.
 
-# Task: Authenticate to devpanel/cli with GHCR_USER
+# Task: Authenticate to GitLab CLI
 
 ## Steps
-- [x] Require the `GHCR_USER` repository variable with `GHCR_TOKEN`.
+- [x] Require the `GITLAB_USER` repository variable with `GITLAB_TOKEN`.
 - [x] Resolve the default branch HEAD with authenticated `git ls-remote`.
-- [x] Clone and fetch `devpanel/cli` for the build with Basic auth for that username and token.
+- [x] Fetch `devpanel-vn/cli` with GitLab-scoped Basic auth for that username and token.
 
 ## Definition of Done
 - The plan job records the upstream default branch HEAD, not history for an assumed source path.
-- The build job authenticates to `devpanel/cli` as `vars.GHCR_USER`.
+- The build job authenticates to GitLab as `vars.GITLAB_USER` without persisting credentials.

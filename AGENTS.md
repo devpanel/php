@@ -129,10 +129,10 @@ Baseline JSON files in `tests/baselines/` track pre-existing lint violations per
 
 #### Workflows
 - **`docker-build.yml`** — triggered on pushes to `main` or `develop` and by manual `workflow_dispatch`; detects changed versions, builds images per-platform in parallel, and merges platform-specific digests into multi-arch manifests.
-- **`update-devpanel-cli.yml`** — manual `workflow_dispatch` on branches only. Resolves the `devpanel/cli` default branch HEAD and builds `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64` in parallel on native runners using `mkdir -p bin` and `make go-build` (the root `main.go`, Linux, CGO disabled). The Go version comes from upstream `go.mod`. A branch-specific Actions cache records the revision only after the workflow token commits both binaries. A new run cancels one already in progress. Upstream Git authentication is scoped to individual commands, not global configuration.
+- **`update-devpanel-cli.yml`** — manual `workflow_dispatch` on branches only. Resolves the GitLab `devpanel-vn/cli` default branch HEAD and builds `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64` in parallel on native runners from `cmd/devpanel-client` (the original binary's embedded package path; confirm against GitLab source). The Go version comes from upstream `go.mod`. A branch-specific Actions cache records the revision only after the workflow token commits both binaries. A new run cancels one already in progress. Upstream Git authentication is scoped to GitLab requests, not global configuration.
 - **`test.yml`** — runs YAML, shell, and Dockerfile linting plus build/run tests on pushes and pull requests.
 - Production images are tagged without suffix (e.g. `devpanel/php:8.3-base`); `develop` branch builds use the `-rc` suffix.
-- Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Optional: `GHCR_TOKEN` (falls back to `GITHUB_TOKEN` for GHCR pushes). `update-devpanel-cli.yml` requires `GHCR_TOKEN` with access to `devpanel/cli`, and the `GHCR_USER` repository variable set to the username that owns that token.
+- Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Optional: `GHCR_TOKEN` (falls back to `GITHUB_TOKEN` for GHCR pushes). `update-devpanel-cli.yml` requires the `GITLAB_TOKEN` repository secret with `read_repository` access and the `GITLAB_USER` repository variable containing its GitLab username.
 
 ## Environment Variables (base images)
 

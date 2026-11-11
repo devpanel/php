@@ -291,17 +291,21 @@ for setup instructions.
   Native AMD64 builds skip QEMU.
 - `update-devpanel-cli.yml` rebuilds `base/bin/devpanel-amd64` and
   `base/bin/devpanel-arm64` from the latest
-  [devpanel/cli](https://github.com/devpanel/cli) default branch HEAD.
-  Run it manually on a branch; tags are left unchanged. Each native build
-  creates `bin/` and runs the upstream `make go-build` target, which compiles
-  `main.go` for Linux with CGO disabled. Both builds use the same resolved
+  [GitLab CLI repository](https://gitlab.com/devpanel-vn/cli) default branch
+  HEAD. Run it manually on a branch; tags are left unchanged. Each native build
+  compiles `cmd/devpanel-client` for Linux with CGO disabled. This client path
+  is based on the existing binary's metadata and must be confirmed against
+  the GitLab source. Both builds use the same resolved
   commit and the Go version from its `go.mod`. The workflow caches the
   revision per destination branch only after both binaries are committed,
   and skips subsequent builds on a cache hit. Delete that cache entry to
   rebuild the same commit. A new run cancels one already in progress.
-  The workflow token commits the binaries; `GHCR_TOKEN` and `GHCR_USER`
-  authenticate reads of the private upstream repository without storing
-  credentials in global Git configuration. The `devpanel/cli` checkout is
+  Set the `GITLAB_TOKEN` repository secret to a GitLab deploy token with
+  `read_repository` access to the project and the `GITLAB_USER` repository
+  variable to that deploy token's username. A personal access token with
+  `read_repository` access and a non-empty GitLab username also works.
+  The workflow token commits the binaries. GitLab credentials are scoped
+  to GitLab Git requests and not stored in global Git configuration. The checkout is
   placed outside this repository. AMD64 and ARM64 binaries build in parallel
   on `ubuntu-26.04` and `ubuntu-26.04-arm`. This workflow does not change
   which binary the Dockerfile copies into images.
