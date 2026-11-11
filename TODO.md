@@ -107,32 +107,12 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 
 ## Steps
 - [x] Add a manual workflow based on `main`. The workflow token commits the binaries.
-- [x] Resolve and cache the upstream default branch HEAD per destination branch, and skip the build when that entry exists.
-- [x] Build linux/amd64 and linux/arm64 in parallel on native runners.
-- [x] Configure GitLab authentication and fetch the resolved revision outside this repository.
+- [x] Resolve and cache the upstream default branch HEAD through the authenticated GitLab commits API, and skip revisions already built for the destination branch.
+- [x] Build linux/amd64 and linux/arm64 in parallel on native runners, then commit both binaries.
+- [x] Configure GitLab API and source-fetch authentication with `GITLAB_TOKEN` and `GITLAB_USER`.
 - [ ] Confirm `cmd/devpanel-client`, Go setup, build dependencies and smoke checks against the actual GitLab source.
 - [ ] Run the workflow with GitLab credentials and verify both binaries and revision caching.
 
 ## Definition of Done
-- A cache miss builds both binaries on `ubuntu-26.04` and `ubuntu-26.04-arm` and commits `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64`.
-
-# Task: Authenticate to GitLab CLI
-
-## Steps
-- [x] Require the `GITLAB_USER` repository variable with `GITLAB_TOKEN`.
-- [x] Resolve the default branch HEAD with authenticated `git ls-remote`.
-- [x] Fetch `devpanel-vn/cli` with GitLab-scoped Basic auth for that username and token.
-
-## Definition of Done
-- The plan job records the upstream default branch HEAD, not history for an assumed source path.
-- The build job authenticates to GitLab as `vars.GITLAB_USER` without persisting credentials.
-
-# Task: Resolve DevPanel CLI revision with GitLab API
-
-## Steps
-- [x] Resolve the default branch's latest commit through the authenticated GitLab API.
-- [x] Preserve the build job's shallow fetch and validate the workflow changes.
-
-## Definition of Done
-- The plan job obtains the latest default-branch commit SHA through GitLab's API using a token with `read_api` access.
-- The build job still fetches only the resolved commit and authenticates with `read_repository` access.
+- A cache miss resolves the latest default-branch commit through the GitLab API, builds both binaries on `ubuntu-26.04` and `ubuntu-26.04-arm`, and commits `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64`.
+- GitLab access uses `GITLAB_TOKEN` with `read_api` and `read_repository` access and the `GITLAB_USER` repository variable; the built revision is cached after the binaries are committed.
