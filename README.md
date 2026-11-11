@@ -291,13 +291,20 @@ for setup instructions.
   Native AMD64 builds skip QEMU.
 - `update-devpanel-cli.yml` rebuilds `base/bin/devpanel-amd64` and
   `base/bin/devpanel-arm64` from the latest
-  [devpanel/cli](https://github.com/devpanel/cli) commit that changed
-  `cmd/devpanel-client`. Run it manually. It caches that commit and skips
-  the build when the cache entry exists. A new run cancels one already in
-  progress. The workflow token commits the binaries. Delete the cache
-  entry to rebuild the same commit. The `devpanel/cli` checkout is
-  placed outside this repository. AMD64 and ARM64 binaries build in
-  parallel on `ubuntu-26.04` and `ubuntu-26.04-arm`.
+  [devpanel/cli](https://github.com/devpanel/cli) default branch HEAD.
+  Run it manually on a branch; tags are left unchanged. Each native build
+  creates `bin/` and runs the upstream `make go-build` target, which compiles
+  `main.go` for Linux with CGO disabled. Both builds use the same resolved
+  commit and the Go version from its `go.mod`. The workflow caches the
+  revision per destination branch only after both binaries are committed,
+  and skips subsequent builds on a cache hit. Delete that cache entry to
+  rebuild the same commit. A new run cancels one already in progress.
+  The workflow token commits the binaries; `GHCR_TOKEN` and `GHCR_USER`
+  authenticate reads of the private upstream repository without storing
+  credentials in global Git configuration. The `devpanel/cli` checkout is
+  placed outside this repository. AMD64 and ARM64 binaries build in parallel
+  on `ubuntu-26.04` and `ubuntu-26.04-arm`. This workflow does not change
+  which binary the Dockerfile copies into images.
 - The `advance` variant depends on `secure`, which depends on `base`.
   The build chain is enforced via the bake target dependency graph.
 

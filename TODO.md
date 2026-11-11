@@ -107,8 +107,9 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 
 ## Steps
 - [x] Add a manual workflow based on `main`. The workflow token commits the binaries.
-- [x] Cache the latest commit that changed `cmd/devpanel-client` and skip the build when that entry exists.
+- [x] Resolve and cache the upstream default branch HEAD per destination branch, and skip the build when that entry exists.
 - [x] Build linux/amd64 and linux/arm64 in parallel on native runners.
+- [x] Create `bin/` and run the upstream `make go-build` target to compile the root `main.go` for Linux with CGO disabled.
 - [x] Clone `devpanel/cli` outside this repository and commit only the two binaries.
 
 ## Definition of Done
@@ -118,9 +119,9 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 
 ## Steps
 - [x] Require the `GHCR_USER` repository variable with `GHCR_TOKEN`.
-- [x] Read the latest `cmd/devpanel-client` commit from the commits API as that user.
+- [x] Resolve the default branch HEAD with authenticated `git ls-remote`.
 - [x] Clone and fetch `devpanel/cli` for the build with Basic auth for that username and token.
 
 ## Definition of Done
-- The plan job records the commit the API returns for `cmd/devpanel-client`.
+- The plan job records the upstream default branch HEAD, not history for an assumed source path.
 - The build job authenticates to `devpanel/cli` as `vars.GHCR_USER`.
