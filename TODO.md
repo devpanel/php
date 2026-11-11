@@ -126,3 +126,13 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 ## Definition of Done
 - The plan job records the upstream default branch HEAD, not history for an assumed source path.
 - The build job authenticates to GitLab as `vars.GITLAB_USER` without persisting credentials.
+
+# Task: Resolve DevPanel CLI revision with GitLab API
+
+## Steps
+- [x] Resolve the default branch's latest commit through the authenticated GitLab API.
+- [x] Preserve the build job's shallow fetch and validate the workflow changes.
+
+## Definition of Done
+- The plan job obtains the latest default-branch commit SHA through GitLab's API using a token with `read_api` access.
+- The build job still fetches only the resolved commit and authenticates with `read_repository` access.
