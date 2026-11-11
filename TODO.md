@@ -131,7 +131,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Replace the API lookup that returned no path commits with authenticated Git history retrieval.
 - [x] Validate the workflow/YAML and review the resulting diff.
 - [x] Scan changed files for secrets.
-- [ ] Run the required CodeQL check.
+- [x] Run the required CodeQL check; no alerts found.
 
 ## Definition of Done
 - The plan job resolves the latest `cmd/devpanel-client` commit via authenticated Git history.
