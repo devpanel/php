@@ -7,7 +7,7 @@ name: Update DevPanel CLI binaries
 # Run it manually. The Actions cache records the latest commit that changed
 # cmd/devpanel-client. Delete that cache entry to rebuild the same commit.
 #
-# The plan job reads the latest cmd/devpanel-client commit from the API.
+# The plan job reads the latest cmd/devpanel-client commit from Git history.
 # The build clones devpanel/cli under RUNNER_TEMP, outside this repository.
 # GHCR_TOKEN must be able to read that repository. GHCR_USER is the username
 # that owns the token. The workflow token commits the binaries.
@@ -49,26 +49,16 @@ jobs:
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           GHCR_USER: ${{ vars.GHCR_USER }}
+          GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
-          body=$(mktemp)
-          code=$(
-            curl -sS \
-              -u "${GHCR_USER}:${GHCR_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -o "$body" \
-              -w "%{http_code}" \
-              "https://api.github.com/repos/devpanel/cli/commits?path=cmd/devpanel-client&per_page=1" \
-              || true
-          )
-          if [[ "$code" != "200" ]]; then
-            echo "::error::Unable to read cmd/devpanel-client history (HTTP ${code:-unknown})."
-            jq -r '.message // empty' "$body" >&2 || true
-            exit 1
-          fi
-          sha=$(jq -r '.[0].sha // empty' "$body")
-          rm -f "$body"
+          dest="${RUNNER_TEMP}/devpanel-cli-history"
+          auth=$(printf '%s:%s' "${GHCR_USER}" "${GHCR_TOKEN}" | base64 -w0)
+          git -c "http.extraheader=AUTHORIZATION: basic ${auth}" \
+            clone --filter=blob:none --no-checkout \
+            https://github.com/devpanel/cli.git "$dest"
+          unset auth
+          sha=$(git -C "$dest" log -1 --format=%H -- cmd/devpanel-client)
           if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::No commit on the default branch changes cmd/devpanel-client."
             exit 1
