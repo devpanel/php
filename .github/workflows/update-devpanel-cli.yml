@@ -9,8 +9,8 @@ name: Update DevPanel CLI binaries
 # cache entry to rebuild the same commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
-# that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access.
-# GITLAB_USER and GITLAB_TOKEN authenticate Git requests.
+# that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
+# authenticates Git requests with GitLab's oauth2 username.
 # The workflow token commits the binaries.
 
 on:
@@ -36,7 +36,6 @@ jobs:
         id: upstream
         env:
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
-          GITLAB_USER: ${{ vars.GITLAB_USER }}
           GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
@@ -44,12 +43,8 @@ jobs:
             echo "::error::GITLAB_TOKEN is required to read gitlab.com/devpanel-vn/cli."
             exit 1
           fi
-          if [[ -z "${GITLAB_USER}" ]]; then
-            echo "::error::GITLAB_USER is required to authenticate to gitlab.com/devpanel-vn/cli."
-            exit 1
-          fi
 
-          auth=$(printf '%s:%s' "${GITLAB_USER}" "${GITLAB_TOKEN}" | base64 -w0)
+          auth=$(printf 'oauth2:%s' "${GITLAB_TOKEN}" | base64 -w0)
           echo "::add-mask::${auth}"
           head=$(git -c "http.https://gitlab.com/.extraheader=AUTHORIZATION: basic ${auth}" \
             ls-remote https://gitlab.com/devpanel-vn/cli.git HEAD)
@@ -102,14 +97,13 @@ jobs:
       - name: Fetch GitLab CLI
         env:
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
-          GITLAB_USER: ${{ vars.GITLAB_USER }}
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
           GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
           dest="${RUNNER_TEMP}/devpanel-cli"
           mkdir "$dest"
-          auth=$(printf '%s:%s' "${GITLAB_USER}" "${GITLAB_TOKEN}" | base64 -w0)
+          auth=$(printf 'oauth2:%s' "${GITLAB_TOKEN}" | base64 -w0)
           echo "::add-mask::${auth}"
           git -C "$dest" init
           git -C "$dest" remote add origin https://gitlab.com/devpanel-vn/cli.git
@@ -128,7 +122,6 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
-          GITLAB_USER: ${{ vars.GITLAB_USER }}
           GIT_TERMINAL_PROMPT: "0"
           GOPRIVATE: gitlab.com/devpanel-vn/*
         run: |
@@ -137,7 +130,7 @@ jobs:
             echo "::error::GitLab source does not contain cmd/devpanel-client; verify the client build path."
             exit 1
           fi
-          auth=$(printf '%s:%s' "${GITLAB_USER}" "${GITLAB_TOKEN}" | base64 -w0)
+          auth=$(printf 'oauth2:%s' "${GITLAB_TOKEN}" | base64 -w0)
           echo "::add-mask::${auth}"
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0=http.https://gitlab.com/.extraheader
@@ -145,7 +138,7 @@ jobs:
           dest="${RUNNER_TEMP}/devpanel-${ARCH}"
           env -u GOOS -u GOARCH CGO_ENABLED=0 \
             go build -trimpath -o "$dest" ./cmd/devpanel-client
-          unset GITLAB_TOKEN GITLAB_USER GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 auth
+          unset GITLAB_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 auth
           chmod 0755 "$dest"
           "$dest" version
           "$dest" app trigger --help
