@@ -109,13 +109,25 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Add a manual workflow based on `main`. The workflow token commits the binaries.
 - [x] Resolve and cache the upstream default branch HEAD through authenticated Git access, and skip revisions already built for the destination branch.
 - [x] Build linux/amd64 and linux/arm64 in parallel on native runners, then commit both binaries.
-- [x] Configure GitLab source-fetch authentication with the service account's `GITLAB_TOKEN` (`read_repository`) and `GITLAB_USER`.
+- [x] Configure GitLab source-fetch authentication with a `read_repository` token and GitLab's `oauth2` username.
 - [ ] Confirm `cmd/devpanel-client`, Go setup, build dependencies and smoke checks against the actual GitLab source.
 - [ ] Run the workflow with GitLab credentials and verify both binaries and revision caching.
 
 ## Definition of Done
 - A cache miss resolves the latest default-branch commit through authenticated Git access, builds both binaries on `ubuntu-26.04` and `ubuntu-26.04-arm`, and commits `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64`.
-- GitLab access uses the service account's `GITLAB_TOKEN` with `read_repository` access plus its username in `GITLAB_USER`; the built revision is cached after the binaries are committed.
+- GitLab access uses `GITLAB_TOKEN` with `read_repository` access; the built revision is cached after the binaries are committed.
+
+# Task: Fix GitLab CLI HTTPS authentication
+
+## Steps
+- [x] Diagnose the cached-revision job's GitLab authentication failure from its Actions logs.
+- [x] Use GitLab's documented `oauth2` username with the access token in every Git request.
+- [x] Update workflow documentation and run focused validation and secret scanning.
+
+## Definition of Done
+- Plan, source fetch, and private-module requests use the same documented GitLab access-token authentication.
+- Documentation no longer requires `GITLAB_USER`.
+- Focused validation passes and changed files contain no secrets.
 
 # Task: Fix cached DevPanel CLI revision lookup
 

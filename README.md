@@ -300,9 +300,9 @@ for setup instructions.
   revision per destination branch only after both binaries are committed,
   and skips subsequent builds on a cache hit. Delete that cache entry to
   rebuild the same commit. A new run cancels one already in progress.
-  Set the `GITLAB_TOKEN` repository secret to the service account's GitLab
-  token with `read_repository` access. Set the `GITLAB_USER` repository
-  variable to the service account's username. The workflow resolves the
+  Set the `GITLAB_TOKEN` repository secret to a GitLab access token with
+  `read_repository` access. The workflow authenticates Git requests with
+  GitLab's `oauth2` username. The workflow resolves the
   default-branch HEAD using authenticated Git access, so it does not require
   GitLab API access.
   The workflow token commits the binaries. GitLab credentials are scoped
