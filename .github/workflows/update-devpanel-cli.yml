@@ -8,9 +8,9 @@ name: Update DevPanel CLI binaries
 # branch HEAD after both binaries are committed to this branch. Delete that
 # cache entry to rebuild the same commit.
 #
-# The plan job queries GitLab's commits API; the build fetches the commit under RUNNER_TEMP.
-# GITLAB_TOKEN needs read_api for the API and read_repository for Git fetches.
-# GITLAB_USER is used to authenticate the Git fetch.
+# The plan job resolves the default branch HEAD through Git; the build fetches
+# that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access.
+# GITLAB_USER and GITLAB_TOKEN authenticate Git requests.
 # The workflow token commits the binaries.
 
 on:
@@ -36,19 +36,26 @@ jobs:
         id: upstream
         env:
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_USER: ${{ vars.GITLAB_USER }}
+          GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
           if [[ -z "${GITLAB_TOKEN}" ]]; then
             echo "::error::GITLAB_TOKEN is required to read gitlab.com/devpanel-vn/cli."
             exit 1
           fi
+          if [[ -z "${GITLAB_USER}" ]]; then
+            echo "::error::GITLAB_USER is required to authenticate to gitlab.com/devpanel-vn/cli."
+            exit 1
+          fi
 
-          commits=$(curl --fail --silent --show-error \
-            --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-            "https://gitlab.com/api/v4/projects/devpanel-vn%2Fcli/repository/commits?per_page=1")
-          sha=$(jq -r '.[0].id // empty' <<< "$commits")
+          auth=$(printf '%s:%s' "${GITLAB_USER}" "${GITLAB_TOKEN}" | base64 -w0)
+          echo "::add-mask::${auth}"
+          head=$(git -c "http.https://gitlab.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+            ls-remote https://gitlab.com/devpanel-vn/cli.git HEAD)
+          sha=${head%%$'\t'*}
           if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Unable to resolve the GitLab CLI default branch HEAD."
+            echo "::error::Unable to resolve the GitLab CLI default branch HEAD through Git."
             exit 1
           fi
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"

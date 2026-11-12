@@ -301,10 +301,10 @@ for setup instructions.
   and skips subsequent builds on a cache hit. Delete that cache entry to
   rebuild the same commit. A new run cancels one already in progress.
   Set the `GITLAB_TOKEN` repository secret to the service account's GitLab
-  token with both `read_api` (for the commits API) and `read_repository` (for
-  Git fetches) scopes. Set the `GITLAB_USER` repository variable to the
-  service account's username. A deploy token with only `read_repository` is
-  insufficient because the workflow also queries the GitLab API.
+  token with `read_repository` access. Set the `GITLAB_USER` repository
+  variable to the service account's username. The workflow resolves the
+  default-branch HEAD using authenticated Git access, so it does not require
+  GitLab API access.
   The workflow token commits the binaries. GitLab credentials are scoped
   to GitLab Git requests and not stored in global Git configuration. The checkout is
   placed outside this repository. AMD64 and ARM64 binaries build in parallel
