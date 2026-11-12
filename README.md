@@ -291,13 +291,25 @@ for setup instructions.
   Native AMD64 builds skip QEMU.
 - `update-devpanel-cli.yml` rebuilds `base/bin/devpanel-amd64` and
   `base/bin/devpanel-arm64` from the latest
-  [devpanel/cli](https://github.com/devpanel/cli) commit that changed
-  `cmd/devpanel-client`. Run it manually. It caches that commit and skips
-  the build when the cache entry exists. A new run cancels one already in
-  progress. The workflow token commits the binaries. Delete the cache
-  entry to rebuild the same commit. The `devpanel/cli` checkout is
-  placed outside this repository. AMD64 and ARM64 binaries build in
-  parallel on `ubuntu-26.04` and `ubuntu-26.04-arm`.
+  [GitLab CLI repository](https://gitlab.com/devpanel-vn/cli) default branch
+  HEAD. Run it manually on a branch; tags are left unchanged. Each native build
+  compiles `cmd/devpanel-client` for Linux with CGO disabled. This client path
+  is based on the existing binary's metadata and must be confirmed against
+  the GitLab source. Both builds use the same resolved
+  commit and the Go version from its `go.mod`. The workflow caches the
+  revision per destination branch only after both binaries are committed,
+  and skips subsequent builds on a cache hit. Delete that cache entry to
+  rebuild the same commit. A new run cancels one already in progress.
+  Set the `GITLAB_TOKEN` repository secret to the service account's GitLab
+  token with both `read_api` (for the commits API) and `read_repository` (for
+  Git fetches) scopes. Set the `GITLAB_USER` repository variable to the
+  service account's username. A deploy token with only `read_repository` is
+  insufficient because the workflow also queries the GitLab API.
+  The workflow token commits the binaries. GitLab credentials are scoped
+  to GitLab Git requests and not stored in global Git configuration. The checkout is
+  placed outside this repository. AMD64 and ARM64 binaries build in parallel
+  on `ubuntu-26.04` and `ubuntu-26.04-arm`. This workflow does not change
+  which binary the Dockerfile copies into images.
 - The `advance` variant depends on `secure`, which depends on `base`.
   The build chain is enforced via the bake target dependency graph.
 

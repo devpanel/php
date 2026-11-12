@@ -103,24 +103,16 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - OPcache remains loaded on every PHP version without enabling a nonexistent PHP 8.5 shared module.
 - Focused checks pass; any remaining build or CI blockers are explicitly reported.
 
-# Task: Rebuild the DevPanel CLI from devpanel/cli
+# Task: Rebuild the DevPanel CLI from GitLab
 
 ## Steps
 - [x] Add a manual workflow based on `main`. The workflow token commits the binaries.
-- [x] Cache the latest commit that changed `cmd/devpanel-client` and skip the build when that entry exists.
-- [x] Build linux/amd64 and linux/arm64 in parallel on native runners.
-- [x] Clone `devpanel/cli` outside this repository and commit only the two binaries.
+- [x] Resolve and cache the upstream default branch HEAD through the authenticated GitLab commits API, and skip revisions already built for the destination branch.
+- [x] Build linux/amd64 and linux/arm64 in parallel on native runners, then commit both binaries.
+- [x] Configure GitLab API and source-fetch authentication with the service account's `GITLAB_TOKEN` (`read_api` and `read_repository`) and `GITLAB_USER`.
+- [ ] Confirm `cmd/devpanel-client`, Go setup, build dependencies and smoke checks against the actual GitLab source.
+- [ ] Run the workflow with GitLab credentials and verify both binaries and revision caching.
 
 ## Definition of Done
-- A cache miss builds both binaries on `ubuntu-26.04` and `ubuntu-26.04-arm` and commits `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64`.
-
-# Task: Authenticate to devpanel/cli with GHCR_USER
-
-## Steps
-- [x] Require the `GHCR_USER` repository variable with `GHCR_TOKEN`.
-- [x] Read the latest `cmd/devpanel-client` commit from the commits API as that user.
-- [x] Clone and fetch `devpanel/cli` for the build with Basic auth for that username and token.
-
-## Definition of Done
-- The plan job records the commit the API returns for `cmd/devpanel-client`.
-- The build job authenticates to `devpanel/cli` as `vars.GHCR_USER`.
+- A cache miss resolves the latest default-branch commit through the GitLab API, builds both binaries on `ubuntu-26.04` and `ubuntu-26.04-arm`, and commits `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64`.
+- GitLab API access uses the service account's `GITLAB_TOKEN` with `read_api` and `read_repository` scopes plus its username in `GITLAB_USER`; the built revision is cached after the binaries are committed.

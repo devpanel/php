@@ -129,10 +129,10 @@ Baseline JSON files in `tests/baselines/` track pre-existing lint violations per
 
 #### Workflows
 - **`docker-build.yml`** — triggered on pushes to `main` or `develop` and by manual `workflow_dispatch`; detects changed versions, builds images per-platform in parallel, and merges platform-specific digests into multi-arch manifests.
-- **`update-devpanel-cli.yml`** — manual `workflow_dispatch`. Builds `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64` from the latest `devpanel/cli` commit that changed `cmd/devpanel-client`, when the Actions cache does not already contain that commit. A new run cancels one already in progress. The workflow token commits the binaries.
+- **`update-devpanel-cli.yml`** — manual `workflow_dispatch` on branches only. Resolves the GitLab `devpanel-vn/cli` default branch HEAD and builds `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64` in parallel on native runners from `cmd/devpanel-client` (the original binary's embedded package path; confirm against GitLab source). The Go version comes from upstream `go.mod`. A branch-specific Actions cache records the revision only after the workflow token commits both binaries. A new run cancels one already in progress. Upstream Git authentication is scoped to GitLab requests, not global configuration.
 - **`test.yml`** — runs YAML, shell, and Dockerfile linting plus build/run tests on pushes and pull requests.
 - Production images are tagged without suffix (e.g. `devpanel/php:8.3-base`); `develop` branch builds use the `-rc` suffix.
-- Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Optional: `GHCR_TOKEN` (falls back to `GITHUB_TOKEN` for GHCR pushes). `update-devpanel-cli.yml` requires `GHCR_TOKEN` with access to `devpanel/cli`, and the `GHCR_USER` repository variable set to the username that owns that token.
+- Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Optional: `GHCR_TOKEN` (falls back to `GITHUB_TOKEN` for GHCR pushes). `update-devpanel-cli.yml` requires the service account's `GITLAB_TOKEN` with both `read_api` (for the commits API) and `read_repository` (for Git fetches) scopes, plus the `GITLAB_USER` repository variable containing that account's GitLab username. A deploy token with only `read_repository` cannot authenticate the API request.
 
 ## Environment Variables (base images)
 
