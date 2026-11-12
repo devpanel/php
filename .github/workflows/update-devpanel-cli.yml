@@ -8,8 +8,8 @@ name: Update DevPanel CLI binaries
 # branch HEAD after both binaries are committed to this branch. Delete that
 # cache entry to rebuild the same commit.
 #
-# The plan job queries GitLab's API; the build fetches the commit under RUNNER_TEMP.
-# GITLAB_TOKEN must have read_api and read_repository access.
+# The plan job queries GitLab's commits API; the build fetches the commit under RUNNER_TEMP.
+# GITLAB_TOKEN needs read_api for the API and read_repository for Git fetches.
 # GITLAB_USER is used to authenticate the Git fetch.
 # The workflow token commits the binaries.
 
