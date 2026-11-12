@@ -107,12 +107,24 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 
 ## Steps
 - [x] Add a manual workflow based on `main`. The workflow token commits the binaries.
-- [x] Resolve and cache the upstream default branch HEAD through the authenticated GitLab commits API, and skip revisions already built for the destination branch.
+- [x] Resolve and cache the upstream default branch HEAD through authenticated Git access, and skip revisions already built for the destination branch.
 - [x] Build linux/amd64 and linux/arm64 in parallel on native runners, then commit both binaries.
-- [x] Configure GitLab API and source-fetch authentication with the service account's `GITLAB_TOKEN` (`read_api` and `read_repository`) and `GITLAB_USER`.
+- [x] Configure GitLab source-fetch authentication with the service account's `GITLAB_TOKEN` (`read_repository`) and `GITLAB_USER`.
 - [ ] Confirm `cmd/devpanel-client`, Go setup, build dependencies and smoke checks against the actual GitLab source.
 - [ ] Run the workflow with GitLab credentials and verify both binaries and revision caching.
 
 ## Definition of Done
-- A cache miss resolves the latest default-branch commit through the GitLab API, builds both binaries on `ubuntu-26.04` and `ubuntu-26.04-arm`, and commits `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64`.
-- GitLab API access uses the service account's `GITLAB_TOKEN` with `read_api` and `read_repository` scopes plus its username in `GITLAB_USER`; the built revision is cached after the binaries are committed.
+- A cache miss resolves the latest default-branch commit through authenticated Git access, builds both binaries on `ubuntu-26.04` and `ubuntu-26.04-arm`, and commits `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64`.
+- GitLab access uses the service account's `GITLAB_TOKEN` with `read_repository` access plus its username in `GITLAB_USER`; the built revision is cached after the binaries are committed.
+
+# Task: Fix cached DevPanel CLI revision lookup
+
+## Steps
+- [x] Resolve the upstream default-branch HEAD through authenticated Git access instead of the GitLab commits API.
+- [x] Update the workflow documentation to describe the revised GitLab credential requirements.
+- [x] Run focused workflow/shell validation, scan changed files for secrets, and review the final diff.
+
+## Definition of Done
+- The plan job gets the upstream default-branch HEAD using the same authenticated Git access required by the build.
+- Documentation no longer requires `read_api` for the updater.
+- Focused validation passes and changed files contain no secrets.
