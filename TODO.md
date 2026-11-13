@@ -2,6 +2,72 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Reopen closed CLI update PRs before force-push
+
+## Steps
+- [x] Inspect updater workflow and existing control-flow tests.
+- [x] Reopen existing closed PRs before force-pushing the update branch.
+- [x] Add regression coverage and validate the workflow changes.
+- [x] Scan changed files for secrets; none detected.
+- [x] Run CodeQL; no alerts were reported.
+- [x] Review the final diff, commit, and push.
+
+## Definition of Done
+- A closed, unmerged update PR is reopened before the workflow force-pushes its branch.
+- The control-flow regression test and relevant workflow validation pass.
+
+# Task: Rebase auto-merge CLI update pull requests
+
+## Steps
+- [x] When repository auto-merge is enabled, dispatch Test and request guarded rebase auto-merge without polling or watching Test.
+- [x] Preserve the wait-for-Test and rebase-merge fallback when repository auto-merge is disabled; update regression coverage and docs.
+- [x] Validate nonblocking auto-merge and fallback paths, YAML, and embedded Bash.
+- [x] Request rebase auto-merge using the workflow token and matching its head SHA.
+- [x] Cover successful scheduling and failed Test/merge requests; update workflow documentation.
+- [x] Run focused regression tests, YAML lint, and embedded Bash validation.
+- [x] Check repository prerequisites: rebase merging and auto-merge are enabled.
+
+## Definition of Done
+- Protected-branch updates request rebase auto-merge without bypassing branch requirements.
+- Auto-merge-enabled repositories do not wait for Test; disabled repositories wait before attempting a rebase merge.
+- The PAT remains limited to Test dispatch; direct pushes and revision-cache behavior are unchanged.
+- Repository auto-merge must be enabled for PRs that still have outstanding requirements.
+
+# Task: Dispatch CLI updater tests only for protected branches
+
+## Steps
+- [x] Keep Test dispatch and waiting in the protected-branch fallback only.
+- [x] Update regression coverage and workflow documentation.
+- [x] Run focused updater tests, YAML/shell validation, and embedded Bash syntax/ShellCheck; baseline warnings are unchanged.
+- [x] Explain that protected-branch PRs are manually merged by maintainers.
+- [x] Scan changed files for secrets; none detected. CodeQL reported no alerts.
+- [x] Reply to both review comments.
+
+## Definition of Done
+- Direct binary pushes do not manually dispatch or wait for Test.
+- A protected-branch fallback still creates/updates its PR, then dispatches Test once and waits for its result.
+- Focused validation passes and changed files contain no secrets.
+
+# Task: Fix protected-branch CLI updater failure
+
+## Steps
+- [x] Use the workflow token for all pushes and PR operations, limiting GHCR_TOKEN to the protected-path Test dispatch.
+- [x] Create or update the PR before dispatching Test once and waiting for its head SHA's run.
+- [x] Validate revised authentication, new/existing/reopened PR paths, direct pushes, and Test failures; update documentation.
+- [x] Diagnose the failing push from Actions logs: the required `Test` check remains expected after dispatching it on a temporary branch.
+- [x] Replace the protected-branch retry push with a pull request from the tested temporary branch.
+- [x] Save the revision cache only after the target branch is updated; update workflow documentation.
+- [x] Validate YAML and shell changes, including Bash syntax for the embedded updater script.
+- [x] Scan changed files for secrets; none were detected.
+- [x] Run CodeQL; no alerts were reported.
+
+## Definition of Done
+- Unprotected branches still receive direct binary updates.
+- Protected branches receive a PR rather than a failing direct-push retry.
+- Protected-branch updates dispatch Test once, after the PR exists, with the PAT used only for that dispatch.
+- The revision cache is not saved until the target branch contains the updated binaries.
+- Focused validation passes and changed files contain no secrets.
+
 # Task: Restore branch-aware CLI updates
 
 ## Steps
