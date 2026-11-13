@@ -8,7 +8,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Test the generated binary commit on a temporary branch, then push the exact tested commit to `main`.
 - [x] Remove PR creation and update updater documentation.
 - [x] Run focused validation (YAML lint, Bash syntax/ShellCheck, and mocked pass/fail pushes), scan for secrets, and review the diff.
-- [ ] Run CodeQL and address any actionable findings.
+- [x] Run CodeQL; no alerts were reported.
 
 ## Definition of Done
 - The updater pushes to `main` only after the exact commit passes `Test`.
