@@ -2,6 +2,22 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Fix protected-branch CLI updater failure
+
+## Steps
+- [x] Diagnose the failing push from Actions logs: the required `Test` check remains expected after dispatching it on a temporary branch.
+- [x] Replace the protected-branch retry push with a pull request from the tested temporary branch.
+- [x] Save the revision cache only after the target branch is updated; update workflow documentation.
+- [x] Validate YAML and shell changes, including Bash syntax for the embedded updater script.
+- [x] Scan changed files for secrets; none were detected.
+- [ ] Run CodeQL and address any actionable findings.
+
+## Definition of Done
+- Unprotected branches still receive direct binary updates.
+- Protected branches receive a PR rather than a failing direct-push retry.
+- The revision cache is not saved until the target branch contains the updated binaries.
+- Focused validation passes and changed files contain no secrets.
+
 # Task: Restore branch-aware CLI updates
 
 ## Steps

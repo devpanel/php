@@ -6,9 +6,10 @@ name: Update DevPanel CLI binaries
 #
 # Run it manually on a branch. The workflow pushes directly to unprotected
 # branches. If branch protection rejects that push, it tests the commit on a
-# deterministic temporary branch before retrying the target push. The updater
-# records the upstream default branch HEAD in the Actions cache only after the
-# push succeeds. Delete that cache entry to rebuild the same upstream commit.
+# deterministic temporary branch and opens or updates a pull request. The
+# updater records the upstream default branch HEAD in the Actions cache only
+# after the target branch is updated. Delete that cache entry to rebuild the
+# same upstream commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
@@ -161,6 +162,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+      pull-requests: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -180,9 +182,11 @@ jobs:
           path: dist/arm64
 
       - name: Commit binaries
+        id: commit-binaries
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_BRANCH: ${{ github.ref_name }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
         run: |
           set -euo pipefail
@@ -211,7 +215,7 @@ jobs:
                 echo "::error::Direct push to ${TARGET_BRANCH} failed for a reason other than branch protection."
                 exit "${push_status}"
               fi
-              echo "::notice::Branch protection rejected the direct push to ${TARGET_BRANCH}; testing on a temporary branch before retrying."
+              echo "::notice::Branch protection rejected the direct push to ${TARGET_BRANCH}; testing on a temporary branch before opening a pull request."
               target_hash=$(printf '%s' "${TARGET_BRANCH}" | sha256sum | cut -d ' ' -f 1)
               branch="devpanel-cli-update-${target_hash}-${UPSTREAM_SHA:0:12}"
               git push --force origin "HEAD:refs/heads/${branch}"
@@ -250,11 +254,35 @@ jobs:
             timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
 
             if [[ "${push_after_test}" == "true" ]]; then
-              git push origin "${commit_sha}:refs/heads/${TARGET_BRANCH}"
+              pr=$(gh pr list \
+                --state all \
+                --base "${TARGET_BRANCH}" \
+                --limit 100 \
+                --json number,state,headRefName,headRepositoryOwner \
+                | jq -r --arg branch "${test_branch}" --arg owner "${REPOSITORY_OWNER}" \
+                  '.[] | select(.headRefName == $branch and .headRepositoryOwner.login == $owner) | [.number, .state] | @tsv' \
+                | head -n 1)
+              title="Update DevPanel CLI binaries"
+              body="Updates the DevPanel CLI binaries from GitLab revision ${UPSTREAM_SHA}. The generated binaries were tested by the Test workflow."
+              if [[ -n "${pr}" ]]; then
+                read -r pr_number pr_state <<< "${pr}"
+                gh pr edit "${pr_number}" --title "${title}" --body "${body}"
+                if [[ "${pr_state}" == "CLOSED" ]]; then
+                  gh pr reopen "${pr_number}"
+                fi
+              else
+                gh pr create \
+                  --base "${TARGET_BRANCH}" \
+                  --head "${test_branch}" \
+                  --title "${title}" \
+                  --body "${body}"
+              fi
+              echo "cacheable=false" >> "$GITHUB_OUTPUT"
             fi
           fi
 
       - name: Record the built revision
+        if: steps.commit-binaries.outputs.cacheable != 'false'
         env:
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
         run: |
@@ -262,6 +290,7 @@ jobs:
           printf '%s\n' "${UPSTREAM_SHA}" > "${RUNNER_TEMP}/devpanel-cli-revision/sha"
 
       - name: Save the built revision
+        if: steps.commit-binaries.outputs.cacheable != 'false'
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
