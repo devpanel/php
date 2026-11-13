@@ -1,0 +1,49 @@
+name: Cache merged DevPanel CLI revision
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  cache:
+    name: Record merged CLI revision
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.user.login == 'github-actions[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'devpanel-cli-update-')
+    runs-on: ubuntu-26.04
+    steps:
+      # Never check out or execute the PR's code in this privileged workflow.
+      - name: Resolve merged upstream revision
+        id: revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          TARGET_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          subject=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}" --jq '.commit.message | split("\n")[0]')
+          if [[ ! "${subject}" =~ ^Update\ devpanel\ CLI\ from\ GitLab\ devpanel-vn/cli@([0-9a-f]{40})$ ]]; then
+            echo "::error::Merged CLI update has no valid upstream revision."
+            exit 1
+          fi
+          sha="${BASH_REMATCH[1]}"
+          target_hash=$(printf '%s' "${TARGET_BRANCH}" | sha256sum | cut -d ' ' -f 1)
+          if [[ "${HEAD_BRANCH}" != "devpanel-cli-update-${target_hash}-${sha:0:12}" ]]; then
+            echo "::error::Merged CLI update branch does not match the target branch and upstream revision."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/devpanel-cli-revision"
+          printf '%s\n' "${sha}" > "${RUNNER_TEMP}/devpanel-cli-revision/sha"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Save the built revision
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/devpanel-cli-revision
+          key: gitlab-devpanel-client-v1-refs/heads/${{ github.event.pull_request.base.ref }}-${{ steps.revision.outputs.sha }}
