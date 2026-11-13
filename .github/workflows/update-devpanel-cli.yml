@@ -4,14 +4,16 @@ name: Update DevPanel CLI binaries
 # https://gitlab.com/devpanel-vn/cli and commit
 # base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
 #
-# Run it manually on a branch. The Actions cache records the upstream default
-# branch HEAD after both binaries are committed to this branch. Delete that
-# cache entry to rebuild the same commit.
+# Run it manually on a branch. The workflow pushes directly to unprotected
+# branches. If branch protection rejects that push, it tests the commit on a
+# deterministic temporary branch before retrying the target push. The updater
+# records the upstream default branch HEAD in the Actions cache only after the
+# push succeeds. Delete that cache entry to rebuild the same upstream commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
 # authenticates Git requests with GitLab's oauth2 username.
-# The workflow token commits the binaries.
+# The workflow token commits and pushes the binaries.
 
 on:
   workflow_dispatch:
@@ -162,6 +164,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
 
       - name: Download amd64 binary
         uses: actions/download-artifact@v8
@@ -177,6 +181,8 @@ jobs:
 
       - name: Commit binaries
         env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ github.ref_name }}
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
         run: |
           set -euo pipefail
@@ -191,7 +197,61 @@ jobs:
             git commit \
               -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
               -m "Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit."
-            git push origin "HEAD:${GITHUB_REF_NAME}"
+
+            commit_sha=$(git rev-parse HEAD)
+
+            if push_output=$(git push origin "${commit_sha}:refs/heads/${TARGET_BRANCH}" 2>&1); then
+              printf '%s\n' "${push_output}"
+              test_branch="${TARGET_BRANCH}"
+              push_after_test=false
+            else
+              push_status=$?
+              printf '%s\n' "${push_output}"
+              if ! grep -Eiq 'GH006|GH013|protected branch|repository rule violations|required status check' <<< "${push_output}"; then
+                echo "::error::Direct push to ${TARGET_BRANCH} failed for a reason other than branch protection."
+                exit "${push_status}"
+              fi
+              echo "::notice::Branch protection rejected the direct push to ${TARGET_BRANCH}; testing on a temporary branch before retrying."
+              target_hash=$(printf '%s' "${TARGET_BRANCH}" | sha256sum | cut -d ' ' -f 1)
+              branch="devpanel-cli-update-${target_hash}-${UPSTREAM_SHA:0:12}"
+              git push --force origin "HEAD:refs/heads/${branch}"
+              test_branch="${branch}"
+              push_after_test=true
+            fi
+
+            previous_run_id=$(gh run list \
+              --workflow test.yml \
+              --branch "${test_branch}" \
+              --event workflow_dispatch \
+              --limit 100 \
+              --json databaseId,headSha \
+              --jq "[.[] | select(.headSha == \"${commit_sha}\") | .databaseId] | max // 0")
+            gh workflow run test.yml --ref "${test_branch}"
+
+            test_run_id=""
+            for ((attempt = 0; attempt < 60; attempt++)); do
+              test_run_id=$(gh run list \
+                --workflow test.yml \
+                --branch "${test_branch}" \
+                --event workflow_dispatch \
+                --limit 100 \
+                --json databaseId,headSha \
+                --jq "[.[] | select(.headSha == \"${commit_sha}\" and .databaseId > ${previous_run_id}) | .databaseId] | max // empty")
+              if [[ -n "${test_run_id}" ]]; then
+                break
+              fi
+              sleep 10
+            done
+            if [[ -z "${test_run_id}" ]]; then
+              echo "::error::Timed out waiting for the Test workflow run for ${commit_sha}."
+              exit 1
+            fi
+            echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
+            timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
+
+            if [[ "${push_after_test}" == "true" ]]; then
+              git push origin "${commit_sha}:refs/heads/${TARGET_BRANCH}"
+            fi
           fi
 
       - name: Record the built revision

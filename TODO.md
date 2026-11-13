@@ -2,6 +2,61 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Restore branch-aware CLI updates
+
+## Steps
+- [x] Restore the dispatch-selected branch for checkout, destination pushes, and revision-cache keys.
+- [x] Use a temporary branch and pre-push Test wait only when the direct target push is rejected.
+- [x] Update documentation and validate direct/protected success and failure paths; YAML/shell checks pass with only existing baseline warnings.
+- [x] Scan changed files for secrets; none found.
+- [x] Run CodeQL; no alerts were reported.
+- [x] Reply to the review comment.
+
+## Definition of Done
+- Unprotected branches receive a direct push without a temporary branch.
+- Protected branches are updated only after Test passes on a temporary branch.
+- Revision caching remains scoped to the selected branch and follows successful target push.
+
+# Task: Push tested CLI binaries directly to target branch
+
+## Steps
+- [x] Test the generated binary commit on a temporary branch, then push the exact tested commit to `main`.
+- [x] Remove PR creation and update updater documentation.
+- [x] Run focused validation (YAML lint, Bash syntax/ShellCheck, and mocked pass/fail pushes), scan for secrets, and review the diff.
+- [x] Run CodeQL; no alerts were reported.
+
+## Definition of Done
+- The updater pushes to `main` only after the exact commit passes `Test`.
+- The target push is non-force and the cache is saved only after it succeeds.
+- Focused validation passes and changed files contain no secrets.
+
+# Task: Wait for CLI updater Test result
+
+## Steps
+- [x] Find the newly dispatched Test run for the generated update commit.
+- [x] Wait for the run to finish and stop before the revision cache is saved unless Test passes.
+- [x] Update workflow documentation and run focused YAML/shell validation plus mocked success/failure paths.
+- [ ] Scan changed files for secrets, run CodeQL, and review the final diff.
+
+## Definition of Done
+- The updater waits for Test on the generated branch commit and fails unless that run succeeds.
+- The revision cache is saved only after Test succeeds.
+- Focused validation passes and changed files contain no secrets.
+
+# Task: Fix protected-branch CLI updater failure
+
+## Steps
+- [x] Push rebuilt binaries directly to the target branch when permitted; use a temporary branch and create or update a pull request only when branch protection prevents a direct push.
+- [x] Dispatch the required `Test` workflow for the update branch before saving the built-revision cache.
+- [x] Run focused workflow validation: YAML lint, shell syntax/ShellCheck, and a mocked PR-dispatch fixture.
+- [x] Scan changed files for secrets and review the final diff.
+- [ ] Run CodeQL and address any actionable findings.
+
+## Definition of Done
+- Unprotected target branches receive direct pushes.
+- When branch protection prevents a direct push, the generated-binary pull request receives the required `Test` status check.
+- Focused validation passes and changed files contain no secrets.
+
 # Task: Restore DevPanel CLI and enable QEMU on ARM runners
 
 ## Steps
