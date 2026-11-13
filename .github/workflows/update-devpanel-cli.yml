@@ -6,18 +6,19 @@ name: Update DevPanel CLI binaries
 #
 # Run it manually on a branch. The workflow pushes directly to unprotected
 # branches. If branch protection rejects that push, it opens or updates a pull
-# request from a deterministic update branch, then dispatches Test. When repository
-# auto-merge is enabled, it requests rebase auto-merge and exits without waiting.
+# request from a deterministic update branch, then approves its pending Test run.
+# When repository auto-merge is enabled, it requests rebase auto-merge and exits
+# without waiting.
 # Otherwise it waits for Test before attempting a rebase merge. The
 # updater records the upstream default branch HEAD in the Actions cache only
-# after the target branch is updated. Delete that cache entry to rebuild the
-# same upstream commit.
+# after a direct update; cache-devpanel-cli.yml records merged PR revisions.
+# Delete that cache entry to rebuild the same upstream commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
 # authenticates Git requests with GitLab's oauth2 username.
 # The workflow token handles all pushes and PR operations. GHCR_TOKEN (a PAT
-# with repo scope) is used only to dispatch Test after the update PR exists.
+# with repo scope) is used only to approve the update PR's Test run.
 
 on:
   workflow_dispatch:
@@ -218,7 +219,7 @@ jobs:
                 exit "${push_status}"
               fi
               if [[ -z "${TEST_TOKEN}" ]]; then
-                echo "::error::GHCR_TOKEN with repo scope is required to dispatch Test for protected-branch updates."
+                echo "::error::GHCR_TOKEN with repo scope is required to approve Test for protected-branch updates."
                 exit 1
               fi
               echo "::notice::Branch protection rejected the direct push to ${TARGET_BRANCH}; opening or updating a pull request."
@@ -253,16 +254,32 @@ jobs:
               fi
               echo "cacheable=false" >> "$GITHUB_OUTPUT"
 
-              auto_merge=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.allow_auto_merge')
-              if [[ "${auto_merge}" != "true" ]]; then
-                previous_run_id=$(gh run list \
-                  --workflow test.yml \
-                  --limit 1 \
-                  --json databaseId \
-                  --jq '.[0].databaseId // 0')
+              pr_number=$(gh pr view "${test_branch}" --json number --jq '.number')
+              test_run=""
+              for ((attempt = 0; attempt < 60; attempt++)); do
+                test_run=$(gh api --method GET \
+                  "repos/${GITHUB_REPOSITORY}/actions/workflows/test.yml/runs" \
+                  -f event=pull_request \
+                  -f branch="${test_branch}" \
+                  -f head_sha="${commit_sha}" \
+                  -f per_page=100 \
+                  --jq "[.workflow_runs[] | select(any(.pull_requests[]; .number == ${pr_number}))] | sort_by(.id) | last // empty")
+                if [[ -n "${test_run}" ]]; then
+                  break
+                fi
+                sleep 10
+              done
+              if [[ -z "${test_run}" ]]; then
+                echo "::error::Timed out waiting for the PR Test workflow run for ${commit_sha}."
+                exit 1
               fi
-              GH_TOKEN="${TEST_TOKEN}" gh workflow run test.yml --ref "${test_branch}"
+              test_run_id=$(jq -r '.id' <<< "${test_run}")
+              if [[ "$(jq -r '.conclusion' <<< "${test_run}")" == "action_required" ]]; then
+                GH_TOKEN="${TEST_TOKEN}" gh api --method POST \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${test_run_id}/approve"
+              fi
 
+              auto_merge=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.allow_auto_merge')
               if [[ "${auto_merge}" == "true" ]]; then
                 gh pr merge "${test_branch}" \
                   --rebase \
@@ -270,24 +287,6 @@ jobs:
                   --match-head-commit "${commit_sha}"
               else
                 echo "::notice::Repository auto-merge is disabled; waiting for Test before attempting a rebase merge."
-                test_run_id=""
-                for ((attempt = 0; attempt < 60; attempt++)); do
-                  test_run_id=$(gh run list \
-                    --workflow test.yml \
-                    --branch "${test_branch}" \
-                    --event workflow_dispatch \
-                    --limit 100 \
-                    --json databaseId,headSha \
-                    --jq "[.[] | select(.headSha == \"${commit_sha}\" and .databaseId > ${previous_run_id}) | .databaseId] | max // empty")
-                  if [[ -n "${test_run_id}" ]]; then
-                    break
-                  fi
-                  sleep 10
-                done
-                if [[ -z "${test_run_id}" ]]; then
-                  echo "::error::Timed out waiting for the Test workflow run for ${commit_sha}."
-                  exit 1
-                fi
                 echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
                 timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
                 gh pr merge "${test_branch}" \

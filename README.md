@@ -251,6 +251,7 @@ and functional tests for any changed Dockerfiles.
 |---|---|---|
 | `test.yml` | push to `main`/`develop`; pull_request (any branch) | Lint, build & functional checks (required) |
 | `docker-build.yml` | push to `main` or `develop`; `workflow_dispatch` | Detect changed versions and build images |
+| `cache-devpanel-cli.yml` | merged CLI update PR (`pull_request_target: closed`) | Record the merged upstream revision in the destination branch cache |
 
 `test.yml` runs lint, build, and functional tests in parallel.  Configure branch protection
 rules in GitHub to require the `Test` workflow checks to pass before pull
@@ -297,7 +298,7 @@ for setup instructions.
   is based on the existing binary's metadata and must be confirmed against
   the GitLab source. Both builds use the same resolved
   commit and the Go version from its `go.mod`. The workflow caches the
-  revision per destination branch only after both binaries are committed,
+  revision per destination branch only after both binaries reach that branch,
   and skips subsequent builds on a cache hit. Delete that cache entry to
   rebuild the same commit. A new run cancels one already in progress.
   Set the `GITLAB_TOKEN` repository secret to a GitLab access token with
@@ -310,6 +311,14 @@ for setup instructions.
   placed outside this repository. AMD64 and ARM64 binaries build in parallel
   on `ubuntu-26.04` and `ubuntu-26.04-arm`. This workflow does not change
   which binary the Dockerfile copies into images.
+  If branch protection rejects the direct push, it opens or updates a CLI PR,
+  finds the PR's Test run for the generated head SHA, and approves it using
+  `GHCR_TOKEN` (a PAT with `repo` scope). It does not dispatch a separate branch
+  test. With auto-merge enabled, it requests rebase auto-merge and exits without
+  waiting for tests to finish; otherwise it watches the PR test before merging.
+  `cache-devpanel-cli.yml` saves the revision after the PR is merged, including
+  when auto-merge completes after the updater exits. It validates the bot-authored
+  update's commit metadata and branch name without checking out PR code.
 - The `advance` variant depends on `secure`, which depends on `base`.
   The build chain is enforced via the bake target dependency graph.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the updater's embedded Bash script without GitHub or GitLab writes."""
+"""Exercise CLI update and merged-revision scripts without remote writes."""
 
 import hashlib
 import json
@@ -17,6 +17,11 @@ WORKFLOW = ROOT / ".github/workflows/update-devpanel-cli.yml"
 STEP = WORKFLOW.read_text().split("      - name: Commit binaries\n", 1)[1]
 SCRIPT = textwrap.dedent(
     STEP.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0]
+)
+CACHE_WORKFLOW = ROOT / ".github/workflows/cache-devpanel-cli.yml"
+CACHE_SCRIPT = textwrap.dedent(
+    CACHE_WORKFLOW.read_text().split("        run: |\n", 1)[1]
+    .split("\n      - name:", 1)[0]
 )
 REAL_GIT = shutil.which("git")
 MOCK = """#!/usr/bin/env python3
@@ -38,12 +43,25 @@ if tool == "git":
         sys.exit(1)
 elif tool == "gh":
     if args[0] == "api":
-        print(os.environ["AUTO_MERGE"])
-    elif args[:2] == ["run", "list"]:
-        if args[args.index("--limit") + 1] == "1":
-            print("100")
-        elif os.environ.get("NO_RUN") != "1":
-            print("101")
+        if args[-1].endswith("/approve"):
+            sys.exit(int(os.environ.get("APPROVAL_STATUS", "0")))
+        elif "/actions/workflows/test.yml/runs" in args[3]:
+            runs = [] if os.environ.get("NO_RUN") == "1" else [
+                {"id": 101, "conclusion": os.environ["RUN_CONCLUSION"],
+                 "pull_requests": [{"number": 42}]},
+                {"id": 102, "conclusion": "action_required",
+                 "pull_requests": [{"number": 99}]},
+            ]
+            sys.exit(subprocess.run(
+                ["jq", "-r", args[args.index("--jq") + 1]],
+                input=json.dumps({"workflow_runs": runs}), text=True,
+            ).returncode)
+        elif "/commits/" in args[1]:
+            print(os.environ["COMMIT_SUBJECT"])
+        else:
+            print(os.environ["AUTO_MERGE"])
+    elif args[:2] == ["pr", "view"]:
+        print("42")
     elif args[:2] == ["pr", "list"]:
         state = os.environ.get("PR_STATE", "")
         print(json.dumps([{
@@ -63,7 +81,8 @@ elif tool == "timeout":
 class UpdaterTest(unittest.TestCase):
     def run_updater(self, *, protected=True, state="", changed=True,
                     test_status=0, no_run=False, token="pat", merge_status=0,
-                    auto_merge=False):
+                    auto_merge=False, run_conclusion="action_required",
+                    approval_status=0):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             subprocess.run([REAL_GIT, "init", "-q", str(work)], check=True)
@@ -102,6 +121,8 @@ class UpdaterTest(unittest.TestCase):
                        PROTECTED=str(int(protected)), PR_STATE=state,
                        TEST_STATUS=str(test_status), NO_RUN=str(int(no_run)),
                        MERGE_STATUS=str(merge_status),
+                       RUN_CONCLUSION=run_conclusion,
+                       APPROVAL_STATUS=str(approval_status),
                        AUTO_MERGE=str(auto_merge).lower())
             result = subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", SCRIPT], cwd=work, env=env,
@@ -118,20 +139,22 @@ class UpdaterTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(output, "cacheable=false\n")
                 gh = [(args, token) for tool, args, token in calls if tool == "gh"]
-                dispatches = [(i, args, token) for i, (args, token) in enumerate(gh)
-                              if args[:2] == ["workflow", "run"]]
-                self.assertEqual(len(dispatches), 1)
-                dispatch_index, dispatch_args, dispatch_token = dispatches[0]
-                self.assertEqual(dispatch_token, "pat")
-                self.assertEqual(dispatch_args[-1], next(
-                    args[-1].split(":refs/heads/")[1] for tool, args, _ in calls
-                    if tool == "git" and "push" in args and "--force" in args
-                ))
+                approvals = [(i, args, token) for i, (args, token) in enumerate(gh)
+                             if args[-1].endswith("/approve")]
+                self.assertEqual(len(approvals), 1)
+                approval_index, approval_args, approval_token = approvals[0]
+                self.assertEqual(approval_token, "pat")
+                self.assertEqual(approval_args, [
+                    "api", "--method", "POST",
+                    "repos/devpanel/php/actions/runs/101/approve",
+                ])
+                self.assertFalse(any(args[:2] == ["workflow", "run"]
+                                     for args, _ in gh))
                 pr_index = next(i for i, (args, _) in enumerate(gh)
                                 if args[:2] == ["pr", operation])
                 wait_index = next(i for i, (args, _) in enumerate(gh)
                                   if args[:2] == ["run", "watch"])
-                self.assertLess(pr_index, dispatch_index)
+                self.assertLess(pr_index, approval_index)
                 if state == "CLOSED":
                     reopen_index = next(
                         i for i, (tool, args, _) in enumerate(calls)
@@ -142,35 +165,31 @@ class UpdaterTest(unittest.TestCase):
                         if tool == "git" and "push" in args and "--force" in args
                     )
                     self.assertLess(reopen_index, force_push_index)
-                self.assertLess(dispatch_index, wait_index)
+                self.assertLess(approval_index, wait_index)
                 merges = [(i, args) for i, (args, _) in enumerate(gh)
                           if args[:2] == ["pr", "merge"]]
                 self.assertEqual(len(merges), 1)
                 merge_index, merge_args = merges[0]
                 self.assertLess(wait_index, merge_index)
-                self.assertEqual(merge_args[2], dispatch_args[-1])
                 self.assertIn("--rebase", merge_args)
                 self.assertNotIn("--auto", merge_args)
                 self.assertNotIn("--admin", merge_args)
                 self.assertTrue(all(token == "workflow-token" for args, token in gh
                                     if args[0] == "pr"))
-                run_args = next(args for args, _ in gh
-                                if args[:2] == ["run", "list"] and "--event" in args)
-                self.assertEqual(run_args[run_args.index("--event") + 1], "workflow_dispatch")
-                query = run_args[run_args.index("--jq") + 1]
-                self.assertIn(".headSha ==", query)
-                self.assertIn(".databaseId > 100", query)
-                self.assertEqual(
-                    merge_args[merge_args.index("--match-head-commit") + 1],
-                    query.split('.headSha == "')[1].split('"')[0],
-                )
+                run_args = next(args for args, _ in gh if "event=pull_request" in args)
+                self.assertIn(f"branch={merge_args[2]}", run_args)
+                merge_sha = merge_args[merge_args.index("--match-head-commit") + 1]
+                self.assertIn(f"head_sha={merge_sha}", run_args)
+                self.assertEqual(next(args for args, _ in gh
+                                      if args[:2] == ["run", "watch"])[2], "101")
                 pushes = [(args, token) for tool, args, token in calls
                           if tool == "git" and "push" in args]
                 self.assertEqual(len(pushes), 2)
                 self.assertTrue(all(token == "workflow-token" for _, token in pushes))
                 self.assertTrue(all("-c" not in args for args, _ in pushes))
                 self.assertTrue(all(token == "workflow-token"
-                                    for args, token in gh if args[0] != "workflow"))
+                                    for args, token in gh
+                                    if not args[-1].endswith("/approve")))
 
     def test_direct_push_does_not_dispatch_test(self):
         result, calls, output = self.run_updater(protected=False)
@@ -199,11 +218,11 @@ class UpdaterTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(output, "cacheable=false\n")
 
-    def test_auto_merge_does_not_wait_for_tests(self):
+    def test_auto_merge_approves_without_waiting_for_test_completion(self):
         for state in ("", "OPEN", "CLOSED"):
             with self.subTest(state=state):
                 result, calls, output = self.run_updater(
-                    state=state, auto_merge=True, no_run=True, test_status=1,
+                    state=state, auto_merge=True, test_status=1,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(output, "cacheable=false\n")
@@ -211,18 +230,19 @@ class UpdaterTest(unittest.TestCase):
                                      or (tool == "gh" and args[0] == "run")
                                      for tool, args, _ in calls))
                 gh = [(args, token) for tool, args, token in calls if tool == "gh"]
-                dispatches = [(i, args, token) for i, (args, token) in enumerate(gh)
-                              if args[:2] == ["workflow", "run"]]
-                self.assertEqual(len(dispatches), 1)
-                dispatch_index, dispatch_args, dispatch_token = dispatches[0]
-                self.assertEqual(dispatch_token, "pat")
+                approvals = [(i, args, token) for i, (args, token) in enumerate(gh)
+                             if args[-1].endswith("/approve")]
+                self.assertEqual(len(approvals), 1)
+                approval_index, _, approval_token = approvals[0]
+                self.assertEqual(approval_token, "pat")
+                self.assertFalse(any(args[:2] == ["workflow", "run"]
+                                     for args, _ in gh))
                 merges = [(i, args, token) for i, (args, token) in enumerate(gh)
                           if args[:2] == ["pr", "merge"]]
                 self.assertEqual(len(merges), 1)
                 merge_index, merge_args, merge_token = merges[0]
-                self.assertLess(dispatch_index, merge_index)
+                self.assertLess(approval_index, merge_index)
                 self.assertEqual(merge_token, "workflow-token")
-                self.assertEqual(merge_args[2], dispatch_args[-1])
                 self.assertIn("--rebase", merge_args)
                 self.assertIn("--auto", merge_args)
                 self.assertNotIn("--admin", merge_args)
@@ -235,7 +255,30 @@ class UpdaterTest(unittest.TestCase):
                     pushed_sha,
                 )
                 self.assertTrue(all(token == "workflow-token" for args, token in gh
-                                    if args[0] != "workflow"))
+                                    if not args[-1].endswith("/approve")))
+
+    def test_already_running_or_finished_test_is_not_approved_again(self):
+        for conclusion in ("null", "success", "failure"):
+            with self.subTest(conclusion=conclusion):
+                test_status = int(conclusion == "failure")
+                result, calls, _ = self.run_updater(
+                    run_conclusion=conclusion, test_status=test_status,
+                )
+                self.assertEqual(result.returncode, test_status, result.stderr)
+                self.assertFalse(any(args[-1].endswith("/approve")
+                                     for tool, args, _ in calls if tool == "gh"))
+                self.assertTrue(any(tool == "gh" and args[:2] == ["run", "watch"]
+                                    for tool, args, _ in calls))
+                if test_status:
+                    self.assertFalse(any(tool == "gh" and args[:2] == ["pr", "merge"]
+                                         for tool, args, _ in calls))
+
+    def test_failed_approval_fails_without_merging_or_caching(self):
+        result, calls, output = self.run_updater(approval_status=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "cacheable=false\n")
+        self.assertFalse(any(tool == "gh" and args[:2] == ["pr", "merge"]
+                             for tool, args, _ in calls))
 
     def test_direct_push_succeeds_without_test_even_if_tests_would_fail(self):
         result, calls, output = self.run_updater(protected=False, test_status=1)
@@ -251,12 +294,76 @@ class UpdaterTest(unittest.TestCase):
                              for tool, args, _ in calls))
 
     def test_missing_test_run_times_out(self):
-        result, calls, output = self.run_updater(no_run=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Timed out waiting", result.stdout)
-        self.assertEqual(output, "cacheable=false\n")
-        self.assertFalse(any(tool == "gh" and args[:2] == ["pr", "merge"]
-                             for tool, args, _ in calls))
+        for auto_merge in (False, True):
+            with self.subTest(auto_merge=auto_merge):
+                result, calls, output = self.run_updater(no_run=True, auto_merge=auto_merge)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Timed out waiting", result.stdout)
+                self.assertEqual(output, "cacheable=false\n")
+                self.assertFalse(any(tool == "gh" and args[:2] == ["pr", "merge"]
+                                     for tool, args, _ in calls))
+
+
+class MergedRevisionTest(unittest.TestCase):
+    def run_cache(self, *, target="main", subject=None, branch=None):
+        sha = "a" * 40
+        if subject is None:
+            subject = f"Update devpanel CLI from GitLab devpanel-vn/cli@{sha}"
+        if branch is None:
+            branch = "devpanel-cli-update-" + hashlib.sha256(target.encode()).hexdigest()
+            branch += "-" + sha[:12]
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            tools = work / "tools"
+            tools.mkdir()
+            executable = tools / "gh"
+            executable.write_text(MOCK)
+            executable.chmod(0o755)
+            output = work / "output"
+            output.touch()
+            env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
+                       GH_TOKEN="workflow-token", CALL_LOG=str(work / "calls"),
+                       GITHUB_REPOSITORY="devpanel/php", GITHUB_OUTPUT=str(output),
+                       RUNNER_TEMP=str(work), HEAD_SHA="b" * 40,
+                       HEAD_BRANCH=branch, TARGET_BRANCH=target,
+                       COMMIT_SUBJECT=subject)
+            result = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", CACHE_SCRIPT], env=env,
+                capture_output=True, text=True, timeout=10,
+            )
+            revision = work / "devpanel-cli-revision/sha"
+            return result, output.read_text(), (
+                revision.read_text() if revision.exists() else None
+            )
+
+    def test_merged_revision_is_recorded_for_destination_branch(self):
+        for target in ("main", "release/cli"):
+            with self.subTest(target=target):
+                result, output, revision = self.run_cache(target=target)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output, "sha=" + "a" * 40 + "\n")
+                self.assertEqual(revision, "a" * 40 + "\n")
+
+    def test_invalid_revision_is_not_cached(self):
+        for subject in ("Unrelated update", "Update devpanel CLI from GitLab devpanel-vn/cli@bad"):
+            with self.subTest(subject=subject):
+                result, output, revision = self.run_cache(subject=subject)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("no valid upstream revision", result.stdout)
+                self.assertEqual(output, "")
+                self.assertIsNone(revision)
+
+    def test_mismatched_target_or_revision_is_not_cached(self):
+        for branch in (
+            "devpanel-cli-update-" + hashlib.sha256(b"develop").hexdigest() + "-" + "a" * 12,
+            "devpanel-cli-update-" + hashlib.sha256(b"main").hexdigest() + "-" + "c" * 12,
+        ):
+            with self.subTest(branch=branch):
+                result, output, revision = self.run_cache(branch=branch)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("does not match", result.stdout)
+                self.assertEqual(output, "")
+                self.assertIsNone(revision)
 
 
 if __name__ == "__main__":
