@@ -10,7 +10,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Save the revision cache only after the target branch is updated; update workflow documentation.
 - [x] Validate YAML and shell changes, including Bash syntax for the embedded updater script.
 - [x] Scan changed files for secrets; none were detected.
-- [ ] Run CodeQL and address any actionable findings.
+- [x] Run CodeQL; no alerts were reported.
 
 ## Definition of Done
 - Unprotected branches still receive direct binary updates.
