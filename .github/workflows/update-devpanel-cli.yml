@@ -4,14 +4,17 @@ name: Update DevPanel CLI binaries
 # https://gitlab.com/devpanel-vn/cli and commit
 # base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
 #
-# Run it manually on a branch. The Actions cache records the upstream default
-# branch HEAD after both binaries are committed to this branch. Delete that
-# cache entry to rebuild the same commit.
+# Run it manually on a branch. Changed binaries are committed to a deterministic
+# update branch and opened as a pull request; the Test workflow is dispatched
+# for that branch because GITHUB_TOKEN pushes do not trigger pull_request runs.
+# The Actions cache records the upstream default branch HEAD after the PR is
+# created or updated and Test is dispatched. Delete that cache entry to rebuild
+# the same upstream commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
 # authenticates Git requests with GitLab's oauth2 username.
-# The workflow token commits the binaries.
+# The workflow token commits the binaries and creates or updates the pull request.
 
 on:
   workflow_dispatch:
@@ -159,6 +162,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+      pull-requests: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -177,6 +181,8 @@ jobs:
 
       - name: Commit binaries
         env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ github.ref_name }}
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
         run: |
           set -euo pipefail
@@ -191,7 +197,26 @@ jobs:
             git commit \
               -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
               -m "Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit."
-            git push origin "HEAD:${GITHUB_REF_NAME}"
+
+            branch="devpanel-cli-update-${TARGET_BRANCH//\//-}-${UPSTREAM_SHA:0:12}"
+            git push --force origin "HEAD:refs/heads/${branch}"
+
+            body=$(printf 'Updates the bundled DevPanel CLI binaries from GitLab commit %s.\n\nThe required Test workflow is dispatched for this branch so its status check is available before merging.' "${UPSTREAM_SHA}")
+            pr_number=$(gh pr list \
+              --base "${TARGET_BRANCH}" \
+              --head "${branch}" \
+              --json number \
+              --jq '.[0].number // empty')
+            if [[ -n "${pr_number}" ]]; then
+              gh pr edit "${pr_number}" --title "Update DevPanel CLI binaries" --body "${body}"
+            else
+              gh pr create \
+                --base "${TARGET_BRANCH}" \
+                --head "${branch}" \
+                --title "Update DevPanel CLI binaries" \
+                --body "${body}"
+            fi
+            gh workflow run test.yml --ref "${branch}"
           fi
 
       - name: Record the built revision

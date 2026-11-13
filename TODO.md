@@ -2,6 +2,20 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Fix protected-branch CLI updater failure
+
+## Steps
+- [x] Push rebuilt binaries to an upstream-SHA-specific branch and create or update a pull request instead of pushing directly to a protected branch.
+- [x] Dispatch the required `Test` workflow for the update branch before saving the built-revision cache.
+- [x] Run focused workflow validation: YAML lint, shell syntax/ShellCheck, and a mocked PR-dispatch fixture.
+- [x] Scan changed files for secrets and review the final diff.
+- [ ] Run CodeQL and address any actionable findings.
+
+## Definition of Done
+- The updater no longer attempts to push directly to the protected destination branch.
+- The generated-binary pull request receives the required `Test` status check.
+- Focused validation passes and changed files contain no secrets.
+
 # Task: Restore DevPanel CLI and enable QEMU on ARM runners
 
 ## Steps
