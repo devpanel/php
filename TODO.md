@@ -5,9 +5,9 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 # Task: Fix protected-branch CLI updater failure
 
 ## Steps
-- [x] Authenticate update-branch pushes and PR operations with GHCR_TOKEN so PR events trigger Test.
-- [x] Create or update the PR before waiting for its head SHA's Test run; remove the protected-path dispatch.
-- [x] Validate new, existing, and reopened PR paths, direct pushes, and Test failures; update documentation.
+- [x] Use the workflow token for all pushes and PR operations, limiting GHCR_TOKEN to the protected-path Test dispatch.
+- [x] Create or update the PR before dispatching Test once and waiting for its head SHA's run.
+- [x] Validate revised authentication, new/existing/reopened PR paths, direct pushes, and Test failures; update documentation.
 - [x] Diagnose the failing push from Actions logs: the required `Test` check remains expected after dispatching it on a temporary branch.
 - [x] Replace the protected-branch retry push with a pull request from the tested temporary branch.
 - [x] Save the revision cache only after the target branch is updated; update workflow documentation.
@@ -18,7 +18,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 ## Definition of Done
 - Unprotected branches still receive direct binary updates.
 - Protected branches receive a PR rather than a failing direct-push retry.
-- Protected-branch updates run Test through PR events, without a separate workflow dispatch.
+- Protected-branch updates dispatch Test once, after the PR exists, with the PAT used only for that dispatch.
 - The revision cache is not saved until the target branch contains the updated binaries.
 - Focused validation passes and changed files contain no secrets.
 

@@ -90,7 +90,7 @@ class UpdaterTest(unittest.TestCase):
             env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
                        REAL_GIT=REAL_GIT, CALL_LOG=str(log),
                        GITHUB_OUTPUT=str(output), GH_TOKEN="workflow-token",
-                       PR_TOKEN=token, PR_USER="pat-user",
+                       TEST_TOKEN=token,
                        TARGET_BRANCH="main", REPOSITORY_OWNER="devpanel",
                        UPSTREAM_SHA="a" * 40, UPDATE_BRANCH=branch,
                        PROTECTED=str(int(protected)), PR_STATE=state,
@@ -110,25 +110,36 @@ class UpdaterTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(output, "cacheable=false\n")
                 gh = [(args, token) for tool, args, token in calls if tool == "gh"]
-                self.assertFalse(any(args[:2] == ["workflow", "run"] for args, _ in gh))
+                dispatches = [(i, args, token) for i, (args, token) in enumerate(gh)
+                              if args[:2] == ["workflow", "run"]]
+                self.assertEqual(len(dispatches), 1)
+                dispatch_index, dispatch_args, dispatch_token = dispatches[0]
+                self.assertEqual(dispatch_token, "pat")
+                self.assertEqual(dispatch_args[-1], next(
+                    args[-1].split(":refs/heads/")[1] for tool, args, _ in calls
+                    if tool == "git" and "push" in args and "--force" in args
+                ))
                 pr_index = next(i for i, (args, _) in enumerate(gh)
                                 if args[:2] == ["pr", operation])
                 wait_index = next(i for i, (args, _) in enumerate(gh)
                                   if args[:2] == ["run", "watch"])
-                self.assertLess(pr_index, wait_index)
-                self.assertTrue(all(token == "pat" for args, token in gh
+                self.assertLess(pr_index, dispatch_index)
+                self.assertLess(dispatch_index, wait_index)
+                self.assertTrue(all(token == "workflow-token" for args, token in gh
                                     if args[0] == "pr"))
                 run_args = next(args for args, _ in gh
                                 if args[:2] == ["run", "list"] and "--event" in args)
-                self.assertEqual(run_args[run_args.index("--event") + 1], "pull_request")
+                self.assertEqual(run_args[run_args.index("--event") + 1], "workflow_dispatch")
                 query = run_args[run_args.index("--jq") + 1]
                 self.assertIn(".headSha ==", query)
                 self.assertIn(".databaseId > 100", query)
-                pushes = [args for tool, args, _ in calls
+                pushes = [(args, token) for tool, args, token in calls
                           if tool == "git" and "push" in args]
                 self.assertEqual(len(pushes), 2)
-                self.assertIn("http.https://github.com/.extraheader=", pushes[1])
-                self.assertTrue(any("AUTHORIZATION: basic " in arg for arg in pushes[1]))
+                self.assertTrue(all(token == "workflow-token" for _, token in pushes))
+                self.assertTrue(all("-c" not in args for args, _ in pushes))
+                self.assertTrue(all(token == "workflow-token"
+                                    for args, token in gh if args[0] != "workflow"))
 
     def test_direct_push_dispatches_once(self):
         result, calls, output = self.run_updater(protected=False)
@@ -152,7 +163,7 @@ class UpdaterTest(unittest.TestCase):
                 result, _, _ = self.run_updater(protected=protected, test_status=1)
                 self.assertNotEqual(result.returncode, 0)
 
-    def test_missing_pr_token_fails_explicitly(self):
+    def test_missing_test_token_fails_explicitly(self):
         result, calls, _ = self.run_updater(token="")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("GHCR_TOKEN with repo scope", result.stdout)
