@@ -205,16 +205,9 @@ jobs:
               -m "Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit."
 
             commit_sha=$(git rev-parse HEAD)
-            previous_run_id=$(gh run list \
-              --workflow test.yml \
-              --limit 1 \
-              --json databaseId \
-              --jq '.[0].databaseId // 0')
 
             if push_output=$(git push origin "${commit_sha}:refs/heads/${TARGET_BRANCH}" 2>&1); then
               printf '%s\n' "${push_output}"
-              test_branch="${TARGET_BRANCH}"
-              gh workflow run test.yml --ref "${test_branch}"
             else
               push_status=$?
               printf '%s\n' "${push_output}"
@@ -256,29 +249,35 @@ jobs:
                   --body "${body}"
               fi
               echo "cacheable=false" >> "$GITHUB_OUTPUT"
-              GH_TOKEN="${TEST_TOKEN}" gh workflow run test.yml --ref "${test_branch}"
-            fi
 
-            test_run_id=""
-            for ((attempt = 0; attempt < 60; attempt++)); do
-              test_run_id=$(gh run list \
+              previous_run_id=$(gh run list \
                 --workflow test.yml \
-                --branch "${test_branch}" \
-                --event workflow_dispatch \
-                --limit 100 \
-                --json databaseId,headSha \
-                --jq "[.[] | select(.headSha == \"${commit_sha}\" and .databaseId > ${previous_run_id}) | .databaseId] | max // empty")
-              if [[ -n "${test_run_id}" ]]; then
-                break
+                --limit 1 \
+                --json databaseId \
+                --jq '.[0].databaseId // 0')
+              GH_TOKEN="${TEST_TOKEN}" gh workflow run test.yml --ref "${test_branch}"
+
+              test_run_id=""
+              for ((attempt = 0; attempt < 60; attempt++)); do
+                test_run_id=$(gh run list \
+                  --workflow test.yml \
+                  --branch "${test_branch}" \
+                  --event workflow_dispatch \
+                  --limit 100 \
+                  --json databaseId,headSha \
+                  --jq "[.[] | select(.headSha == \"${commit_sha}\" and .databaseId > ${previous_run_id}) | .databaseId] | max // empty")
+                if [[ -n "${test_run_id}" ]]; then
+                  break
+                fi
+                sleep 10
+              done
+              if [[ -z "${test_run_id}" ]]; then
+                echo "::error::Timed out waiting for the Test workflow run for ${commit_sha}."
+                exit 1
               fi
-              sleep 10
-            done
-            if [[ -z "${test_run_id}" ]]; then
-              echo "::error::Timed out waiting for the Test workflow run for ${commit_sha}."
-              exit 1
+              echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
+              timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
             fi
-            echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
-            timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
           fi
 
       - name: Record the built revision

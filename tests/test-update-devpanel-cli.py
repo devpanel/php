@@ -141,15 +141,11 @@ class UpdaterTest(unittest.TestCase):
                 self.assertTrue(all(token == "workflow-token"
                                     for args, token in gh if args[0] != "workflow"))
 
-    def test_direct_push_dispatches_once(self):
+    def test_direct_push_does_not_dispatch_test(self):
         result, calls, output = self.run_updater(protected=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output, "")
-        gh = [args for tool, args, _ in calls if tool == "gh"]
-        self.assertEqual(sum(args[:2] == ["workflow", "run"] for args in gh), 1)
-        self.assertFalse(any(args[0] == "pr" for args in gh))
-        lookup = next(args for args in gh if "--event" in args)
-        self.assertEqual(lookup[lookup.index("--event") + 1], "workflow_dispatch")
+        self.assertFalse(any(tool == "gh" for tool, _, _ in calls))
 
     def test_unchanged_binaries_do_not_push_or_test(self):
         result, calls, output = self.run_updater(changed=False)
@@ -158,10 +154,14 @@ class UpdaterTest(unittest.TestCase):
         self.assertFalse(any(tool == "gh" or "push" in args for tool, args, _ in calls))
 
     def test_failed_tests_fail_the_step(self):
-        for protected in (False, True):
-            with self.subTest(protected=protected):
-                result, _, _ = self.run_updater(protected=protected, test_status=1)
-                self.assertNotEqual(result.returncode, 0)
+        result, _, _ = self.run_updater(test_status=1)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_direct_push_succeeds_without_test_even_if_tests_would_fail(self):
+        result, calls, output = self.run_updater(protected=False, test_status=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, "")
+        self.assertFalse(any(tool == "gh" for tool, _, _ in calls))
 
     def test_missing_test_token_fails_explicitly(self):
         result, calls, _ = self.run_updater(token="")

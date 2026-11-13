@@ -2,6 +2,20 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Dispatch CLI updater tests only for protected branches
+
+## Steps
+- [x] Keep Test dispatch and waiting in the protected-branch fallback only.
+- [x] Update regression coverage and workflow documentation.
+- [x] Run focused updater tests, YAML/shell validation, and embedded Bash syntax/ShellCheck; baseline warnings are unchanged.
+- [x] Explain that protected-branch PRs are manually merged by maintainers.
+- [ ] Scan changed files for secrets and run CodeQL.
+
+## Definition of Done
+- Direct binary pushes do not manually dispatch or wait for Test.
+- A protected-branch fallback still creates/updates its PR, then dispatches Test once and waits for its result.
+- Focused validation passes and changed files contain no secrets.
+
 # Task: Fix protected-branch CLI updater failure
 
 ## Steps
