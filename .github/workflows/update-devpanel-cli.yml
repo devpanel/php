@@ -212,7 +212,8 @@ jobs:
                 exit "${push_status}"
               fi
               echo "::notice::Branch protection rejected the direct push to ${TARGET_BRANCH}; testing on a temporary branch before retrying."
-              branch="devpanel-cli-update-${TARGET_BRANCH//\//-}-${UPSTREAM_SHA:0:12}"
+              target_hash=$(printf '%s' "${TARGET_BRANCH}" | sha256sum | cut -d ' ' -f 1)
+              branch="devpanel-cli-update-${target_hash}-${UPSTREAM_SHA:0:12}"
               git push --force origin "HEAD:refs/heads/${branch}"
               test_branch="${branch}"
               push_after_test=true
