@@ -2,6 +2,19 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Wait for CLI updater Test result
+
+## Steps
+- [x] Find the newly dispatched Test run for the generated update commit.
+- [x] Wait for the run to finish and stop before the revision cache is saved unless Test passes.
+- [x] Update workflow documentation and run focused YAML/shell validation plus mocked success/failure paths.
+- [ ] Scan changed files for secrets, run CodeQL, and review the final diff.
+
+## Definition of Done
+- The updater waits for Test on the generated branch commit and fails unless that run succeeds.
+- The revision cache is saved only after Test succeeds.
+- Focused validation passes and changed files contain no secrets.
+
 # Task: Fix protected-branch CLI updater failure
 
 ## Steps

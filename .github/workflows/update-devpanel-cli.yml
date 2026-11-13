@@ -7,9 +7,9 @@ name: Update DevPanel CLI binaries
 # Run it manually on a branch. Changed binaries are committed to a deterministic
 # update branch and opened as a pull request; the Test workflow is dispatched
 # for that branch because GITHUB_TOKEN pushes do not trigger pull_request runs.
-# The Actions cache records the upstream default branch HEAD after the PR is
-# created or updated and Test is dispatched. Delete that cache entry to rebuild
-# the same upstream commit.
+# The updater waits for Test to pass before recording the upstream default
+# branch HEAD in the Actions cache. Delete that cache entry to rebuild the same
+# upstream commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
@@ -200,8 +200,9 @@ jobs:
 
             branch="devpanel-cli-update-${TARGET_BRANCH//\//-}-${UPSTREAM_SHA:0:12}"
             git push --force origin "HEAD:refs/heads/${branch}"
+            commit_sha=$(git rev-parse HEAD)
 
-            body=$(printf 'Updates the bundled DevPanel CLI binaries from GitLab commit %s.\n\nThe required Test workflow is dispatched for this branch so its status check is available before merging.' "${UPSTREAM_SHA}")
+            body=$(printf 'Updates the bundled DevPanel CLI binaries from GitLab commit %s.\n\nThe required Test workflow is dispatched for this branch and must pass before the revision is cached.' "${UPSTREAM_SHA}")
             pr_number=$(gh pr list \
               --base "${TARGET_BRANCH}" \
               --head "${branch}" \
@@ -216,7 +217,36 @@ jobs:
                 --title "Update DevPanel CLI binaries" \
                 --body "${body}"
             fi
+
+            previous_run_id=$(gh run list \
+              --workflow test.yml \
+              --branch "${branch}" \
+              --event workflow_dispatch \
+              --limit 100 \
+              --json databaseId,headSha \
+              --jq "[.[] | select(.headSha == \"${commit_sha}\") | .databaseId] | max // 0")
             gh workflow run test.yml --ref "${branch}"
+
+            test_run_id=""
+            for ((attempt = 0; attempt < 60; attempt++)); do
+              test_run_id=$(gh run list \
+                --workflow test.yml \
+                --branch "${branch}" \
+                --event workflow_dispatch \
+                --limit 100 \
+                --json databaseId,headSha \
+                --jq "[.[] | select(.headSha == \"${commit_sha}\" and .databaseId > ${previous_run_id}) | .databaseId] | max // empty")
+              if [[ -n "${test_run_id}" ]]; then
+                break
+              fi
+              sleep 10
+            done
+            if [[ -z "${test_run_id}" ]]; then
+              echo "::error::Timed out waiting for the Test workflow run for ${commit_sha}."
+              exit 1
+            fi
+            echo "Waiting for Test workflow run ${test_run_id} on ${branch}."
+            timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
           fi
 
       - name: Record the built revision
