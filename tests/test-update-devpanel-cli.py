@@ -51,6 +51,8 @@ elif tool == "gh":
         }] if state else []))
     elif args[:2] == ["run", "watch"]:
         sys.exit(int(os.environ.get("TEST_STATUS", "0")))
+    elif args[:2] == ["pr", "merge"]:
+        sys.exit(int(os.environ.get("MERGE_STATUS", "0")))
 elif tool == "timeout":
     sys.exit(subprocess.call(args[1:]))
 """
@@ -58,7 +60,7 @@ elif tool == "timeout":
 
 class UpdaterTest(unittest.TestCase):
     def run_updater(self, *, protected=True, state="", changed=True,
-                    test_status=0, no_run=False, token="pat"):
+                    test_status=0, no_run=False, token="pat", merge_status=0):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             subprocess.run([REAL_GIT, "init", "-q", str(work)], check=True)
@@ -94,7 +96,8 @@ class UpdaterTest(unittest.TestCase):
                        TARGET_BRANCH="main", REPOSITORY_OWNER="devpanel",
                        UPSTREAM_SHA="a" * 40, UPDATE_BRANCH=branch,
                        PROTECTED=str(int(protected)), PR_STATE=state,
-                       TEST_STATUS=str(test_status), NO_RUN=str(int(no_run)))
+                       TEST_STATUS=str(test_status), NO_RUN=str(int(no_run)),
+                       MERGE_STATUS=str(merge_status))
             result = subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", SCRIPT], cwd=work, env=env,
                 capture_output=True, text=True, timeout=30,
@@ -125,6 +128,15 @@ class UpdaterTest(unittest.TestCase):
                                   if args[:2] == ["run", "watch"])
                 self.assertLess(pr_index, dispatch_index)
                 self.assertLess(dispatch_index, wait_index)
+                merges = [(i, args) for i, (args, _) in enumerate(gh)
+                          if args[:2] == ["pr", "merge"]]
+                self.assertEqual(len(merges), 1)
+                merge_index, merge_args = merges[0]
+                self.assertLess(wait_index, merge_index)
+                self.assertEqual(merge_args[2], dispatch_args[-1])
+                self.assertIn("--rebase", merge_args)
+                self.assertIn("--auto", merge_args)
+                self.assertNotIn("--admin", merge_args)
                 self.assertTrue(all(token == "workflow-token" for args, token in gh
                                     if args[0] == "pr"))
                 run_args = next(args for args, _ in gh
@@ -133,6 +145,10 @@ class UpdaterTest(unittest.TestCase):
                 query = run_args[run_args.index("--jq") + 1]
                 self.assertIn(".headSha ==", query)
                 self.assertIn(".databaseId > 100", query)
+                self.assertEqual(
+                    merge_args[merge_args.index("--match-head-commit") + 1],
+                    query.split('.headSha == "')[1].split('"')[0],
+                )
                 pushes = [(args, token) for tool, args, token in calls
                           if tool == "git" and "push" in args]
                 self.assertEqual(len(pushes), 2)
@@ -154,8 +170,15 @@ class UpdaterTest(unittest.TestCase):
         self.assertFalse(any(tool == "gh" or "push" in args for tool, args, _ in calls))
 
     def test_failed_tests_fail_the_step(self):
-        result, _, _ = self.run_updater(test_status=1)
+        result, calls, _ = self.run_updater(test_status=1)
         self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(tool == "gh" and args[:2] == ["pr", "merge"]
+                             for tool, args, _ in calls))
+
+    def test_merge_failure_fails_without_caching(self):
+        result, _, output = self.run_updater(merge_status=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "cacheable=false\n")
 
     def test_direct_push_succeeds_without_test_even_if_tests_would_fail(self):
         result, calls, output = self.run_updater(protected=False, test_status=1)
@@ -171,10 +194,12 @@ class UpdaterTest(unittest.TestCase):
                              for tool, args, _ in calls))
 
     def test_missing_test_run_times_out(self):
-        result, _, output = self.run_updater(no_run=True)
+        result, calls, output = self.run_updater(no_run=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Timed out waiting", result.stdout)
         self.assertEqual(output, "cacheable=false\n")
+        self.assertFalse(any(tool == "gh" and args[:2] == ["pr", "merge"]
+                             for tool, args, _ in calls))
 
 
 if __name__ == "__main__":

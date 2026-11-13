@@ -2,6 +2,19 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Rebase auto-merge CLI update pull requests
+
+## Steps
+- [x] Request rebase auto-merge after the generated update commit passes Test, using the workflow token and matching its head SHA.
+- [x] Cover successful scheduling and failed Test/merge requests; update workflow documentation.
+- [x] Run focused regression tests, YAML lint, and embedded Bash validation.
+- [x] Check repository prerequisites: rebase merging is enabled; enabling auto-merge requires an administrator because this session's integration cannot update repository settings (HTTP 403).
+
+## Definition of Done
+- Protected-branch updates request rebase auto-merge without bypassing branch requirements.
+- The PAT remains limited to Test dispatch; direct pushes and revision-cache behavior are unchanged.
+- Repository auto-merge must be enabled for PRs that still have outstanding requirements.
+
 # Task: Dispatch CLI updater tests only for protected branches
 
 ## Steps
