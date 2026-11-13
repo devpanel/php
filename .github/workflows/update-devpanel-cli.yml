@@ -4,17 +4,16 @@ name: Update DevPanel CLI binaries
 # https://gitlab.com/devpanel-vn/cli and commit
 # base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
 #
-# Run it manually on a branch. Changed binaries are committed to a deterministic
-# update branch and opened as a pull request; the Test workflow is dispatched
-# for that branch because GITHUB_TOKEN pushes do not trigger pull_request runs.
-# The updater waits for Test to pass before recording the upstream default
-# branch HEAD in the Actions cache. Delete that cache entry to rebuild the same
-# upstream commit.
+# Run it manually. Changed binaries are committed to a deterministic update
+# branch from main so the Test workflow can validate that exact commit. After
+# Test passes, the commit is pushed to main. The updater records the upstream
+# default branch HEAD in the Actions cache only after the push succeeds. Delete
+# that cache entry to rebuild the same upstream commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
 # authenticates Git requests with GitLab's oauth2 username.
-# The workflow token commits the binaries and creates or updates the pull request.
+# The workflow token commits the binaries and pushes the tested commit.
 
 on:
   workflow_dispatch:
@@ -64,7 +63,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ steps.upstream.outputs.sha }}
+          key: gitlab-devpanel-client-v1-refs/heads/main-${{ steps.upstream.outputs.sha }}
           lookup-only: true
 
       - name: Decide whether to rebuild
@@ -162,10 +161,11 @@ jobs:
     permissions:
       actions: write
       contents: write
-      pull-requests: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: main
 
       - name: Download amd64 binary
         uses: actions/download-artifact@v8
@@ -182,7 +182,7 @@ jobs:
       - name: Commit binaries
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_BRANCH: ${{ github.ref_name }}
+          TARGET_BRANCH: main
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
         run: |
           set -euo pipefail
@@ -201,22 +201,6 @@ jobs:
             branch="devpanel-cli-update-${TARGET_BRANCH//\//-}-${UPSTREAM_SHA:0:12}"
             git push --force origin "HEAD:refs/heads/${branch}"
             commit_sha=$(git rev-parse HEAD)
-
-            body=$(printf 'Updates the bundled DevPanel CLI binaries from GitLab commit %s.\n\nThe required Test workflow is dispatched for this branch and must pass before the revision is cached.' "${UPSTREAM_SHA}")
-            pr_number=$(gh pr list \
-              --base "${TARGET_BRANCH}" \
-              --head "${branch}" \
-              --json number \
-              --jq '.[0].number // empty')
-            if [[ -n "${pr_number}" ]]; then
-              gh pr edit "${pr_number}" --title "Update DevPanel CLI binaries" --body "${body}"
-            else
-              gh pr create \
-                --base "${TARGET_BRANCH}" \
-                --head "${branch}" \
-                --title "Update DevPanel CLI binaries" \
-                --body "${body}"
-            fi
 
             previous_run_id=$(gh run list \
               --workflow test.yml \
@@ -247,6 +231,8 @@ jobs:
             fi
             echo "Waiting for Test workflow run ${test_run_id} on ${branch}."
             timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
+
+            git push origin "${commit_sha}:refs/heads/${TARGET_BRANCH}"
           fi
 
       - name: Record the built revision
@@ -260,4 +246,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ needs.plan.outputs.sha }}
+          key: gitlab-devpanel-client-v1-refs/heads/main-${{ needs.plan.outputs.sha }}

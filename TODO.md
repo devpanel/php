@@ -2,6 +2,19 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Push tested CLI binaries directly to target branch
+
+## Steps
+- [x] Test the generated binary commit on a temporary branch, then push the exact tested commit to `main`.
+- [x] Remove PR creation and update updater documentation.
+- [x] Run focused validation (YAML lint, Bash syntax/ShellCheck, and mocked pass/fail pushes), scan for secrets, and review the diff.
+- [ ] Run CodeQL and address any actionable findings.
+
+## Definition of Done
+- The updater pushes to `main` only after the exact commit passes `Test`.
+- The target push is non-force and the cache is saved only after it succeeds.
+- Focused validation passes and changed files contain no secrets.
+
 # Task: Wait for CLI updater Test result
 
 ## Steps
