@@ -2,6 +2,20 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Restore branch-aware CLI updates
+
+## Steps
+- [x] Restore the dispatch-selected branch for checkout, destination pushes, and revision-cache keys.
+- [x] Use a temporary branch and pre-push Test wait only when the direct target push is rejected.
+- [x] Update documentation and validate direct/protected success and failure paths; YAML/shell checks pass with only existing baseline warnings.
+- [x] Scan changed files for secrets; none found.
+- [ ] Run CodeQL and reply to the review comment.
+
+## Definition of Done
+- Unprotected branches receive a direct push without a temporary branch.
+- Protected branches are updated only after Test passes on a temporary branch.
+- Revision caching remains scoped to the selected branch and follows successful target push.
+
 # Task: Push tested CLI binaries directly to target branch
 
 ## Steps

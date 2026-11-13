@@ -4,16 +4,16 @@ name: Update DevPanel CLI binaries
 # https://gitlab.com/devpanel-vn/cli and commit
 # base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
 #
-# Run it manually. Changed binaries are committed to a deterministic update
-# branch from main so the Test workflow can validate that exact commit. After
-# Test passes, the commit is pushed to main. The updater records the upstream
-# default branch HEAD in the Actions cache only after the push succeeds. Delete
-# that cache entry to rebuild the same upstream commit.
+# Run it manually on a branch. The workflow pushes directly to unprotected
+# branches. If branch protection rejects that push, it tests the commit on a
+# deterministic temporary branch before retrying the target push. The updater
+# records the upstream default branch HEAD in the Actions cache only after the
+# push succeeds. Delete that cache entry to rebuild the same upstream commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
 # authenticates Git requests with GitLab's oauth2 username.
-# The workflow token commits the binaries and pushes the tested commit.
+# The workflow token commits and pushes the binaries.
 
 on:
   workflow_dispatch:
@@ -63,7 +63,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: gitlab-devpanel-client-v1-refs/heads/main-${{ steps.upstream.outputs.sha }}
+          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ steps.upstream.outputs.sha }}
           lookup-only: true
 
       - name: Decide whether to rebuild
@@ -165,7 +165,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.ref }}
 
       - name: Download amd64 binary
         uses: actions/download-artifact@v8
@@ -182,7 +182,7 @@ jobs:
       - name: Commit binaries
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_BRANCH: main
+          TARGET_BRANCH: ${{ github.ref_name }}
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
         run: |
           set -euo pipefail
@@ -198,24 +198,40 @@ jobs:
               -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
               -m "Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit."
 
-            branch="devpanel-cli-update-${TARGET_BRANCH//\//-}-${UPSTREAM_SHA:0:12}"
-            git push --force origin "HEAD:refs/heads/${branch}"
             commit_sha=$(git rev-parse HEAD)
+
+            if push_output=$(git push origin "${commit_sha}:refs/heads/${TARGET_BRANCH}" 2>&1); then
+              printf '%s\n' "${push_output}"
+              test_branch="${TARGET_BRANCH}"
+              push_after_test=false
+            else
+              push_status=$?
+              printf '%s\n' "${push_output}"
+              if ! grep -Eiq 'GH006|GH013|protected branch|repository rule violations|required status check' <<< "${push_output}"; then
+                echo "::error::Direct push to ${TARGET_BRANCH} failed for a reason other than branch protection."
+                exit "${push_status}"
+              fi
+              echo "::notice::Branch protection rejected the direct push to ${TARGET_BRANCH}; testing on a temporary branch before retrying."
+              branch="devpanel-cli-update-${TARGET_BRANCH//\//-}-${UPSTREAM_SHA:0:12}"
+              git push --force origin "HEAD:refs/heads/${branch}"
+              test_branch="${branch}"
+              push_after_test=true
+            fi
 
             previous_run_id=$(gh run list \
               --workflow test.yml \
-              --branch "${branch}" \
+              --branch "${test_branch}" \
               --event workflow_dispatch \
               --limit 100 \
               --json databaseId,headSha \
               --jq "[.[] | select(.headSha == \"${commit_sha}\") | .databaseId] | max // 0")
-            gh workflow run test.yml --ref "${branch}"
+            gh workflow run test.yml --ref "${test_branch}"
 
             test_run_id=""
             for ((attempt = 0; attempt < 60; attempt++)); do
               test_run_id=$(gh run list \
                 --workflow test.yml \
-                --branch "${branch}" \
+                --branch "${test_branch}" \
                 --event workflow_dispatch \
                 --limit 100 \
                 --json databaseId,headSha \
@@ -229,10 +245,12 @@ jobs:
               echo "::error::Timed out waiting for the Test workflow run for ${commit_sha}."
               exit 1
             fi
-            echo "Waiting for Test workflow run ${test_run_id} on ${branch}."
+            echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
             timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
 
-            git push origin "${commit_sha}:refs/heads/${TARGET_BRANCH}"
+            if [[ "${push_after_test}" == "true" ]]; then
+              git push origin "${commit_sha}:refs/heads/${TARGET_BRANCH}"
+            fi
           fi
 
       - name: Record the built revision
@@ -246,4 +264,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: gitlab-devpanel-client-v1-refs/heads/main-${{ needs.plan.outputs.sha }}
+          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ needs.plan.outputs.sha }}
