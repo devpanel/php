@@ -9,7 +9,8 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Update regression coverage and workflow documentation.
 - [x] Run focused updater tests, YAML/shell validation, and embedded Bash syntax/ShellCheck; baseline warnings are unchanged.
 - [x] Explain that protected-branch PRs are manually merged by maintainers.
-- [ ] Scan changed files for secrets and run CodeQL.
+- [x] Scan changed files for secrets; none detected. CodeQL reported no alerts.
+- [x] Reply to both review comments.
 
 ## Definition of Done
 - Direct binary pushes do not manually dispatch or wait for Test.
