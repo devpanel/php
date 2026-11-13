@@ -9,7 +9,8 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Use a temporary branch and pre-push Test wait only when the direct target push is rejected.
 - [x] Update documentation and validate direct/protected success and failure paths; YAML/shell checks pass with only existing baseline warnings.
 - [x] Scan changed files for secrets; none found.
-- [ ] Run CodeQL and reply to the review comment.
+- [x] Run CodeQL; no alerts were reported.
+- [x] Reply to the review comment.
 
 ## Definition of Done
 - Unprotected branches receive a direct push without a temporary branch.
