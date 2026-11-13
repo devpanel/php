@@ -132,6 +132,16 @@ class UpdaterTest(unittest.TestCase):
                 wait_index = next(i for i, (args, _) in enumerate(gh)
                                   if args[:2] == ["run", "watch"])
                 self.assertLess(pr_index, dispatch_index)
+                if state == "CLOSED":
+                    reopen_index = next(
+                        i for i, (tool, args, _) in enumerate(calls)
+                        if tool == "gh" and args[:2] == ["pr", "reopen"]
+                    )
+                    force_push_index = next(
+                        i for i, (tool, args, _) in enumerate(calls)
+                        if tool == "git" and "push" in args and "--force" in args
+                    )
+                    self.assertLess(reopen_index, force_push_index)
                 self.assertLess(dispatch_index, wait_index)
                 merges = [(i, args) for i, (args, _) in enumerate(gh)
                           if args[:2] == ["pr", "merge"]]

@@ -225,7 +225,6 @@ jobs:
               target_hash=$(printf '%s' "${TARGET_BRANCH}" | sha256sum | cut -d ' ' -f 1)
               branch="devpanel-cli-update-${target_hash}-${UPSTREAM_SHA:0:12}"
               test_branch="${branch}"
-              git push --force origin "HEAD:refs/heads/${branch}"
               pr=$(gh pr list \
                 --state all \
                 --base "${TARGET_BRANCH}" \
@@ -239,11 +238,13 @@ jobs:
               body="Updates the DevPanel CLI binaries from GitLab revision ${UPSTREAM_SHA}. The Test workflow validates the generated binaries after this pull request is created or updated."
               if [[ -n "${pr}" ]]; then
                 read -r pr_number pr_state <<< "${pr}"
-                gh pr edit "${pr_number}" --title "${title}" --body "${body}"
                 if [[ "${pr_state}" == "CLOSED" ]]; then
                   gh pr reopen "${pr_number}"
                 fi
+                git push --force origin "HEAD:refs/heads/${branch}"
+                gh pr edit "${pr_number}" --title "${title}" --body "${body}"
               else
+                git push --force origin "HEAD:refs/heads/${branch}"
                 gh pr create \
                   --base "${TARGET_BRANCH}" \
                   --head "${test_branch}" \

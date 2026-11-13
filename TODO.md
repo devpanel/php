@@ -2,6 +2,20 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Reopen closed CLI update PRs before force-push
+
+## Steps
+- [x] Inspect updater workflow and existing control-flow tests.
+- [x] Reopen existing closed PRs before force-pushing the update branch.
+- [x] Add regression coverage and validate the workflow changes.
+- [x] Scan changed files for secrets; none detected.
+- [ ] Run CodeQL and address any actionable findings.
+- [ ] Review the final diff, commit, and push.
+
+## Definition of Done
+- A closed, unmerged update PR is reopened before the workflow force-pushes its branch.
+- The control-flow regression test and relevant workflow validation pass.
+
 # Task: Rebase auto-merge CLI update pull requests
 
 ## Steps
