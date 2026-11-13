@@ -54,6 +54,9 @@ jobs:
       - name: Run shell lint
         run: bash tests/lint-shell.sh
 
+      - name: Test CLI updater control flow
+        run: python3 tests/test-update-devpanel-cli.py
+
   lint-dockerfile:
     name: Lint Dockerfiles
     runs-on: ubuntu-latest

@@ -5,8 +5,8 @@ name: Update DevPanel CLI binaries
 # base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
 #
 # Run it manually on a branch. The workflow pushes directly to unprotected
-# branches. If branch protection rejects that push, it tests the commit on a
-# deterministic temporary branch and opens or updates a pull request. The
+# branches. If branch protection rejects that push, it opens or updates a pull
+# request from a deterministic update branch, then waits for its Test run. The
 # updater records the upstream default branch HEAD in the Actions cache only
 # after the target branch is updated. Delete that cache entry to rebuild the
 # same upstream commit.
@@ -14,7 +14,9 @@ name: Update DevPanel CLI binaries
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
 # authenticates Git requests with GitLab's oauth2 username.
-# The workflow token commits and pushes the binaries.
+# The workflow token pushes directly to the target branch. GHCR_TOKEN (a PAT
+# with repo scope) and GHCR_USER authenticate update-branch pushes and PR
+# operations so pull_request events trigger Test, including on repeated runs.
 
 on:
   workflow_dispatch:
@@ -185,6 +187,8 @@ jobs:
         id: commit-binaries
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          PR_USER: ${{ vars.GHCR_USER }}
           TARGET_BRANCH: ${{ github.ref_name }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
@@ -203,11 +207,17 @@ jobs:
               -m "Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit."
 
             commit_sha=$(git rev-parse HEAD)
+            previous_run_id=$(gh run list \
+              --workflow test.yml \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId // 0')
 
             if push_output=$(git push origin "${commit_sha}:refs/heads/${TARGET_BRANCH}" 2>&1); then
               printf '%s\n' "${push_output}"
               test_branch="${TARGET_BRANCH}"
-              push_after_test=false
+              test_event=workflow_dispatch
+              gh workflow run test.yml --ref "${test_branch}"
             else
               push_status=$?
               printf '%s\n' "${push_output}"
@@ -215,55 +225,34 @@ jobs:
                 echo "::error::Direct push to ${TARGET_BRANCH} failed for a reason other than branch protection."
                 exit "${push_status}"
               fi
-              echo "::notice::Branch protection rejected the direct push to ${TARGET_BRANCH}; testing on a temporary branch before opening a pull request."
+              if [[ -z "${PR_TOKEN}" || -z "${PR_USER}" ]]; then
+                echo "::error::GHCR_TOKEN with repo scope and GHCR_USER are required for protected-branch update PRs."
+                exit 1
+              fi
+              echo "::notice::Branch protection rejected the direct push to ${TARGET_BRANCH}; opening or updating a pull request."
               target_hash=$(printf '%s' "${TARGET_BRANCH}" | sha256sum | cut -d ' ' -f 1)
               branch="devpanel-cli-update-${target_hash}-${UPSTREAM_SHA:0:12}"
-              git push --force origin "HEAD:refs/heads/${branch}"
               test_branch="${branch}"
-              push_after_test=true
-            fi
-
-            previous_run_id=$(gh run list \
-              --workflow test.yml \
-              --branch "${test_branch}" \
-              --event workflow_dispatch \
-              --limit 100 \
-              --json databaseId,headSha \
-              --jq "[.[] | select(.headSha == \"${commit_sha}\") | .databaseId] | max // 0")
-            gh workflow run test.yml --ref "${test_branch}"
-
-            test_run_id=""
-            for ((attempt = 0; attempt < 60; attempt++)); do
-              test_run_id=$(gh run list \
-                --workflow test.yml \
-                --branch "${test_branch}" \
-                --event workflow_dispatch \
-                --limit 100 \
-                --json databaseId,headSha \
-                --jq "[.[] | select(.headSha == \"${commit_sha}\" and .databaseId > ${previous_run_id}) | .databaseId] | max // empty")
-              if [[ -n "${test_run_id}" ]]; then
-                break
-              fi
-              sleep 10
-            done
-            if [[ -z "${test_run_id}" ]]; then
-              echo "::error::Timed out waiting for the Test workflow run for ${commit_sha}."
-              exit 1
-            fi
-            echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
-            timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
-
-            if [[ "${push_after_test}" == "true" ]]; then
+              test_event=pull_request
+              export GH_TOKEN="${PR_TOKEN}"
+              auth=$(printf '%s:%s' "${PR_USER}" "${PR_TOKEN}" | base64 -w0)
+              echo "::add-mask::${auth}"
+              # Override checkout's workflow-token header for this push only.
+              git -c http.https://github.com/.extraheader= \
+                -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+                push --force origin "HEAD:refs/heads/${branch}"
+              unset auth
               pr=$(gh pr list \
                 --state all \
                 --base "${TARGET_BRANCH}" \
+                --head "${test_branch}" \
                 --limit 100 \
                 --json number,state,headRefName,headRepositoryOwner \
                 | jq -r --arg branch "${test_branch}" --arg owner "${REPOSITORY_OWNER}" \
-                  '.[] | select(.headRefName == $branch and .headRepositoryOwner.login == $owner) | [.number, .state] | @tsv' \
+                  '.[] | select(.headRefName == $branch and .headRepositoryOwner.login == $owner and .state != "MERGED") | [.number, .state] | @tsv' \
                 | head -n 1)
               title="Update DevPanel CLI binaries"
-              body="Updates the DevPanel CLI binaries from GitLab revision ${UPSTREAM_SHA}. The generated binaries were tested by the Test workflow."
+              body="Updates the DevPanel CLI binaries from GitLab revision ${UPSTREAM_SHA}. The pull request Test workflow validates the generated binaries."
               if [[ -n "${pr}" ]]; then
                 read -r pr_number pr_state <<< "${pr}"
                 gh pr edit "${pr_number}" --title "${title}" --body "${body}"
@@ -279,6 +268,27 @@ jobs:
               fi
               echo "cacheable=false" >> "$GITHUB_OUTPUT"
             fi
+
+            test_run_id=""
+            for ((attempt = 0; attempt < 60; attempt++)); do
+              test_run_id=$(gh run list \
+                --workflow test.yml \
+                --branch "${test_branch}" \
+                --event "${test_event}" \
+                --limit 100 \
+                --json databaseId,headSha \
+                --jq "[.[] | select(.headSha == \"${commit_sha}\" and .databaseId > ${previous_run_id}) | .databaseId] | max // empty")
+              if [[ -n "${test_run_id}" ]]; then
+                break
+              fi
+              sleep 10
+            done
+            if [[ -z "${test_run_id}" ]]; then
+              echo "::error::Timed out waiting for the Test workflow run for ${commit_sha}."
+              exit 1
+            fi
+            echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
+            timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
           fi
 
       - name: Record the built revision
