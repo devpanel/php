@@ -6,9 +6,9 @@ name: Update DevPanel CLI binaries
 #
 # Run it manually on a branch. The workflow pushes directly to unprotected
 # branches. If branch protection rejects that push, it opens or updates a pull
-# request from a deterministic update branch, then dispatches Test and waits.
-# After Test passes, it requests rebase auto-merge without bypassing requirements.
-# Repository auto-merge must be enabled to wait for outstanding requirements. The
+# request from a deterministic update branch, then dispatches Test. When repository
+# auto-merge is enabled, it requests rebase auto-merge and exits without waiting.
+# Otherwise it waits for Test before attempting a rebase merge. The
 # updater records the upstream default branch HEAD in the Actions cache only
 # after the target branch is updated. Delete that cache entry to rebuild the
 # same upstream commit.
@@ -252,37 +252,47 @@ jobs:
               fi
               echo "cacheable=false" >> "$GITHUB_OUTPUT"
 
-              previous_run_id=$(gh run list \
-                --workflow test.yml \
-                --limit 1 \
-                --json databaseId \
-                --jq '.[0].databaseId // 0')
+              auto_merge=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.allow_auto_merge')
+              if [[ "${auto_merge}" != "true" ]]; then
+                previous_run_id=$(gh run list \
+                  --workflow test.yml \
+                  --limit 1 \
+                  --json databaseId \
+                  --jq '.[0].databaseId // 0')
+              fi
               GH_TOKEN="${TEST_TOKEN}" gh workflow run test.yml --ref "${test_branch}"
 
-              test_run_id=""
-              for ((attempt = 0; attempt < 60; attempt++)); do
-                test_run_id=$(gh run list \
-                  --workflow test.yml \
-                  --branch "${test_branch}" \
-                  --event workflow_dispatch \
-                  --limit 100 \
-                  --json databaseId,headSha \
-                  --jq "[.[] | select(.headSha == \"${commit_sha}\" and .databaseId > ${previous_run_id}) | .databaseId] | max // empty")
-                if [[ -n "${test_run_id}" ]]; then
-                  break
+              if [[ "${auto_merge}" == "true" ]]; then
+                gh pr merge "${test_branch}" \
+                  --rebase \
+                  --auto \
+                  --match-head-commit "${commit_sha}"
+              else
+                echo "::notice::Repository auto-merge is disabled; waiting for Test before attempting a rebase merge."
+                test_run_id=""
+                for ((attempt = 0; attempt < 60; attempt++)); do
+                  test_run_id=$(gh run list \
+                    --workflow test.yml \
+                    --branch "${test_branch}" \
+                    --event workflow_dispatch \
+                    --limit 100 \
+                    --json databaseId,headSha \
+                    --jq "[.[] | select(.headSha == \"${commit_sha}\" and .databaseId > ${previous_run_id}) | .databaseId] | max // empty")
+                  if [[ -n "${test_run_id}" ]]; then
+                    break
+                  fi
+                  sleep 10
+                done
+                if [[ -z "${test_run_id}" ]]; then
+                  echo "::error::Timed out waiting for the Test workflow run for ${commit_sha}."
+                  exit 1
                 fi
-                sleep 10
-              done
-              if [[ -z "${test_run_id}" ]]; then
-                echo "::error::Timed out waiting for the Test workflow run for ${commit_sha}."
-                exit 1
+                echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
+                timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
+                gh pr merge "${test_branch}" \
+                  --rebase \
+                  --match-head-commit "${commit_sha}"
               fi
-              echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
-              timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
-              gh pr merge "${test_branch}" \
-                --rebase \
-                --auto \
-                --match-head-commit "${commit_sha}"
             fi
           fi
 

@@ -37,7 +37,9 @@ if tool == "git":
         print("GH006: protected branch update failed", file=sys.stderr)
         sys.exit(1)
 elif tool == "gh":
-    if args[:2] == ["run", "list"]:
+    if args[0] == "api":
+        print(os.environ["AUTO_MERGE"])
+    elif args[:2] == ["run", "list"]:
         if args[args.index("--limit") + 1] == "1":
             print("100")
         elif os.environ.get("NO_RUN") != "1":
@@ -60,7 +62,8 @@ elif tool == "timeout":
 
 class UpdaterTest(unittest.TestCase):
     def run_updater(self, *, protected=True, state="", changed=True,
-                    test_status=0, no_run=False, token="pat", merge_status=0):
+                    test_status=0, no_run=False, token="pat", merge_status=0,
+                    auto_merge=False):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             subprocess.run([REAL_GIT, "init", "-q", str(work)], check=True)
@@ -92,12 +95,14 @@ class UpdaterTest(unittest.TestCase):
             env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
                        REAL_GIT=REAL_GIT, CALL_LOG=str(log),
                        GITHUB_OUTPUT=str(output), GH_TOKEN="workflow-token",
+                       GITHUB_REPOSITORY="devpanel/php",
                        TEST_TOKEN=token,
                        TARGET_BRANCH="main", REPOSITORY_OWNER="devpanel",
                        UPSTREAM_SHA="a" * 40, UPDATE_BRANCH=branch,
                        PROTECTED=str(int(protected)), PR_STATE=state,
                        TEST_STATUS=str(test_status), NO_RUN=str(int(no_run)),
-                       MERGE_STATUS=str(merge_status))
+                       MERGE_STATUS=str(merge_status),
+                       AUTO_MERGE=str(auto_merge).lower())
             result = subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", SCRIPT], cwd=work, env=env,
                 capture_output=True, text=True, timeout=30,
@@ -135,7 +140,7 @@ class UpdaterTest(unittest.TestCase):
                 self.assertLess(wait_index, merge_index)
                 self.assertEqual(merge_args[2], dispatch_args[-1])
                 self.assertIn("--rebase", merge_args)
-                self.assertIn("--auto", merge_args)
+                self.assertNotIn("--auto", merge_args)
                 self.assertNotIn("--admin", merge_args)
                 self.assertTrue(all(token == "workflow-token" for args, token in gh
                                     if args[0] == "pr"))
@@ -176,9 +181,51 @@ class UpdaterTest(unittest.TestCase):
                              for tool, args, _ in calls))
 
     def test_merge_failure_fails_without_caching(self):
-        result, _, output = self.run_updater(merge_status=1)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(output, "cacheable=false\n")
+        for auto_merge in (False, True):
+            with self.subTest(auto_merge=auto_merge):
+                result, _, output = self.run_updater(
+                    merge_status=1, auto_merge=auto_merge,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, "cacheable=false\n")
+
+    def test_auto_merge_does_not_wait_for_tests(self):
+        for state in ("", "OPEN", "CLOSED"):
+            with self.subTest(state=state):
+                result, calls, output = self.run_updater(
+                    state=state, auto_merge=True, no_run=True, test_status=1,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output, "cacheable=false\n")
+                self.assertFalse(any(tool in ("sleep", "timeout")
+                                     or (tool == "gh" and args[0] == "run")
+                                     for tool, args, _ in calls))
+                gh = [(args, token) for tool, args, token in calls if tool == "gh"]
+                dispatches = [(i, args, token) for i, (args, token) in enumerate(gh)
+                              if args[:2] == ["workflow", "run"]]
+                self.assertEqual(len(dispatches), 1)
+                dispatch_index, dispatch_args, dispatch_token = dispatches[0]
+                self.assertEqual(dispatch_token, "pat")
+                merges = [(i, args, token) for i, (args, token) in enumerate(gh)
+                          if args[:2] == ["pr", "merge"]]
+                self.assertEqual(len(merges), 1)
+                merge_index, merge_args, merge_token = merges[0]
+                self.assertLess(dispatch_index, merge_index)
+                self.assertEqual(merge_token, "workflow-token")
+                self.assertEqual(merge_args[2], dispatch_args[-1])
+                self.assertIn("--rebase", merge_args)
+                self.assertIn("--auto", merge_args)
+                self.assertNotIn("--admin", merge_args)
+                pushed_sha = next(
+                    args[-1].split(":")[0] for tool, args, _ in calls
+                    if tool == "git" and "push" in args
+                )
+                self.assertEqual(
+                    merge_args[merge_args.index("--match-head-commit") + 1],
+                    pushed_sha,
+                )
+                self.assertTrue(all(token == "workflow-token" for args, token in gh
+                                    if args[0] != "workflow"))
 
     def test_direct_push_succeeds_without_test_even_if_tests_would_fail(self):
         result, calls, output = self.run_updater(protected=False, test_status=1)

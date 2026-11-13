@@ -5,13 +5,17 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 # Task: Rebase auto-merge CLI update pull requests
 
 ## Steps
-- [x] Request rebase auto-merge after the generated update commit passes Test, using the workflow token and matching its head SHA.
+- [x] When repository auto-merge is enabled, dispatch Test and request guarded rebase auto-merge without polling or watching Test.
+- [x] Preserve the wait-for-Test and rebase-merge fallback when repository auto-merge is disabled; update regression coverage and docs.
+- [x] Validate nonblocking auto-merge and fallback paths, YAML, and embedded Bash.
+- [x] Request rebase auto-merge using the workflow token and matching its head SHA.
 - [x] Cover successful scheduling and failed Test/merge requests; update workflow documentation.
 - [x] Run focused regression tests, YAML lint, and embedded Bash validation.
-- [x] Check repository prerequisites: rebase merging is enabled; enabling auto-merge requires an administrator because this session's integration cannot update repository settings (HTTP 403).
+- [x] Check repository prerequisites: rebase merging and auto-merge are enabled.
 
 ## Definition of Done
 - Protected-branch updates request rebase auto-merge without bypassing branch requirements.
+- Auto-merge-enabled repositories do not wait for Test; disabled repositories wait before attempting a rebase merge.
 - The PAT remains limited to Test dispatch; direct pushes and revision-cache behavior are unchanged.
 - Repository auto-merge must be enabled for PRs that still have outstanding requirements.
 
