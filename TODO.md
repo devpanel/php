@@ -9,8 +9,8 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Reopen existing closed PRs before force-pushing the update branch.
 - [x] Add regression coverage and validate the workflow changes.
 - [x] Scan changed files for secrets; none detected.
-- [ ] Run CodeQL and address any actionable findings.
-- [ ] Review the final diff, commit, and push.
+- [x] Run CodeQL; no alerts were reported.
+- [x] Review the final diff, commit, and push.
 
 ## Definition of Done
 - A closed, unmerged update PR is reopened before the workflow force-pushes its branch.
