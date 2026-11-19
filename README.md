@@ -299,8 +299,10 @@ for setup instructions.
   QEMU is set up only for a target platform that has no matching runner.
   Native AMD64 and ARM64 builds skip QEMU.
 - `update-devpanel-cli.yml` rebuilds one `base/bin/devpanel-$arch` binary
-  per platform in the `PLATFORMS` repository variable, or
-  `linux/amd64,linux/arm64` when that variable is unset, from the latest
+  per platform. Its `platforms` input selects the list; an empty input uses
+  the `PLATFORMS` repository variable, or `linux/amd64,linux/arm64` when that
+  variable is unset. A dispatch that sets `platforms` always builds and leaves
+  the revision cache unchanged. It builds from the latest
   [GitLab CLI repository](https://gitlab.com/devpanel-vn/cli) default branch
   HEAD. Run it manually on a branch; tags are left unchanged. `linux/amd64`
   builds on `ubuntu-26.04` and `linux/arm64` builds on `ubuntu-26.04-arm`.

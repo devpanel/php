@@ -1,10 +1,11 @@
 name: Update DevPanel CLI binaries
 
-# Build devpanel binaries from https://gitlab.com/devpanel-vn/cli for the
-# platforms in the PLATFORMS repository variable, or linux/amd64,linux/arm64
-# when that variable is unset. linux/amd64 builds on ubuntu-26.04 and
-# linux/arm64 builds on ubuntu-26.04-arm. Other platforms build on
-# ubuntu-26.04 with QEMU.
+# Build devpanel binaries from https://gitlab.com/devpanel-vn/cli. The
+# platforms input selects the list for that run. An empty input uses the
+# PLATFORMS repository variable, or linux/amd64,linux/arm64 when that variable
+# is unset. linux/amd64 builds on ubuntu-26.04 and linux/arm64 builds on
+# ubuntu-26.04-arm. Other platforms build on ubuntu-26.04 with QEMU. A run
+# that sets the input always builds and leaves the revision cache unchanged.
 #
 # Run it manually on a branch. The workflow pushes directly to unprotected
 # branches. If branch protection rejects that push, it opens or updates a pull
@@ -23,6 +24,12 @@ name: Update DevPanel CLI binaries
 
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: >
+          Comma-separated list of platforms to build.
+          Leave empty to use the PLATFORMS repository variable,
+          falling back to "linux/amd64,linux/arm64".
 
 concurrency:
   group: update-devpanel-cli-${{ github.ref }}
@@ -78,8 +85,12 @@ jobs:
         env:
           CACHE_HIT: ${{ steps.revision-cache.outputs.cache-hit }}
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          EXPLICIT_PLATFORMS: ${{ inputs.platforms != '' }}
         run: |
-          if [[ "${CACHE_HIT}" == "true" ]]; then
+          if [[ "${EXPLICIT_PLATFORMS}" == "true" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Building GitLab CLI ${UPSTREAM_SHA} for the platforms input."
+          elif [[ "${CACHE_HIT}" == "true" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "GitLab CLI ${UPSTREAM_SHA} is already built for this branch."
           else
@@ -90,7 +101,7 @@ jobs:
       - name: Select build platforms
         id: platforms
         env:
-          RAW_PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
+          RAW_PLATFORMS: ${{ inputs.platforms || vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
         run: |
           set -euo pipefail
           entries=()
@@ -132,7 +143,7 @@ jobs:
               '{arch:$arch,runner:$runner,qemu:$qemu,goarm:$goarm}')")
           done
           if [[ "${#entries[@]}" -eq 0 ]]; then
-            echo "::error::PLATFORMS did not contain a platform."
+            echo "::error::The platforms input did not contain a platform."
             exit 1
           fi
           matrix="$(printf '%s\n' "${entries[@]}" | jq -sc '.')"
@@ -250,6 +261,7 @@ jobs:
           TARGET_BRANCH: ${{ github.ref_name }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
+          EXPLICIT_PLATFORMS: ${{ inputs.platforms != '' }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -367,6 +379,10 @@ jobs:
                 exit 0
               fi
             fi
+          fi
+          if [[ "${EXPLICIT_PLATFORMS:-false}" == "true" ]]; then
+            echo "Platforms came from the workflow input, so the revision cache is unchanged."
+            exit 0
           fi
           echo "cacheable=true" >> "$GITHUB_OUTPUT"
 
