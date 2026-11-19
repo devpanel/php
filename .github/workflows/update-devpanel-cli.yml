@@ -10,8 +10,8 @@ name: Update DevPanel CLI binaries
 # run. When repository auto-merge is enabled, it requests rebase auto-merge and
 # exits without waiting. Otherwise it waits for Test before attempting a rebase
 # merge. The updater records the upstream default branch HEAD in the Actions
-# cache only after a direct update; cache-devpanel-cli.yml records merged PR
-# revisions. Delete that cache entry to rebuild the same upstream commit.
+# cache after direct updates and confirmed non-auto-merges; cache-devpanel-cli.yml
+# handles merged PR events. Delete that cache entry to rebuild the same commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
@@ -251,8 +251,6 @@ jobs:
                   --title "${title}" \
                   --body "${body}"
               fi
-              echo "cacheable=false" >> "$GITHUB_OUTPUT"
-
               pr_number=$(gh pr view "${test_branch}" --json number --jq '.number')
               test_run=""
               for ((attempt = 0; attempt < 60; attempt++)); do
@@ -284,6 +282,7 @@ jobs:
                   --rebase \
                   --auto \
                   --match-head-commit "${commit_sha}"
+                exit 0
               else
                 echo "::notice::Repository auto-merge is disabled; waiting for Test before attempting a rebase merge."
                 echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
@@ -291,12 +290,20 @@ jobs:
                 gh pr merge "${test_branch}" \
                   --rebase \
                   --match-head-commit "${commit_sha}"
+                # The workflow token's merge does not trigger the cache workflow.
+                merged_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
+                  --jq 'select(.merged) | [.head.sha, .base.ref] | @tsv')
+                if [[ "${merged_pr}" != "${commit_sha}"$'\t'"${TARGET_BRANCH}" ]]; then
+                  echo "::notice::Merge of ${commit_sha} into ${TARGET_BRANCH} is not confirmed; skipping the revision cache."
+                  exit 0
+                fi
               fi
             fi
           fi
+          echo "cacheable=true" >> "$GITHUB_OUTPUT"
 
       - name: Record the built revision
-        if: steps.commit-binaries.outputs.cacheable != 'false'
+        if: steps.commit-binaries.outputs.cacheable == 'true'
         env:
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
         run: |
@@ -304,7 +311,7 @@ jobs:
           printf '%s\n' "${UPSTREAM_SHA}" > "${RUNNER_TEMP}/devpanel-cli-revision/sha"
 
       - name: Save the built revision
-        if: steps.commit-binaries.outputs.cacheable != 'false'
+        if: steps.commit-binaries.outputs.cacheable == 'true'
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision

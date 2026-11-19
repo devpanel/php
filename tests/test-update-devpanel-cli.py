@@ -58,6 +58,18 @@ elif tool == "gh":
             ).returncode)
         elif "/commits/" in args[1]:
             print(os.environ["COMMIT_SUBJECT"])
+        elif args[1] == "repos/devpanel/php/pulls/42":
+            head = subprocess.check_output(
+                [os.environ["REAL_GIT"], "rev-parse", "HEAD"], text=True
+            ).strip()
+            sys.exit(subprocess.run(
+                ["jq", "-r", args[args.index("--jq") + 1]],
+                input=json.dumps({
+                    "merged": os.environ["PR_MERGED"] == "1",
+                    "head": {"sha": os.environ["MERGED_HEAD"] or head},
+                    "base": {"ref": os.environ["MERGED_BASE"]},
+                }), text=True,
+            ).returncode)
         else:
             print(os.environ["AUTO_MERGE"])
     elif args[:2] == ["pr", "view"]:
@@ -82,7 +94,8 @@ class UpdaterTest(unittest.TestCase):
     def run_updater(self, *, protected=True, state="", changed=True,
                     test_status=0, no_run=False, token="pat", merge_status=0,
                     auto_merge=False, run_conclusion="action_required",
-                    approval_status=0):
+                    approval_status=0, pr_merged=True, merged_head="",
+                    merged_base="main"):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             subprocess.run([REAL_GIT, "init", "-q", str(work)], check=True)
@@ -121,6 +134,8 @@ class UpdaterTest(unittest.TestCase):
                        PROTECTED=str(int(protected)), PR_STATE=state,
                        TEST_STATUS=str(test_status), NO_RUN=str(int(no_run)),
                        MERGE_STATUS=str(merge_status),
+                       PR_MERGED=str(int(pr_merged)), MERGED_HEAD=merged_head,
+                       MERGED_BASE=merged_base,
                        RUN_CONCLUSION=run_conclusion,
                        APPROVAL_STATUS=str(approval_status),
                        AUTO_MERGE=str(auto_merge).lower())
@@ -137,7 +152,7 @@ class UpdaterTest(unittest.TestCase):
             with self.subTest(state=state):
                 result, calls, output = self.run_updater(state=state)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output, "cacheable=false\n")
+                self.assertEqual(output, "cacheable=true\n")
                 gh = [(args, token) for tool, args, token in calls if tool == "gh"]
                 approvals = [(i, args, token) for i, (args, token) in enumerate(gh)
                              if args[-1].endswith("/approve")]
@@ -171,6 +186,11 @@ class UpdaterTest(unittest.TestCase):
                 self.assertEqual(len(merges), 1)
                 merge_index, merge_args = merges[0]
                 self.assertLess(wait_index, merge_index)
+                confirmation_index = next(
+                    i for i, (args, _) in enumerate(gh)
+                    if args[:2] == ["api", "repos/devpanel/php/pulls/42"]
+                )
+                self.assertLess(merge_index, confirmation_index)
                 self.assertIn("--rebase", merge_args)
                 self.assertNotIn("--auto", merge_args)
                 self.assertNotIn("--admin", merge_args)
@@ -194,18 +214,19 @@ class UpdaterTest(unittest.TestCase):
     def test_direct_push_does_not_dispatch_test(self):
         result, calls, output = self.run_updater(protected=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, "")
+        self.assertEqual(output, "cacheable=true\n")
         self.assertFalse(any(tool == "gh" for tool, _, _ in calls))
 
     def test_unchanged_binaries_do_not_push_or_test(self):
         result, calls, output = self.run_updater(changed=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, "")
+        self.assertEqual(output, "cacheable=true\n")
         self.assertFalse(any(tool == "gh" or "push" in args for tool, args, _ in calls))
 
     def test_failed_tests_fail_the_step(self):
-        result, calls, _ = self.run_updater(test_status=1)
+        result, calls, output = self.run_updater(test_status=1)
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
         self.assertFalse(any(tool == "gh" and args[:2] == ["pr", "merge"]
                              for tool, args, _ in calls))
 
@@ -216,7 +237,16 @@ class UpdaterTest(unittest.TestCase):
                     merge_status=1, auto_merge=auto_merge,
                 )
                 self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(output, "cacheable=false\n")
+                self.assertEqual(output, "")
+
+    def test_unconfirmed_merge_is_not_cached(self):
+        for options in ({"pr_merged": False}, {"merged_head": "b" * 40},
+                        {"merged_base": "develop"}):
+            with self.subTest(**options):
+                result, _, output = self.run_updater(**options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output, "")
+                self.assertIn("is not confirmed", result.stdout)
 
     def test_auto_merge_approves_without_waiting_for_test_completion(self):
         for state in ("", "OPEN", "CLOSED"):
@@ -225,7 +255,7 @@ class UpdaterTest(unittest.TestCase):
                     state=state, auto_merge=True, test_status=1,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output, "cacheable=false\n")
+                self.assertEqual(output, "")
                 self.assertFalse(any(tool in ("sleep", "timeout")
                                      or (tool == "gh" and args[0] == "run")
                                      for tool, args, _ in calls))
@@ -236,6 +266,8 @@ class UpdaterTest(unittest.TestCase):
                 approval_index, _, approval_token = approvals[0]
                 self.assertEqual(approval_token, "pat")
                 self.assertFalse(any(args[:2] == ["workflow", "run"]
+                                     for args, _ in gh))
+                self.assertFalse(any(args[:2] == ["api", "repos/devpanel/php/pulls/42"]
                                      for args, _ in gh))
                 merges = [(i, args, token) for i, (args, token) in enumerate(gh)
                           if args[:2] == ["pr", "merge"]]
@@ -276,14 +308,14 @@ class UpdaterTest(unittest.TestCase):
     def test_failed_approval_fails_without_merging_or_caching(self):
         result, calls, output = self.run_updater(approval_status=1)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(output, "cacheable=false\n")
+        self.assertEqual(output, "")
         self.assertFalse(any(tool == "gh" and args[:2] == ["pr", "merge"]
                              for tool, args, _ in calls))
 
     def test_direct_push_succeeds_without_test_even_if_tests_would_fail(self):
         result, calls, output = self.run_updater(protected=False, test_status=1)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, "")
+        self.assertEqual(output, "cacheable=true\n")
         self.assertFalse(any(tool == "gh" for tool, _, _ in calls))
 
     def test_missing_test_token_fails_explicitly(self):
@@ -299,7 +331,7 @@ class UpdaterTest(unittest.TestCase):
                 result, calls, output = self.run_updater(no_run=True, auto_merge=auto_merge)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Timed out waiting", result.stdout)
-                self.assertEqual(output, "cacheable=false\n")
+                self.assertEqual(output, "")
                 self.assertFalse(any(tool == "gh" and args[:2] == ["pr", "merge"]
                                      for tool, args, _ in calls))
 
