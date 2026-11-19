@@ -16,6 +16,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'devpanel-cli-update-')
     runs-on: ubuntu-26.04
+    outputs:
+      sha: ${{ steps.revision.outputs.sha }}
+      platforms: ${{ steps.revision.outputs.platforms }}
     steps:
       # Never check out or execute the PR's code in this privileged workflow.
       - name: Resolve merged upstream revision
@@ -27,7 +30,8 @@ jobs:
           TARGET_BRANCH: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
-          subject=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}" --jq '.commit.message | split("\n")[0]')
+          message=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}" --jq '.commit.message')
+          subject=$(printf '%s\n' "${message}" | head -n 1)
           if [[ ! "${subject}" =~ ^Update\ devpanel\ CLI\ from\ GitLab\ devpanel-vn/cli@([0-9a-f]{40})$ ]]; then
             echo "::error::Merged CLI update has no valid upstream revision."
             exit 1
@@ -38,12 +42,45 @@ jobs:
             echo "::error::Merged CLI update branch does not match the target branch and upstream revision."
             exit 1
           fi
+          platforms_line=$(printf '%s\n' "${message}" | sed -n '/^Built /p' | head -n 1)
+          if [[ ! "${platforms_line}" =~ ^Built[[:space:]](.+)[[:space:]]from[[:space:]]cmd/devpanel-client[[:space:]]at[[:space:]]that[[:space:]]commit\.$ ]]; then
+            echo "::error::Merged CLI update does not list its platform cache keys."
+            exit 1
+          fi
+          list="${BASH_REMATCH[1]}"
+          for token in ${list}; do
+            if [[ ! "${token}" =~ ^linux(-[a-z0-9]+)+$ ]]; then
+              echo "::error::Invalid platform cache key ${token}."
+              exit 1
+            fi
+          done
           mkdir -p "${RUNNER_TEMP}/devpanel-cli-revision"
           printf '%s\n' "${sha}" > "${RUNNER_TEMP}/devpanel-cli-revision/sha"
+          platforms=$(jq -nc --arg list "${list}" '$list | split(" ")')
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "platforms=${platforms}" >> "$GITHUB_OUTPUT"
 
-      - name: Save the built revision
+  save:
+    name: Cache ${{ matrix.platform }}
+    needs: cache
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(needs.cache.outputs.platforms) }}
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Record the built revision
+        env:
+          UPSTREAM_SHA: ${{ needs.cache.outputs.sha }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/devpanel-cli-revision"
+          printf '%s\n' "${UPSTREAM_SHA}" > "${RUNNER_TEMP}/devpanel-cli-revision/sha"
+
+      - name: Save the platform revision
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: gitlab-devpanel-client-v1-refs/heads/${{ github.event.pull_request.base.ref }}-${{ steps.revision.outputs.sha }}
+          key: gitlab-devpanel-client-v2-refs/heads/${{ github.event.pull_request.base.ref }}-${{ needs.cache.outputs.sha }}-${{ matrix.platform }}

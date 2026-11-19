@@ -301,8 +301,8 @@ for setup instructions.
 - `update-devpanel-cli.yml` rebuilds one `base/bin/devpanel-$arch` binary
   per platform. Its `platforms` input selects the list; an empty input uses
   the `PLATFORMS` repository variable, or `linux/amd64,linux/arm64` when that
-  variable is unset. A dispatch that sets `platforms` always builds and leaves
-  the revision cache unchanged. It builds from the latest
+  variable is unset. Each platform binary has its own revision cache key, so a
+  cached platform is skipped and the others still build. It builds from the latest
   [GitLab CLI repository](https://gitlab.com/devpanel-vn/cli) default branch
   HEAD. Run it manually on a branch; tags are left unchanged. `linux/amd64`
   builds on `ubuntu-26.04` and `linux/arm64` builds on `ubuntu-26.04-arm`.
@@ -311,9 +311,9 @@ for setup instructions.
   with CGO disabled. This client path is based on the existing binary's
   metadata and must be confirmed against the GitLab source. Every build uses
   the same resolved commit and the Go version from its `go.mod`. The workflow
-  caches the revision per destination branch only after the built binaries
-  reach that branch, and skips subsequent builds on a cache hit. Delete that
-  cache entry to rebuild the same commit. A new run cancels one already in
+  caches each platform separately after its binary reaches that branch, and
+  skips a platform on its own cache hit. Delete that platform's cache entry to
+  rebuild its binary for the same commit. A new run cancels one already in
   progress. Set the `GITLAB_TOKEN` repository secret to a GitLab access token
   with `read_repository` access. The workflow authenticates Git requests with
   GitLab's `oauth2` username. The workflow

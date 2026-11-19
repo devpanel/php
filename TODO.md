@@ -321,9 +321,11 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Register QEMU only for a target platform with no matching runner.
 - [x] Skip an image-build platform and warn when its native binary is absent.
 - [x] Build the updater matrix from `PLATFORMS`, using QEMU when that platform has no native runner.
-- [x] Add a `platforms` input that overrides `PLATFORMS` without updating the revision cache.
+- [x] Add a `platforms` input that overrides `PLATFORMS`.
+- [x] Give each platform binary its own revision cache key.
 
 ## Definition of Done
 - amd64 and arm64 images install their own binary and skip QEMU on matching runners.
 - A platform without `base/bin/devpanel-${TARGETARCH}` is omitted from the image build with a warning.
 - `update-devpanel-cli.yml` builds its `platforms` input, `vars.PLATFORMS`, or `linux/amd64,linux/arm64`.
+- A cached platform is skipped without skipping the other platforms.

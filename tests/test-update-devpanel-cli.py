@@ -8,21 +8,30 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-import textwrap
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/update-devpanel-cli.yml"
-STEP = WORKFLOW.read_text().split("      - name: Commit binaries\n", 1)[1]
-SCRIPT = textwrap.dedent(
-    STEP.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0]
-)
 CACHE_WORKFLOW = ROOT / ".github/workflows/cache-devpanel-cli.yml"
-CACHE_SCRIPT = textwrap.dedent(
-    CACHE_WORKFLOW.read_text().split("        run: |\n", 1)[1]
-    .split("\n      - name:", 1)[0]
-)
+
+
+def extract_run_script(workflow: Path, step_name: str) -> str:
+    body = workflow.read_text().split(f"      - name: {step_name}\n", 1)[1]
+    body = body.split("        run: |\n", 1)[1]
+    lines = []
+    for line in body.splitlines():
+        if line.startswith("          "):
+            lines.append(line[10:])
+        elif line == "":
+            lines.append("")
+        else:
+            break
+    return "\n".join(lines) + "\n"
+
+
+SCRIPT = extract_run_script(WORKFLOW, "Commit binaries")
+CACHE_SCRIPT = extract_run_script(CACHE_WORKFLOW, "Resolve merged upstream revision")
 REAL_GIT = shutil.which("git")
 MOCK = """#!/usr/bin/env python3
 import json
@@ -130,7 +139,9 @@ class UpdaterTest(unittest.TestCase):
                        GITHUB_REPOSITORY="devpanel/php",
                        TEST_TOKEN=token,
                        TARGET_BRANCH="main", REPOSITORY_OWNER="devpanel",
-                       UPSTREAM_SHA="a" * 40, UPDATE_BRANCH=branch,
+                       UPSTREAM_SHA="a" * 40,
+                       BUILT_PLATFORMS='["linux-amd64","linux-arm64"]',
+                       UPDATE_BRANCH=branch,
                        PROTECTED=str(int(protected)), PR_STATE=state,
                        TEST_STATUS=str(test_status), NO_RUN=str(int(no_run)),
                        MERGE_STATUS=str(merge_status),
@@ -358,10 +369,14 @@ class UpdaterTest(unittest.TestCase):
 
 
 class MergedRevisionTest(unittest.TestCase):
-    def run_cache(self, *, target="main", subject=None, branch=None):
+    def run_cache(self, *, target="main", subject=None, branch=None,
+                  platforms="linux-amd64 linux-arm64"):
         sha = "a" * 40
         if subject is None:
-            subject = f"Update devpanel CLI from GitLab devpanel-vn/cli@{sha}"
+            subject = (
+                f"Update devpanel CLI from GitLab devpanel-vn/cli@{sha}\n\n"
+                f"Built {platforms} from cmd/devpanel-client at that commit."
+            )
         if branch is None:
             branch = "devpanel-cli-update-" + hashlib.sha256(target.encode()).hexdigest()
             branch += "-" + sha[:12]
@@ -394,8 +409,22 @@ class MergedRevisionTest(unittest.TestCase):
             with self.subTest(target=target):
                 result, output, revision = self.run_cache(target=target)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output, "sha=" + "a" * 40 + "\n")
+                self.assertEqual(
+                    output,
+                    "sha=" + "a" * 40 + "\n"
+                    'platforms=["linux-amd64","linux-arm64"]\n',
+                )
                 self.assertEqual(revision, "a" * 40 + "\n")
+
+    def test_missing_platform_list_is_not_cached(self):
+        sha = "a" * 40
+        result, output, revision = self.run_cache(
+            subject=f"Update devpanel CLI from GitLab devpanel-vn/cli@{sha}",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not list its platform cache keys", result.stdout)
+        self.assertEqual(output, "")
+        self.assertIsNone(revision)
 
     def test_invalid_revision_is_not_cached(self):
         for subject in ("Unrelated update", "Update devpanel CLI from GitLab devpanel-vn/cli@bad"):
