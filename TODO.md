@@ -2,6 +2,141 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Cache immediately merged CLI auto-merge PRs
+
+## Steps
+- [x] Inspect updater control flow, existing tests, and repository validation commands.
+- [x] Confirm merged-PR cache creation after either synchronous merge path while leaving deferred auto-merge nonblocking.
+- [x] Add regression coverage and update workflow documentation/TODO.
+- [x] Run focused tests and relevant workflow validation; scan changed files for secrets.
+- [x] Run CodeQL and review the final diff.
+
+## Definition of Done
+- An auto-merge request that completes synchronously is confirmed against the expected PR head and target branch before caching.
+- Deferred auto-merges still exit without waiting and do not cache until a subsequent merge event.
+- Focused validation passes and changed files contain no secrets.
+
+# Task: Reopen closed CLI update PRs before force-push
+
+## Steps
+- [x] Inspect updater workflow and existing control-flow tests.
+- [x] Reopen existing closed PRs before force-pushing the update branch.
+- [x] Add regression coverage and validate the workflow changes.
+- [x] Scan changed files for secrets; none detected.
+- [x] Run CodeQL; no alerts were reported.
+- [x] Review the final diff, commit, and push.
+
+## Definition of Done
+- A closed, unmerged update PR is reopened before the workflow force-pushes its branch.
+- The control-flow regression test and relevant workflow validation pass.
+
+# Task: Rebase auto-merge CLI update pull requests
+
+## Steps
+- [x] When repository auto-merge is enabled, dispatch Test and request guarded rebase auto-merge without polling or watching Test.
+- [x] Preserve the wait-for-Test and rebase-merge fallback when repository auto-merge is disabled; update regression coverage and docs.
+- [x] Validate nonblocking auto-merge and fallback paths, YAML, and embedded Bash.
+- [x] Request rebase auto-merge using the workflow token and matching its head SHA.
+- [x] Cover successful scheduling and failed Test/merge requests; update workflow documentation.
+- [x] Run focused regression tests, YAML lint, and embedded Bash validation.
+- [x] Check repository prerequisites: rebase merging and auto-merge are enabled.
+
+## Definition of Done
+- Protected-branch updates request rebase auto-merge without bypassing branch requirements.
+- Auto-merge-enabled repositories do not wait for Test; disabled repositories wait before attempting a rebase merge.
+- The PAT remains limited to Test dispatch; direct pushes and revision-cache behavior are unchanged.
+- Repository auto-merge must be enabled for PRs that still have outstanding requirements.
+
+# Task: Dispatch CLI updater tests only for protected branches
+
+## Steps
+- [x] Keep Test dispatch and waiting in the protected-branch fallback only.
+- [x] Update regression coverage and workflow documentation.
+- [x] Run focused updater tests, YAML/shell validation, and embedded Bash syntax/ShellCheck; baseline warnings are unchanged.
+- [x] Explain that protected-branch PRs are manually merged by maintainers.
+- [x] Scan changed files for secrets; none detected. CodeQL reported no alerts.
+- [x] Reply to both review comments.
+
+## Definition of Done
+- Direct binary pushes do not manually dispatch or wait for Test.
+- A protected-branch fallback still creates/updates its PR, then dispatches Test once and waits for its result.
+- Focused validation passes and changed files contain no secrets.
+
+# Task: Fix protected-branch CLI updater failure
+
+## Steps
+- [x] Use the workflow token for all pushes and PR operations, limiting GHCR_TOKEN to the protected-path Test dispatch.
+- [x] Create or update the PR before dispatching Test once and waiting for its head SHA's run.
+- [x] Validate revised authentication, new/existing/reopened PR paths, direct pushes, and Test failures; update documentation.
+- [x] Diagnose the failing push from Actions logs: the required `Test` check remains expected after dispatching it on a temporary branch.
+- [x] Replace the protected-branch retry push with a pull request from the tested temporary branch.
+- [x] Save the revision cache only after the target branch is updated; update workflow documentation.
+- [x] Validate YAML and shell changes, including Bash syntax for the embedded updater script.
+- [x] Scan changed files for secrets; none were detected.
+- [x] Run CodeQL; no alerts were reported.
+
+## Definition of Done
+- Unprotected branches still receive direct binary updates.
+- Protected branches receive a PR rather than a failing direct-push retry.
+- Protected-branch updates dispatch Test once, after the PR exists, with the PAT used only for that dispatch.
+- The revision cache is not saved until the target branch contains the updated binaries.
+- Focused validation passes and changed files contain no secrets.
+
+# Task: Restore branch-aware CLI updates
+
+## Steps
+- [x] Restore the dispatch-selected branch for checkout, destination pushes, and revision-cache keys.
+- [x] Use a temporary branch and pre-push Test wait only when the direct target push is rejected.
+- [x] Update documentation and validate direct/protected success and failure paths; YAML/shell checks pass with only existing baseline warnings.
+- [x] Scan changed files for secrets; none found.
+- [x] Run CodeQL; no alerts were reported.
+- [x] Reply to the review comment.
+
+## Definition of Done
+- Unprotected branches receive a direct push without a temporary branch.
+- Protected branches are updated only after Test passes on a temporary branch.
+- Revision caching remains scoped to the selected branch and follows successful target push.
+
+# Task: Push tested CLI binaries directly to target branch
+
+## Steps
+- [x] Test the generated binary commit on a temporary branch, then push the exact tested commit to `main`.
+- [x] Remove PR creation and update updater documentation.
+- [x] Run focused validation (YAML lint, Bash syntax/ShellCheck, and mocked pass/fail pushes), scan for secrets, and review the diff.
+- [x] Run CodeQL; no alerts were reported.
+
+## Definition of Done
+- The updater pushes to `main` only after the exact commit passes `Test`.
+- The target push is non-force and the cache is saved only after it succeeds.
+- Focused validation passes and changed files contain no secrets.
+
+# Task: Wait for CLI updater Test result
+
+## Steps
+- [x] Find the newly dispatched Test run for the generated update commit.
+- [x] Wait for the run to finish and stop before the revision cache is saved unless Test passes.
+- [x] Update workflow documentation and run focused YAML/shell validation plus mocked success/failure paths.
+- [ ] Scan changed files for secrets, run CodeQL, and review the final diff.
+
+## Definition of Done
+- The updater waits for Test on the generated branch commit and fails unless that run succeeds.
+- The revision cache is saved only after Test succeeds.
+- Focused validation passes and changed files contain no secrets.
+
+# Task: Fix protected-branch CLI updater failure
+
+## Steps
+- [x] Push rebuilt binaries directly to the target branch when permitted; use a temporary branch and create or update a pull request only when branch protection prevents a direct push.
+- [x] Dispatch the required `Test` workflow for the update branch before saving the built-revision cache.
+- [x] Run focused workflow validation: YAML lint, shell syntax/ShellCheck, and a mocked PR-dispatch fixture.
+- [x] Scan changed files for secrets and review the final diff.
+- [ ] Run CodeQL and address any actionable findings.
+
+## Definition of Done
+- Unprotected target branches receive direct pushes.
+- When branch protection prevents a direct push, the generated-binary pull request receives the required `Test` status check.
+- Focused validation passes and changed files contain no secrets.
+
 # Task: Restore DevPanel CLI and enable QEMU on ARM runners
 
 ## Steps
@@ -140,3 +275,41 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 ## Definition of Done
 - Image builds copy `base/bin/devpanel-$TARGETARCH` and run `devpanel version`.
 - The committed amd64 binary is the original `github.com/devpanel/cli` executable.
+
+# Task: Rebuild the DevPanel CLI from GitLab
+
+## Steps
+- [x] Add a manual workflow based on `main`. The workflow token commits the binaries.
+- [x] Resolve and cache the upstream default branch HEAD through authenticated Git access, and skip revisions already built for the destination branch.
+- [x] Build linux/amd64 and linux/arm64 in parallel on native runners, then commit both binaries.
+- [x] Configure GitLab source-fetch authentication with a `read_repository` token and GitLab's `oauth2` username.
+- [ ] Confirm `cmd/devpanel-client`, Go setup, build dependencies and smoke checks against the actual GitLab source.
+- [ ] Run the workflow with GitLab credentials and verify both binaries and revision caching.
+
+## Definition of Done
+- A cache miss resolves the latest default-branch commit through authenticated Git access, builds both binaries on `ubuntu-26.04` and `ubuntu-26.04-arm`, and commits `base/bin/devpanel-amd64` and `base/bin/devpanel-arm64`.
+- GitLab access uses `GITLAB_TOKEN` with `read_repository` access; the built revision is cached after the binaries are committed.
+
+# Task: Fix GitLab CLI HTTPS authentication
+
+## Steps
+- [x] Diagnose the cached-revision job's GitLab authentication failure from its Actions logs.
+- [x] Use GitLab's documented `oauth2` username with the access token in every Git request.
+- [x] Update workflow documentation and run focused validation and secret scanning.
+
+## Definition of Done
+- Plan, source fetch, and private-module requests use the same documented GitLab access-token authentication.
+- Documentation no longer requires `GITLAB_USER`.
+- Focused validation passes and changed files contain no secrets.
+
+# Task: Fix cached DevPanel CLI revision lookup
+
+## Steps
+- [x] Resolve the upstream default-branch HEAD through authenticated Git access instead of the GitLab commits API.
+- [x] Update the workflow documentation to describe the revised GitLab credential requirements.
+- [x] Run focused workflow/shell validation, scan changed files for secrets, and review the final diff.
+
+## Definition of Done
+- The plan job gets the upstream default-branch HEAD using the same authenticated Git access required by the build.
+- Documentation no longer requires `read_api` for the updater.
+- Focused validation passes and changed files contain no secrets.

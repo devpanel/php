@@ -1,0 +1,316 @@
+name: Update DevPanel CLI binaries
+
+# Build linux/amd64 and linux/arm64 devpanel binaries from
+# https://gitlab.com/devpanel-vn/cli and commit
+# base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
+#
+# Run it manually on a branch. The workflow pushes directly to unprotected
+# branches. If branch protection rejects that push, it opens or updates a pull
+# request from a deterministic update branch, then approves its pending Test
+# run. When repository auto-merge is enabled, it requests rebase auto-merge and
+# exits without waiting. Otherwise it waits for Test before attempting a rebase
+# merge. The updater records the upstream default branch HEAD in the Actions
+# cache after direct updates and confirmed merges; cache-devpanel-cli.yml handles
+# deferred auto-merges. Delete that cache entry to rebuild the same commit.
+#
+# The plan job resolves the default branch HEAD through Git; the build fetches
+# that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
+# authenticates Git requests with GitLab's oauth2 username. The workflow token
+# handles all pushes and PR operations. GHCR_TOKEN (a PAT with repo scope) is
+# used only to approve the update PR's Test run.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: update-devpanel-cli-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Check cached DevPanel CLI revision
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      sha: ${{ steps.upstream.outputs.sha }}
+      changed: ${{ steps.decision.outputs.changed }}
+    steps:
+      - name: Resolve upstream default branch HEAD
+        id: upstream
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          if [[ -z "${GITLAB_TOKEN}" ]]; then
+            echo "::error::GITLAB_TOKEN is required to read gitlab.com/devpanel-vn/cli."
+            exit 1
+          fi
+
+          auth=$(printf 'oauth2:%s' "${GITLAB_TOKEN}" | base64 -w0)
+          echo "::add-mask::${auth}"
+          head=$(git -c "http.https://gitlab.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+            ls-remote https://gitlab.com/devpanel-vn/cli.git HEAD)
+          sha=${head%%$'\t'*}
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Unable to resolve the GitLab CLI default branch HEAD through Git."
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "GitLab CLI default branch HEAD is ${sha}"
+
+      - name: Restore the built revision
+        id: revision-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/devpanel-cli-revision
+          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ steps.upstream.outputs.sha }}
+          lookup-only: true
+
+      - name: Decide whether to rebuild
+        id: decision
+        env:
+          CACHE_HIT: ${{ steps.revision-cache.outputs.cache-hit }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          if [[ "${CACHE_HIT}" == "true" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "GitLab CLI ${UPSTREAM_SHA} is already built for this branch."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "GitLab CLI ${UPSTREAM_SHA} has not been built for this branch."
+          fi
+
+  build:
+    name: Build devpanel (${{ matrix.arch }})
+    needs: plan
+    if: needs.plan.outputs.changed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-26.04
+          - arch: arm64
+            runner: ubuntu-26.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Fetch GitLab CLI
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          dest="${RUNNER_TEMP}/devpanel-cli"
+          mkdir "$dest"
+          auth=$(printf 'oauth2:%s' "${GITLAB_TOKEN}" | base64 -w0)
+          echo "::add-mask::${auth}"
+          git -C "$dest" init
+          git -C "$dest" remote add origin https://gitlab.com/devpanel-vn/cli.git
+          git -C "$dest" -c "http.https://gitlab.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+            fetch --depth 1 origin "$UPSTREAM_SHA"
+          git -C "$dest" checkout --detach FETCH_HEAD
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ runner.temp }}/devpanel-cli/go.mod
+          cache: false
+
+      - name: Build native client binary
+        working-directory: ${{ runner.temp }}/devpanel-cli
+        env:
+          ARCH: ${{ matrix.arch }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GIT_TERMINAL_PROMPT: "0"
+          GOPRIVATE: gitlab.com/devpanel-vn/*
+        run: |
+          set -euo pipefail
+          if [[ ! -d cmd/devpanel-client ]]; then
+            echo "::error::GitLab source does not contain cmd/devpanel-client; verify the client build path."
+            exit 1
+          fi
+          auth=$(printf 'oauth2:%s' "${GITLAB_TOKEN}" | base64 -w0)
+          echo "::add-mask::${auth}"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://gitlab.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}"
+          dest="${RUNNER_TEMP}/devpanel-${ARCH}"
+          env -u GOOS -u GOARCH CGO_ENABLED=0 \
+            go build -trimpath -o "$dest" ./cmd/devpanel-client
+          unset GITLAB_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 auth
+          chmod 0755 "$dest"
+          "$dest" version
+          "$dest" app trigger --help
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: devpanel-binary-${{ matrix.arch }}
+          path: ${{ runner.temp }}/devpanel-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  commit:
+    name: Commit devpanel binaries
+    needs: [plan, build]
+    if: needs.plan.outputs.changed == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Download amd64 binary
+        uses: actions/download-artifact@v8
+        with:
+          name: devpanel-binary-amd64
+          path: dist/amd64
+
+      - name: Download arm64 binary
+        uses: actions/download-artifact@v8
+        with:
+          name: devpanel-binary-arm64
+          path: dist/arm64
+
+      - name: Commit binaries
+        id: commit-binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          TARGET_BRANCH: ${{ github.ref_name }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          install -m 0755 dist/amd64/devpanel-amd64 base/bin/devpanel-amd64
+          install -m 0755 dist/arm64/devpanel-arm64 base/bin/devpanel-arm64
+          git add -- base/bin/devpanel-amd64 base/bin/devpanel-arm64
+          if git diff --cached --quiet; then
+            echo "Build produced no changes to commit."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit \
+              -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
+              -m "Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit."
+
+            commit_sha=$(git rev-parse HEAD)
+
+            if push_output=$(git push origin "${commit_sha}:refs/heads/${TARGET_BRANCH}" 2>&1); then
+              printf '%s\n' "${push_output}"
+            else
+              push_status=$?
+              printf '%s\n' "${push_output}"
+              if ! grep -Eiq 'GH006|GH013|protected branch|repository rule violations|required status check' <<< "${push_output}"; then
+                echo "::error::Direct push to ${TARGET_BRANCH} failed for a reason other than branch protection."
+                exit "${push_status}"
+              fi
+              if [[ -z "${TEST_TOKEN}" ]]; then
+                echo "::error::GHCR_TOKEN with repo scope is required to approve Test for protected-branch updates."
+                exit 1
+              fi
+              echo "::notice::Branch protection rejected the direct push to ${TARGET_BRANCH}; opening or updating a pull request."
+              target_hash=$(printf '%s' "${TARGET_BRANCH}" | sha256sum | cut -d ' ' -f 1)
+              branch="devpanel-cli-update-${target_hash}-${UPSTREAM_SHA:0:12}"
+              test_branch="${branch}"
+              pr=$(gh pr list \
+                --state all \
+                --base "${TARGET_BRANCH}" \
+                --head "${test_branch}" \
+                --limit 100 \
+                --json number,state,headRefName,headRepositoryOwner \
+                | jq -r --arg branch "${test_branch}" --arg owner "${REPOSITORY_OWNER}" \
+                  '.[] | select(.headRefName == $branch and .headRepositoryOwner.login == $owner and .state != "MERGED") | [.number, .state] | @tsv' \
+                | head -n 1)
+              title="Update DevPanel CLI binaries"
+              body="Updates the DevPanel CLI binaries from GitLab revision ${UPSTREAM_SHA}. The Test workflow validates the generated binaries after this pull request is created or updated."
+              if [[ -n "${pr}" ]]; then
+                read -r pr_number pr_state <<< "${pr}"
+                if [[ "${pr_state}" == "CLOSED" ]]; then
+                  gh pr reopen "${pr_number}"
+                fi
+                git push --force origin "HEAD:refs/heads/${branch}"
+                gh pr edit "${pr_number}" --title "${title}" --body "${body}"
+              else
+                git push --force origin "HEAD:refs/heads/${branch}"
+                gh pr create \
+                  --base "${TARGET_BRANCH}" \
+                  --head "${test_branch}" \
+                  --title "${title}" \
+                  --body "${body}"
+              fi
+              pr_number=$(gh pr view "${test_branch}" --json number --jq '.number')
+              test_run=""
+              for ((attempt = 0; attempt < 60; attempt++)); do
+                test_run=$(gh api --method GET \
+                  "repos/${GITHUB_REPOSITORY}/actions/workflows/test.yml/runs" \
+                  -f event=pull_request \
+                  -f branch="${test_branch}" \
+                  -f head_sha="${commit_sha}" \
+                  -f per_page=100 \
+                  --jq "[.workflow_runs[] | select(any(.pull_requests[]; .number == ${pr_number}))] | sort_by(.id) | last // empty")
+                if [[ -n "${test_run}" ]]; then
+                  break
+                fi
+                sleep 10
+              done
+              if [[ -z "${test_run}" ]]; then
+                echo "::error::Timed out waiting for the PR Test workflow run for ${commit_sha}."
+                exit 1
+              fi
+              test_run_id=$(jq -r '.id' <<< "${test_run}")
+              if [[ "$(jq -r '.conclusion' <<< "${test_run}")" == "action_required" ]]; then
+                GH_TOKEN="${TEST_TOKEN}" gh api --method POST \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${test_run_id}/approve"
+              fi
+
+              auto_merge=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.allow_auto_merge')
+              if [[ "${auto_merge}" == "true" ]]; then
+                gh pr merge "${test_branch}" \
+                  --rebase \
+                  --auto \
+                  --match-head-commit "${commit_sha}"
+              else
+                echo "::notice::Repository auto-merge is disabled; waiting for Test before attempting a rebase merge."
+                echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
+                timeout 21600 gh run watch "${test_run_id}" --exit-status --interval 30
+                gh pr merge "${test_branch}" \
+                  --rebase \
+                  --match-head-commit "${commit_sha}"
+              fi
+              merged_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
+                --jq 'select(.merged) | [.head.sha, .base.ref] | @tsv')
+              if [[ "${merged_pr}" != "${commit_sha}"$'\t'"${TARGET_BRANCH}" ]]; then
+                echo "::notice::Merge of ${commit_sha} into ${TARGET_BRANCH} is not confirmed; skipping the revision cache."
+                exit 0
+              fi
+            fi
+          fi
+          echo "cacheable=true" >> "$GITHUB_OUTPUT"
+
+      - name: Record the built revision
+        if: steps.commit-binaries.outputs.cacheable == 'true'
+        env:
+          UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/devpanel-cli-revision"
+          printf '%s\n' "${UPSTREAM_SHA}" > "${RUNNER_TEMP}/devpanel-cli-revision/sha"
+
+      - name: Save the built revision
+        if: steps.commit-binaries.outputs.cacheable == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/devpanel-cli-revision
+          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ needs.plan.outputs.sha }}
