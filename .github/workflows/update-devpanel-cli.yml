@@ -15,7 +15,7 @@ name: Update DevPanel CLI binaries
 # platform is skipped and the others still build. The updater saves those keys
 # after direct updates and confirmed merges; cache-devpanel-cli.yml handles
 # deferred auto-merges. The key is
-# gitlab-devpanel-client-v2-<ref>-<upstream sha>-<platform>, with slashes in
+# gitlab-devpanel-client-v1-<ref>-<upstream sha>-<platform>, with slashes in
 # the platform replaced by hyphens. Delete one platform's cache entry to
 # rebuild that binary for the same commit.
 #
@@ -122,7 +122,7 @@ jobs:
                 echo "::notice::${p} has no native runner; it will be cross-compiled and checked with QEMU."
                 ;;
             esac
-            cache_key="gitlab-devpanel-client-v2-${GITHUB_REF}-${UPSTREAM_SHA}-${platform_key}"
+            cache_key="gitlab-devpanel-client-v1-${GITHUB_REF}-${UPSTREAM_SHA}-${platform_key}"
             encoded_key=$(printf '%s' "${cache_key}" | jq -sRr @uri)
             encoded_ref=$(printf '%s' "${GITHUB_REF}" | jq -sRr @uri)
             payload=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100&key=${encoded_key}&ref=${encoded_ref}")
@@ -419,4 +419,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: gitlab-devpanel-client-v2-${{ github.ref }}-${{ needs.plan.outputs.sha }}-${{ matrix.platform }}
+          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ needs.plan.outputs.sha }}-${{ matrix.platform }}

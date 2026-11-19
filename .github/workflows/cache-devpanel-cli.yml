@@ -83,4 +83,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: gitlab-devpanel-client-v2-refs/heads/${{ github.event.pull_request.base.ref }}-${{ needs.cache.outputs.sha }}-${{ matrix.platform }}
+          key: gitlab-devpanel-client-v1-refs/heads/${{ github.event.pull_request.base.ref }}-${{ needs.cache.outputs.sha }}-${{ matrix.platform }}
