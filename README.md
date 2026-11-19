@@ -32,8 +32,8 @@ Each PHP version ships three layered variants.
 Release candidate tags end with `-rc` (e.g. `8.3-base-rc`).
 
 Each image includes the `devpanel` CLI built from
-[devpanel/cli](https://github.com/devpanel/cli) for its own architecture
-(`base/bin/devpanel-amd64` or `base/bin/devpanel-arm64`).
+[devpanel-vn/cli on GitLab](https://gitlab.com/devpanel-vn/cli) for its own
+architecture (`base/bin/devpanel-amd64` or `base/bin/devpanel-arm64`).
 
 Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3**
 
@@ -185,8 +185,8 @@ bash tests/cleanup-test-images.sh
 ```
 
 The image build copies the committed `base/bin/devpanel-amd64` or
-`base/bin/devpanel-arm64` binary from
-[devpanel/cli](https://github.com/devpanel/cli).
+`base/bin/devpanel-arm64` binary, which `update-devpanel-cli.yml` builds from
+[devpanel-vn/cli on GitLab](https://gitlab.com/devpanel-vn/cli).
 
 Build tests take several minutes per PHP version because the images download
 packages (code-server, composer, etc.).  Run a single version during
