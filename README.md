@@ -32,8 +32,10 @@ Each PHP version ships three layered variants.
 Release candidate tags end with `-rc` (e.g. `8.3-base-rc`).
 
 Each image includes the `devpanel` CLI built from
-[devpanel-vn/cli on GitLab](https://gitlab.com/devpanel-vn/cli) for its own
-architecture (`base/bin/devpanel-amd64` or `base/bin/devpanel-arm64`).
+[devpanel-vn/cli on GitLab](https://gitlab.com/devpanel-vn/cli). amd64 and
+arm64 images use their own binary (`base/bin/devpanel-amd64` or
+`base/bin/devpanel-arm64`). Any other architecture uses the amd64 binary
+and needs QEMU to run it.
 
 Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3**
 
@@ -291,10 +293,11 @@ for setup instructions.
 - The build workflow is `docker-build.yml`, which handles both push-triggered
   and manual dispatch builds.  It runs a detect → build (per-platform,
   parallel) → merge pipeline.  ARM64 builds use native `ubuntu-26.04-arm`
-  runners; AMD64 builds use `ubuntu-26.04`. Each image copies the committed
-  `devpanel` binary for its platform.
-  QEMU is set up only when the runner architecture differs from that
-  platform. Native AMD64 and ARM64 builds skip QEMU.
+  runners; AMD64 builds use `ubuntu-26.04`. amd64 and arm64 images copy
+  their own committed `devpanel` binary. Any other architecture uses the
+  amd64 binary. QEMU is set up for those architectures, and whenever the
+  runner cannot execute the target platform. Native AMD64 and ARM64 builds
+  skip QEMU.
 - `update-devpanel-cli.yml` rebuilds `base/bin/devpanel-amd64` and
   `base/bin/devpanel-arm64` from the latest
   [GitLab CLI repository](https://gitlab.com/devpanel-vn/cli) default branch

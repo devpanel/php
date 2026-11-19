@@ -313,3 +313,13 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - The plan job gets the upstream default-branch HEAD using the same authenticated Git access required by the build.
 - Documentation no longer requires `read_api` for the updater.
 - Focused validation passes and changed files contain no secrets.
+
+# Task: Fall back to the amd64 DevPanel CLI
+
+## Steps
+- [x] Use `devpanel-amd64` when `TARGETARCH` is neither amd64 nor arm64.
+- [x] Register QEMU for those platforms so the amd64 binary can run.
+
+## Definition of Done
+- amd64 and arm64 images install their own binary.
+- Every other architecture installs `devpanel-amd64` and the image build registers QEMU.
