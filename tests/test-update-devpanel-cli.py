@@ -104,16 +104,21 @@ class UpdaterTest(unittest.TestCase):
                     test_status=0, no_run=False, token="pat", merge_status=0,
                     auto_merge=False, run_conclusion="action_required",
                     approval_status=0, pr_merged=True, merged_head="",
-                    merged_base="main"):
+                    merged_base="main", layout="nested"):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             subprocess.run([REAL_GIT, "init", "-q", str(work)], check=True)
-            for name in ("devpanel-amd64", "devpanel-arm64"):
+            names = ("devpanel-amd64",) if layout == "flat" else ("devpanel-amd64", "devpanel-arm64")
+            for name in names:
                 destination = work / "base/bin" / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text("old")
                 destination.chmod(0o755)
-                artifact = work / "dist" / name.split("-")[1] / name
+                arch = name.split("-", 1)[1]
+                if layout == "flat":
+                    artifact = work / "dist" / name
+                else:
+                    artifact = work / "dist" / f"devpanel-binary-{arch}" / name
                 artifact.parent.mkdir(parents=True, exist_ok=True)
                 artifact.write_text("new" if changed else "old")
             subprocess.run([REAL_GIT, "-C", str(work), "add", "base"], check=True)
@@ -140,7 +145,9 @@ class UpdaterTest(unittest.TestCase):
                        TEST_TOKEN=token,
                        TARGET_BRANCH="main", REPOSITORY_OWNER="devpanel",
                        UPSTREAM_SHA="a" * 40,
-                       BUILT_PLATFORMS='["linux-amd64","linux-arm64"]',
+                       BUILT_PLATFORMS=json.dumps([
+                           f"linux-{name.split('-', 1)[1]}" for name in names
+                       ]),
                        UPDATE_BRANCH=branch,
                        PROTECTED=str(int(protected)), PR_STATE=state,
                        TEST_STATUS=str(test_status), NO_RUN=str(int(no_run)),
@@ -233,6 +240,12 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output, "cacheable=true\n")
         self.assertFalse(any(tool == "gh" or "push" in args for tool, args, _ in calls))
+
+    def test_flat_single_artifact_is_installed(self):
+        result, calls, output = self.run_updater(layout="flat", protected=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, "cacheable=true\n")
+        self.assertTrue(any(tool == "git" and "push" in args for tool, args, _ in calls))
 
     def test_failed_tests_fail_the_step(self):
         result, calls, output = self.run_updater(test_status=1)

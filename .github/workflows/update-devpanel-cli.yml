@@ -4,7 +4,9 @@ name: Update DevPanel CLI binaries
 # platforms input selects the list for that run. An empty input uses the
 # PLATFORMS repository variable, or linux/amd64,linux/arm64 when that variable
 # is unset. linux/amd64 builds on ubuntu-26.04 and linux/arm64 builds on
-# ubuntu-26.04-arm. Other platforms build on ubuntu-26.04 with QEMU.
+# ubuntu-26.04-arm. Other architectures build on ubuntu-26.04 with QEMU.
+# Variants of one architecture share one binary. 32-bit ARM is built with
+# GOARM=5 so base/bin/devpanel-arm runs on v5, v6, and v7.
 #
 # Run it manually on a branch. The workflow pushes directly to unprotected
 # branches. If branch protection rejects that push, it opens or updates a pull
@@ -15,9 +17,9 @@ name: Update DevPanel CLI binaries
 # platform is skipped and the others still build. The updater saves those keys
 # after direct updates and confirmed merges; cache-devpanel-cli.yml handles
 # deferred auto-merges. The key is
-# gitlab-devpanel-client-v1-<ref>-<upstream sha>-<platform>, with slashes in
-# the platform replaced by hyphens. Delete one platform's cache entry to
-# rebuild that binary for the same commit.
+# gitlab-devpanel-client-v1-<ref>-<upstream sha>-linux-<arch>, for example
+# linux-amd64 or linux-arm. Delete one architecture's cache entry to rebuild
+# that binary for the same commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
@@ -84,9 +86,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          entries=()
-          seen=" "
-          selected=0
+          declare -A arch_goarm=()
+          declare -A arch_qemu_noted=()
+          order=()
           IFS=',' read -ra plats <<< "${RAW_PLATFORMS}"
           for p in "${plats[@]}"; do
             p="${p// /}"
@@ -97,29 +99,42 @@ jobs:
             esac
             rest="${p#linux/}"
             arch="${rest%%/*}"
-            if [[ "${seen}" == *" ${arch} "* ]]; then
-              echo "::warning title=Duplicate devpanel architecture::${p} also maps to ${arch}; keeping the first platform."
-              continue
-            fi
-            seen="${seen}${arch} "
-            platform_key="${p//\//-}"
-            if [[ ! "${platform_key}" =~ ^linux(-[a-z0-9]+)+$ ]]; then
+            platform_key="linux-${arch}"
+            if [[ "${p}" != linux/* || -z "${arch}" || ! "${platform_key}" =~ ^linux(-[a-z0-9]+)+$ ]]; then
               echo "::error::Unsupported platform ${p}."
               exit 1
             fi
-            selected=$((selected + 1))
-            goarm=""
-            variant="${rest#*/}"
-            if [[ "${rest}" == */* && "${arch}" == "arm" && "${variant}" == v* ]]; then
-              goarm="${variant#v}"
+            if [[ -z "${arch_goarm[${arch}]+x}" ]]; then
+              order+=("${arch}")
+              arch_goarm["${arch}"]=""
             fi
+            if [[ "${arch}" == "arm" ]]; then
+              if [[ -z "${arch_goarm[${arch}]}" ]]; then
+                echo "::notice::32-bit ARM platforms share base/bin/devpanel-arm, built with GOARM=5 so it runs on v5, v6, and v7."
+              fi
+              arch_goarm["${arch}"]=5
+            elif [[ "${rest}" == */* ]]; then
+              echo "::notice::${p} uses the shared ${arch} binary at its lowest compatible level."
+            fi
+          done
+          if [[ "${#order[@]}" -eq 0 ]]; then
+            echo "::error::No platforms were selected."
+            exit 1
+          fi
+          entries=()
+          for arch in "${order[@]}"; do
+            platform_key="linux-${arch}"
+            goarm="${arch_goarm[${arch}]}"
             case "${arch}" in
               amd64) runner="ubuntu-26.04"; qemu=false ;;
               arm64) runner="ubuntu-26.04-arm"; qemu=false ;;
               *)
                 runner="ubuntu-26.04"
                 qemu=true
-                echo "::notice::${p} has no native runner; it will be cross-compiled and checked with QEMU."
+                if [[ -z "${arch_qemu_noted[${arch}]+x}" ]]; then
+                  echo "::notice::${platform_key} has no native runner; it will be cross-compiled and checked with QEMU."
+                  arch_qemu_noted["${arch}"]=1
+                fi
                 ;;
             esac
             cache_key="gitlab-devpanel-client-v1-${GITHUB_REF}-${UPSTREAM_SHA}-${platform_key}"
@@ -140,10 +155,6 @@ jobs:
               --argjson qemu "${qemu}" \
               '{arch:$arch,platform:$platform,runner:$runner,qemu:$qemu,goarm:$goarm}')")
           done
-          if [[ "${selected}" -eq 0 ]]; then
-            echo "::error::No platforms were selected."
-            exit 1
-          fi
           if [[ "${#entries[@]}" -eq 0 ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "builds=[]" >> "$GITHUB_OUTPUT"
@@ -221,9 +232,9 @@ jobs:
           build_env=(CGO_ENABLED=0)
           if [[ "${QEMU}" == "true" ]]; then
             build_env+=(GOOS=linux GOARCH="${ARCH}")
-            if [[ -n "${GOARM_VALUE}" ]]; then
-              build_env+=(GOARM="${GOARM_VALUE}")
-            fi
+          fi
+          if [[ -n "${GOARM_VALUE}" ]]; then
+            build_env+=(GOARM="${GOARM_VALUE}")
           fi
           env -u GOOS -u GOARCH -u GOARM "${build_env[@]}" \
             go build -trimpath -o "$dest" ./cmd/devpanel-client
@@ -262,6 +273,7 @@ jobs:
         with:
           pattern: devpanel-binary-*
           path: dist
+          merge-multiple: "true"
 
       - name: Commit binaries
         id: commit-binaries
@@ -275,7 +287,20 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          binaries=(dist/*/devpanel-*)
+          # One downloaded artifact is extracted directly into dist/. Several
+          # artifacts use dist/<artifact>/ unless merge-multiple flattens them.
+          candidates=(dist/*/devpanel-* dist/devpanel-*)
+          binaries=()
+          seen_bins=" "
+          for candidate in "${candidates[@]}"; do
+            [[ -f "${candidate}" ]] || continue
+            name="$(basename "${candidate}")"
+            if [[ "${seen_bins}" == *" ${name} "* ]]; then
+              continue
+            fi
+            seen_bins="${seen_bins}${name} "
+            binaries+=("${candidate}")
+          done
           if [[ "${#binaries[@]}" -eq 0 ]]; then
             echo "::error::No devpanel binaries were downloaded."
             exit 1
