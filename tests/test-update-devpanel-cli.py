@@ -240,8 +240,14 @@ class UpdaterTest(unittest.TestCase):
                 self.assertEqual(output, "")
 
     def test_unconfirmed_merge_is_not_cached(self):
-        for options in ({"pr_merged": False}, {"merged_head": "b" * 40},
-                        {"merged_base": "develop"}):
+        for options in (
+            {"pr_merged": False},
+            {"merged_head": "b" * 40},
+            {"merged_base": "develop"},
+            {"pr_merged": False, "auto_merge": True},
+            {"merged_head": "b" * 40, "auto_merge": True},
+            {"merged_base": "develop", "auto_merge": True},
+        ):
             with self.subTest(**options):
                 result, _, output = self.run_updater(**options)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -255,7 +261,7 @@ class UpdaterTest(unittest.TestCase):
                     state=state, auto_merge=True, test_status=1,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output, "")
+                self.assertEqual(output, "cacheable=true\n")
                 self.assertFalse(any(tool in ("sleep", "timeout")
                                      or (tool == "gh" and args[0] == "run")
                                      for tool, args, _ in calls))
@@ -267,8 +273,6 @@ class UpdaterTest(unittest.TestCase):
                 self.assertEqual(approval_token, "pat")
                 self.assertFalse(any(args[:2] == ["workflow", "run"]
                                      for args, _ in gh))
-                self.assertFalse(any(args[:2] == ["api", "repos/devpanel/php/pulls/42"]
-                                     for args, _ in gh))
                 merges = [(i, args, token) for i, (args, token) in enumerate(gh)
                           if args[:2] == ["pr", "merge"]]
                 self.assertEqual(len(merges), 1)
@@ -278,6 +282,12 @@ class UpdaterTest(unittest.TestCase):
                 self.assertIn("--rebase", merge_args)
                 self.assertIn("--auto", merge_args)
                 self.assertNotIn("--admin", merge_args)
+                confirmation_indices = [
+                    i for i, (args, _) in enumerate(gh)
+                    if args[:2] == ["api", "repos/devpanel/php/pulls/42"]
+                ]
+                self.assertEqual(len(confirmation_indices), 1)
+                self.assertLess(merge_index, confirmation_indices[0])
                 pushed_sha = next(
                     args[-1].split(":")[0] for tool, args, _ in calls
                     if tool == "git" and "push" in args
@@ -288,6 +298,17 @@ class UpdaterTest(unittest.TestCase):
                 )
                 self.assertTrue(all(token == "workflow-token" for args, token in gh
                                     if not args[-1].endswith("/approve")))
+
+    def test_deferred_auto_merge_is_not_cached_or_waited_for(self):
+        result, calls, output = self.run_updater(
+            auto_merge=True, test_status=1, pr_merged=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, "")
+        self.assertIn("is not confirmed", result.stdout)
+        self.assertFalse(any(tool in ("sleep", "timeout")
+                             or (tool == "gh" and args[0] == "run")
+                             for tool, args, _ in calls))
 
     def test_already_running_or_finished_test_is_not_approved_again(self):
         for conclusion in ("null", "success", "failure"):

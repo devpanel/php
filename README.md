@@ -312,13 +312,14 @@ for setup instructions.
   If branch protection rejects the direct push, it opens or updates a CLI PR,
   finds the PR's Test run for the generated head SHA, and approves it using
   `GHCR_TOKEN` (a PAT with `repo` scope). With auto-merge enabled, it requests
-  rebase auto-merge and exits without waiting for tests to finish; otherwise it
-  watches the PR test before merging and saves the revision cache once it
-  confirms the tested commit merged into the target branch. This does not rely
-  on a PR event from the workflow token. `cache-devpanel-cli.yml` handles merged
-  PR events, including when auto-merge completes after the updater exits. It
-  validates the bot-authored update's commit metadata and branch name without
-  checking out PR code.
+  rebase auto-merge and exits without waiting for tests to finish. It confirms
+  and caches an immediate merge; otherwise it leaves deferred caching to
+  `cache-devpanel-cli.yml`, which handles merged PR events after the updater
+  exits. With auto-merge disabled, it watches the PR test before merging and
+  saves the revision cache only after confirming the tested commit merged into
+  the target branch. The updater does not rely on a PR event from the workflow
+  token. The cache workflow validates the bot-authored update's commit metadata
+  and branch name without checking out PR code.
 - The `advance` variant depends on `secure`, which depends on `base`. The build
   chain is enforced via the bake target dependency graph.
 

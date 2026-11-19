@@ -2,6 +2,20 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Cache immediately merged CLI auto-merge PRs
+
+## Steps
+- [x] Inspect updater control flow, existing tests, and repository validation commands.
+- [x] Confirm merged-PR cache creation after either synchronous merge path while leaving deferred auto-merge nonblocking.
+- [x] Add regression coverage and update workflow documentation/TODO.
+- [x] Run focused tests and relevant workflow validation; scan changed files for secrets.
+- [ ] Run CodeQL and review the final diff.
+
+## Definition of Done
+- An auto-merge request that completes synchronously is confirmed against the expected PR head and target branch before caching.
+- Deferred auto-merges still exit without waiting and do not cache until a subsequent merge event.
+- Focused validation passes and changed files contain no secrets.
+
 # Task: Reopen closed CLI update PRs before force-push
 
 ## Steps

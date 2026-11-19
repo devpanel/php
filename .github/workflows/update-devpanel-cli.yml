@@ -10,8 +10,8 @@ name: Update DevPanel CLI binaries
 # run. When repository auto-merge is enabled, it requests rebase auto-merge and
 # exits without waiting. Otherwise it waits for Test before attempting a rebase
 # merge. The updater records the upstream default branch HEAD in the Actions
-# cache after direct updates and confirmed non-auto-merges; cache-devpanel-cli.yml
-# handles merged PR events. Delete that cache entry to rebuild the same commit.
+# cache after direct updates and confirmed merges; cache-devpanel-cli.yml handles
+# deferred auto-merges. Delete that cache entry to rebuild the same commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
@@ -282,7 +282,6 @@ jobs:
                   --rebase \
                   --auto \
                   --match-head-commit "${commit_sha}"
-                exit 0
               else
                 echo "::notice::Repository auto-merge is disabled; waiting for Test before attempting a rebase merge."
                 echo "Waiting for Test workflow run ${test_run_id} on ${test_branch}."
@@ -290,13 +289,12 @@ jobs:
                 gh pr merge "${test_branch}" \
                   --rebase \
                   --match-head-commit "${commit_sha}"
-                # The workflow token's merge does not trigger the cache workflow.
-                merged_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
-                  --jq 'select(.merged) | [.head.sha, .base.ref] | @tsv')
-                if [[ "${merged_pr}" != "${commit_sha}"$'\t'"${TARGET_BRANCH}" ]]; then
-                  echo "::notice::Merge of ${commit_sha} into ${TARGET_BRANCH} is not confirmed; skipping the revision cache."
-                  exit 0
-                fi
+              fi
+              merged_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
+                --jq 'select(.merged) | [.head.sha, .base.ref] | @tsv')
+              if [[ "${merged_pr}" != "${commit_sha}"$'\t'"${TARGET_BRANCH}" ]]; then
+                echo "::notice::Merge of ${commit_sha} into ${TARGET_BRANCH} is not confirmed; skipping the revision cache."
+                exit 0
               fi
             fi
           fi
