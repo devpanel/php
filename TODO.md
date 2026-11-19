@@ -9,7 +9,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Confirm merged-PR cache creation after either synchronous merge path while leaving deferred auto-merge nonblocking.
 - [x] Add regression coverage and update workflow documentation/TODO.
 - [x] Run focused tests and relevant workflow validation; scan changed files for secrets.
-- [ ] Run CodeQL and review the final diff.
+- [x] Run CodeQL and review the final diff.
 
 ## Definition of Done
 - An auto-merge request that completes synchronously is confirmed against the expected PR head and target branch before caching.
