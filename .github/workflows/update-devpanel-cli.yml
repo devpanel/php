@@ -1,8 +1,10 @@
 name: Update DevPanel CLI binaries
 
-# Build linux/amd64 and linux/arm64 devpanel binaries from
-# https://gitlab.com/devpanel-vn/cli and commit
-# base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
+# Build devpanel binaries from https://gitlab.com/devpanel-vn/cli for the
+# platforms in the PLATFORMS repository variable, or linux/amd64,linux/arm64
+# when that variable is unset. linux/amd64 builds on ubuntu-26.04 and
+# linux/arm64 builds on ubuntu-26.04-arm. Other platforms build on
+# ubuntu-26.04 with QEMU.
 #
 # Run it manually on a branch. The workflow pushes directly to unprotected
 # branches. If branch protection rejects that push, it opens or updates a pull
@@ -37,6 +39,7 @@ jobs:
     outputs:
       sha: ${{ steps.upstream.outputs.sha }}
       changed: ${{ steps.decision.outputs.changed }}
+      builds: ${{ steps.platforms.outputs.builds }}
     steps:
       - name: Resolve upstream default branch HEAD
         id: upstream
@@ -84,6 +87,58 @@ jobs:
             echo "GitLab CLI ${UPSTREAM_SHA} has not been built for this branch."
           fi
 
+      - name: Select build platforms
+        id: platforms
+        env:
+          RAW_PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
+        run: |
+          set -euo pipefail
+          entries=()
+          seen=" "
+          IFS=',' read -ra plats <<< "${RAW_PLATFORMS}"
+          for p in "${plats[@]}"; do
+            p="${p// /}"
+            [[ -z "${p}" ]] && continue
+            case "${p}" in
+              linux/arm64/v8) p="linux/arm64" ;;
+              linux/amd64/v1) p="linux/amd64" ;;
+            esac
+            rest="${p#linux/}"
+            arch="${rest%%/*}"
+            if [[ "${seen}" == *" ${arch} "* ]]; then
+              echo "::warning title=Duplicate devpanel architecture::${p} also maps to ${arch}; keeping the first platform."
+              continue
+            fi
+            seen="${seen}${arch} "
+            goarm=""
+            variant="${rest#*/}"
+            if [[ "${rest}" == */* && "${arch}" == "arm" && "${variant}" == v* ]]; then
+              goarm="${variant#v}"
+            fi
+            case "${arch}" in
+              amd64) runner="ubuntu-26.04"; qemu=false ;;
+              arm64) runner="ubuntu-26.04-arm"; qemu=false ;;
+              *)
+                runner="ubuntu-26.04"
+                qemu=true
+                echo "::notice::${p} has no native runner; it will be cross-compiled and checked with QEMU."
+                ;;
+            esac
+            entries+=("$(jq -nc \
+              --arg arch "${arch}" \
+              --arg runner "${runner}" \
+              --arg goarm "${goarm}" \
+              --argjson qemu "${qemu}" \
+              '{arch:$arch,runner:$runner,qemu:$qemu,goarm:$goarm}')")
+          done
+          if [[ "${#entries[@]}" -eq 0 ]]; then
+            echo "::error::PLATFORMS did not contain a platform."
+            exit 1
+          fi
+          matrix="$(printf '%s\n' "${entries[@]}" | jq -sc '.')"
+          echo "builds=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "Building ${matrix}"
+
   build:
     name: Build devpanel (${{ matrix.arch }})
     needs: plan
@@ -91,11 +146,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-26.04
-          - arch: arm64
-            runner: ubuntu-26.04-arm
+        include: ${{ fromJSON(needs.plan.outputs.builds) }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -117,16 +168,22 @@ jobs:
             fetch --depth 1 origin "$UPSTREAM_SHA"
           git -C "$dest" checkout --detach FETCH_HEAD
 
+      - name: Set up QEMU
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@v4
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: ${{ runner.temp }}/devpanel-cli/go.mod
           cache: false
 
-      - name: Build native client binary
+      - name: Build client binary
         working-directory: ${{ runner.temp }}/devpanel-cli
         env:
           ARCH: ${{ matrix.arch }}
+          QEMU: ${{ matrix.qemu }}
+          GOARM_VALUE: ${{ matrix.goarm }}
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
           GIT_TERMINAL_PROMPT: "0"
           GOPRIVATE: gitlab.com/devpanel-vn/*
@@ -142,7 +199,14 @@ jobs:
           export GIT_CONFIG_KEY_0=http.https://gitlab.com/.extraheader
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}"
           dest="${RUNNER_TEMP}/devpanel-${ARCH}"
-          env -u GOOS -u GOARCH CGO_ENABLED=0 \
+          build_env=(CGO_ENABLED=0)
+          if [[ "${QEMU}" == "true" ]]; then
+            build_env+=(GOOS=linux GOARCH="${ARCH}")
+            if [[ -n "${GOARM_VALUE}" ]]; then
+              build_env+=(GOARM="${GOARM_VALUE}")
+            fi
+          fi
+          env -u GOOS -u GOARCH -u GOARM "${build_env[@]}" \
             go build -trimpath -o "$dest" ./cmd/devpanel-client
           unset GITLAB_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 auth
           chmod 0755 "$dest"
@@ -172,17 +236,11 @@ jobs:
         with:
           ref: ${{ github.ref }}
 
-      - name: Download amd64 binary
+      - name: Download binaries
         uses: actions/download-artifact@v8
         with:
-          name: devpanel-binary-amd64
-          path: dist/amd64
-
-      - name: Download arm64 binary
-        uses: actions/download-artifact@v8
-        with:
-          name: devpanel-binary-arm64
-          path: dist/arm64
+          pattern: devpanel-binary-*
+          path: dist
 
       - name: Commit binaries
         id: commit-binaries
@@ -194,9 +252,21 @@ jobs:
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
         run: |
           set -euo pipefail
-          install -m 0755 dist/amd64/devpanel-amd64 base/bin/devpanel-amd64
-          install -m 0755 dist/arm64/devpanel-arm64 base/bin/devpanel-arm64
-          git add -- base/bin/devpanel-amd64 base/bin/devpanel-arm64
+          shopt -s nullglob
+          binaries=(dist/*/devpanel-*)
+          if [[ "${#binaries[@]}" -eq 0 ]]; then
+            echo "::error::No devpanel binaries were downloaded."
+            exit 1
+          fi
+          paths=()
+          labels=()
+          for binary in "${binaries[@]}"; do
+            name="$(basename "${binary}")"
+            install -m 0755 "${binary}" "base/bin/${name}"
+            paths+=("base/bin/${name}")
+            labels+=("${name#devpanel-}")
+          done
+          git add -- "${paths[@]}"
           if git diff --cached --quiet; then
             echo "Build produced no changes to commit."
           else
@@ -204,7 +274,7 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit \
               -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
-              -m "Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit."
+              -m "Built ${labels[*]} from cmd/devpanel-client at that commit."
 
             commit_sha=$(git rev-parse HEAD)
 

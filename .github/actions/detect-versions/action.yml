@@ -392,6 +392,33 @@ runs:
           exit 1
         fi
 
+        # Image builds copy a native devpanel binary. A platform without one
+        # is skipped so the workflow does not fail inside the Dockerfile.
+        filtered_platforms=()
+        for p in "${PLATFORM_LIST[@]}"; do
+          arch="${p#linux/}"
+          arch="${arch%%/*}"
+          if [[ -f "base/bin/devpanel-${arch}" ]]; then
+            filtered_platforms+=("${p}")
+          else
+            echo "::warning title=Missing native devpanel binary::Skipping ${p} because base/bin/devpanel-${arch} is not in the repository."
+          fi
+        done
+        if [[ "${#filtered_platforms[@]}" -eq 0 ]]; then
+          echo "::warning title=Image build skipped::No configured platform has a native devpanel binary, so the image build is skipped."
+          echo "versions=" >> "$GITHUB_OUTPUT"
+          echo "versions_base=" >> "$GITHUB_OUTPUT"
+          echo "versions_secure=" >> "$GITHUB_OUTPUT"
+          echo "all_versions=" >> "$GITHUB_OUTPUT"
+          echo "all_versions_count=0" >> "$GITHUB_OUTPUT"
+          echo "merge_matrix=[]" >> "$GITHUB_OUTPUT"
+          echo "build_matrix=[]" >> "$GITHUB_OUTPUT"
+          echo "build_matrix_length=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        PLATFORM_LIST=("${filtered_platforms[@]}")
+        TOTAL_PLATFORMS="${#PLATFORM_LIST[@]}"
+
         # Normalize BEFORE_SHAS to a single compact JSON object up-front so
         # that both the count check and per-platform lookups operate on the same
         # validated, single-document value. jq -sc slurps all stdin, takes the

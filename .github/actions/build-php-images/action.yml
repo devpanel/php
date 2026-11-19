@@ -113,11 +113,11 @@ runs:
         username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
         password: ${{ inputs.ghcr_user && inputs.ghcr_token || inputs.github_token }}
 
-    # Native amd64 and arm64 builds skip QEMU. Any other platform uses the
-    # amd64 devpanel CLI, so QEMU must be registered to execute it. QEMU is
-    # also required when this runner cannot execute the target architecture.
+    # QEMU is required only when this runner cannot execute the target
+    # platform. linux/amd64 uses ubuntu-26.04 and linux/arm64 uses
+    # ubuntu-26.04-arm, so those native builds skip QEMU.
     - name: Set up QEMU
-      if: ${{ !(startsWith(inputs.platform, 'linux/amd64') || startsWith(inputs.platform, 'linux/arm64')) || (runner.arch == 'X64' && !startsWith(inputs.platform, 'linux/amd64')) || (runner.arch == 'ARM64' && !startsWith(inputs.platform, 'linux/arm64')) }}
+      if: ${{ (runner.arch == 'X64' && !startsWith(inputs.platform, 'linux/amd64')) || (runner.arch == 'ARM64' && !startsWith(inputs.platform, 'linux/arm64')) }}
       uses: docker/setup-qemu-action@v4
 
     - name: Set up Docker Buildx

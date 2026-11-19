@@ -296,18 +296,10 @@ RUN a2enmod rewrite remoteip headers
 # Per-version Dockerfiles may overlay version-specific files on top.
 # devpanel-$TARGETARCH is the CLI for this image, built from
 # https://gitlab.com/devpanel-vn/cli (package cmd/devpanel-client).
-# amd64 and arm64 use their own binary. Any other architecture uses the
-# amd64 binary, which requires QEMU user-mode emulation to execute.
+# The build fails when that native binary is not in the repository.
 ARG TARGETARCH
-RUN --mount=type=bind,from=common,source=bin,target=/tmp/devpanel,readonly \
-    set -eu; \
-    if [ -f "/tmp/devpanel/devpanel-${TARGETARCH}" ]; then \
-      cp "/tmp/devpanel/devpanel-${TARGETARCH}" /usr/local/bin/devpanel; \
-    else \
-      cp /tmp/devpanel/devpanel-amd64 /usr/local/bin/devpanel; \
-    fi; \
-    chmod +x /usr/local/bin/devpanel; \
-    devpanel version
+COPY --from=common bin/devpanel-${TARGETARCH} /usr/local/bin/devpanel
+RUN chmod +x /usr/local/bin/devpanel && devpanel version
 COPY --from=common templates /templates
 COPY --from=common scripts   /scripts
 COPY --from=common drush     /drush

@@ -314,12 +314,15 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - Documentation no longer requires `read_api` for the updater.
 - Focused validation passes and changed files contain no secrets.
 
-# Task: Fall back to the amd64 DevPanel CLI
+# Task: Require a native DevPanel CLI binary
 
 ## Steps
-- [x] Use `devpanel-amd64` when `TARGETARCH` is neither amd64 nor arm64.
-- [x] Register QEMU for those platforms so the amd64 binary can run.
+- [x] Copy `devpanel-${TARGETARCH}` and fail the image build when it is missing.
+- [x] Register QEMU only for a target platform with no matching runner.
+- [x] Skip an image-build platform and warn when its native binary is absent.
+- [x] Build the updater matrix from `PLATFORMS`, using QEMU when that platform has no native runner.
 
 ## Definition of Done
-- amd64 and arm64 images install their own binary.
-- Every other architecture installs `devpanel-amd64` and the image build registers QEMU.
+- amd64 and arm64 images install their own binary and skip QEMU on matching runners.
+- A platform without `base/bin/devpanel-${TARGETARCH}` is omitted from the image build with a warning.
+- `update-devpanel-cli.yml` builds `vars.PLATFORMS` or `linux/amd64,linux/arm64`.

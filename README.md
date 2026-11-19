@@ -31,11 +31,10 @@ Each PHP version ships three layered variants.
 
 Release candidate tags end with `-rc` (e.g. `8.3-base-rc`).
 
-Each image includes the `devpanel` CLI built from
-[devpanel-vn/cli on GitLab](https://gitlab.com/devpanel-vn/cli). amd64 and
-arm64 images use their own binary (`base/bin/devpanel-amd64` or
-`base/bin/devpanel-arm64`). Any other architecture uses the amd64 binary
-and needs QEMU to run it.
+Each image includes the native `devpanel` CLI built from
+[devpanel-vn/cli on GitLab](https://gitlab.com/devpanel-vn/cli)
+(`base/bin/devpanel-${TARGETARCH}`). The image build fails when that
+binary is not available.
 
 Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3**
 
@@ -186,9 +185,10 @@ removed).  To remove all `devpanel-php-test:*` images at once, run:
 bash tests/cleanup-test-images.sh
 ```
 
-The image build copies the committed `base/bin/devpanel-amd64` or
-`base/bin/devpanel-arm64` binary, which `update-devpanel-cli.yml` builds from
-[devpanel-vn/cli on GitLab](https://gitlab.com/devpanel-vn/cli).
+The image build copies the committed native binary
+`base/bin/devpanel-${TARGETARCH}`, which `update-devpanel-cli.yml` builds
+from [devpanel-vn/cli on GitLab](https://gitlab.com/devpanel-vn/cli). A
+platform whose binary is missing is skipped with a warning.
 
 Build tests take several minutes per PHP version because the images download
 packages (code-server, composer, etc.).  Run a single version during
@@ -293,29 +293,33 @@ for setup instructions.
 - The build workflow is `docker-build.yml`, which handles both push-triggered
   and manual dispatch builds.  It runs a detect → build (per-platform,
   parallel) → merge pipeline.  ARM64 builds use native `ubuntu-26.04-arm`
-  runners; AMD64 builds use `ubuntu-26.04`. amd64 and arm64 images copy
-  their own committed `devpanel` binary. Any other architecture uses the
-  amd64 binary. QEMU is set up for those architectures, and whenever the
-  runner cannot execute the target platform. Native AMD64 and ARM64 builds
-  skip QEMU.
-- `update-devpanel-cli.yml` rebuilds `base/bin/devpanel-amd64` and
-  `base/bin/devpanel-arm64` from the latest
+  runners; AMD64 builds use `ubuntu-26.04`. Each image copies
+  `base/bin/devpanel-${TARGETARCH}` and fails when that file is missing.
+  The workflow skips a platform and warns when its native binary is absent.
+  QEMU is set up only for a target platform that has no matching runner.
+  Native AMD64 and ARM64 builds skip QEMU.
+- `update-devpanel-cli.yml` rebuilds one `base/bin/devpanel-$arch` binary
+  per platform in the `PLATFORMS` repository variable, or
+  `linux/amd64,linux/arm64` when that variable is unset, from the latest
   [GitLab CLI repository](https://gitlab.com/devpanel-vn/cli) default branch
-  HEAD. Run it manually on a branch; tags are left unchanged. Each native build
-  compiles `cmd/devpanel-client` for Linux with CGO disabled. This client path
-  is based on the existing binary's metadata and must be confirmed against the
-  GitLab source. Both builds use the same resolved commit and the Go version
-  from its `go.mod`. The workflow caches the revision per destination branch
-  only after both binaries reach that branch, and skips subsequent builds on a
-  cache hit. Delete that cache entry to rebuild the same commit. A new run
-  cancels one already in progress. Set the `GITLAB_TOKEN` repository secret to
-  a GitLab access token with `read_repository` access. The workflow
-  authenticates Git requests with GitLab's `oauth2` username. The workflow
+  HEAD. Run it manually on a branch; tags are left unchanged. `linux/amd64`
+  builds on `ubuntu-26.04` and `linux/arm64` builds on `ubuntu-26.04-arm`.
+  A platform without a matching runner is cross-compiled on `ubuntu-26.04`
+  and checked with QEMU. Each build compiles `cmd/devpanel-client` for Linux
+  with CGO disabled. This client path is based on the existing binary's
+  metadata and must be confirmed against the GitLab source. Every build uses
+  the same resolved commit and the Go version from its `go.mod`. The workflow
+  caches the revision per destination branch only after the built binaries
+  reach that branch, and skips subsequent builds on a cache hit. Delete that
+  cache entry to rebuild the same commit. A new run cancels one already in
+  progress. Set the `GITLAB_TOKEN` repository secret to a GitLab access token
+  with `read_repository` access. The workflow authenticates Git requests with
+  GitLab's `oauth2` username. The workflow
   resolves the default-branch HEAD using authenticated Git access, so it does
   not require GitLab API access. The workflow token commits the binaries.
   GitLab credentials are scoped to GitLab Git requests and not stored in global
-  Git configuration. The checkout is placed outside this repository. AMD64 and
-  ARM64 binaries build in parallel on `ubuntu-26.04` and `ubuntu-26.04-arm`.
+  Git configuration. The checkout is placed outside this repository, and the
+  selected platforms build in parallel.
   This workflow does not change which binary the Dockerfile copies into images.
   If branch protection rejects the direct push, it opens or updates a CLI PR,
   finds the PR's Test run for the generated head SHA, and approves it using
