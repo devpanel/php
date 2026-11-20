@@ -7,15 +7,15 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 ## Steps
 - [x] Confirm an official `php:8.6-apache` tag exists (PHP 8.6.0 GA, not an RC).
 - [x] Compare PHP 8.6 with the 8.5 overlay. No removed PHP extensions and no Debian 11 secure-stage tweak. Official `php:8.6-apache` is ZTS, omits mbstring, and no longer ships PEAR/PECL. gd/avif and Composer self-update stay the same. Released PECL redis 6.3.0, yaml 2.3.0, memcached 3.4.0, igbinary 3.2.16, Xdebug 3.5.3, and Imagick 3.8.1 do not compile on PHP 8.6.
-- [x] Add `8.6/base/Dockerfile` from the 8.5 overlay, plus mbstring (libonig-dev) and pinned unreleased commits for igbinary, Xdebug, and Imagick (Imagick also rewrites removed `zval_dtor()` calls). Install PEAR 1.10.18 in the shared stage only when `pecl` is missing, and build redis, yaml, and memcached from pinned unreleased commits only when `PHP_VERSION_ID >= 80600`. PECL libsodium 2.0.23 still compiles against the pinned libsodium 1.0.18.
+- [x] Add `8.6/base/Dockerfile` from the 8.5 overlay, plus mbstring (libonig-dev). PHP 8.6 does not ship pecl, so third-party extensions are installed with PIE 1.5.5 instead of installing PEAR. Redis, yaml, memcached, and igbinary are pinned to the unreleased commits that compile on PHP 8.6. Xdebug is pinned to 3.6.0alpha1. Imagick is pinned to the same commit and compiled with `-Dzval_dtor=zval_ptr_dtor_nogc` because upstream still calls the removed function. Sodium is bundled and rebuilt with `docker-php-ext-install` against libsodium 1.0.18; Packagist has no PIE package for it. Older images keep pecl.
 - [x] Add 8.6 to the `VERSIONS`, `VERSIONS_BASE`, and `VERSIONS_SECURE` defaults. Include 8.4 and 8.5, which already have directories but were missing from those defaults. No `LATEST_PHP_VERSION` variable exists, and no floating `latest` tag is published.
 - [x] Update version lists in `AGENTS.md`, `README.md`, and the preseed-downloads example so they include 8.6 and no longer name 8.3 as the latest.
 - [x] Run Dockerfile/YAML/shell lint, refresh the hadolint baseline, and parse the bake file. Dockerfile, YAML, and shell lint match the baseline. Bake resolves `devpanel/php:8.6-base`, `8.6-secure`, and `8.6-advance` from `php:8.6-apache`.
-- [x] Build the 8.6 images with `./test.sh build --version 8.6` (exit 0). `./test.sh run --version 8.6` passed 48 functional checks and failed 0. Cache export to `localhost:0` failed and was non-fatal.
+- [x] Build the 8.6 images with `./test.sh build --version 8.6` (exit 0), including the rebuild after switching PHP 8.6 from PECL to PIE. `./test.sh run --version 8.6` passed 48 functional checks and failed 0 both times. Cache export to `localhost:0` failed and was non-fatal.
 
 ## Definition of Done
 - `devpanel/php:8.6-base`, `8.6-secure`, and `8.6-advance` are produced from `php:8.6-apache` (8.6.0 GA) by the existing bake matrix.
-- `8.6/base/Dockerfile` carries the 8.5 extension overlay plus mbstring and the pinned igbinary, Xdebug, and Imagick commits. There is no `8.6/secure/Dockerfile`. The shared stage installs PEAR only when `pecl` is missing, and builds redis, yaml, and memcached from pinned commits only on PHP 8.6.
+- `8.6/base/Dockerfile` carries the 8.5 extension overlay plus mbstring, and installs redis, yaml, memcached, igbinary, Xdebug, and Imagick with PIE. There is no `8.6/secure/Dockerfile`. The shared stage does not install PEAR when `pear` is absent. Older images still use pecl.
 - Bake defaults list every version directory, including 8.6 as the highest version. Images stay version-tagged; 8.6 does not become a floating `latest` tag.
 - Lint matches the baseline. `./test.sh build --version 8.6` and `./test.sh run --version 8.6` both exited 0.
 
