@@ -105,7 +105,8 @@ class UpdaterTest(unittest.TestCase):
                     auto_merge=False, run_conclusion="action_required",
                     approval_status=0, pr_merged=True, merged_head="",
                     merged_base="main", layout="nested", pending=False,
-                    sink=None):
+                    pending_line="Built linux-amd64 from cmd/devpanel-client at that commit.",
+                    main_amd64=None, sink=None):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             subprocess.run([REAL_GIT, "init", "-q", str(work)], check=True)
@@ -146,7 +147,7 @@ class UpdaterTest(unittest.TestCase):
                 )
                 message = (
                     f"Update devpanel CLI from GitLab devpanel-vn/cli@{'a' * 40}\n\n"
-                    "Built linux-amd64 from cmd/devpanel-client at that commit.\n"
+                    f"{pending_line}\n"
                 )
                 subprocess.run(
                     [REAL_GIT, "-C", str(work), "-c", "user.name=Test",
@@ -158,6 +159,20 @@ class UpdaterTest(unittest.TestCase):
                     [REAL_GIT, "-C", str(work), "checkout", "-q", "-"],
                     check=True,
                 )
+                if main_amd64 is not None:
+                    (work / "base/bin/devpanel-amd64").write_text(main_amd64)
+                    subprocess.run(
+                        [REAL_GIT, "-C", str(work), "add", "base/bin/devpanel-amd64"],
+                        check=True,
+                    )
+                    subprocess.run(
+                        [REAL_GIT, "-C", str(work), "commit", "-qm", "Main amd64"],
+                        check=True,
+                        env=dict(os.environ, GIT_AUTHOR_NAME="Test",
+                                 GIT_AUTHOR_EMAIL="test@example.com",
+                                 GIT_COMMITTER_NAME="Test",
+                                 GIT_COMMITTER_EMAIL="test@example.com"),
+                    )
                 origin = work / "origin.git"
                 subprocess.run(
                     [REAL_GIT, "init", "-q", "--bare", str(origin)], check=True,
@@ -217,6 +232,10 @@ class UpdaterTest(unittest.TestCase):
                     [REAL_GIT, "-C", str(work), "log", "-1", "--format=%B"],
                     text=True,
                 )
+                sink["changed"] = subprocess.check_output(
+                    [REAL_GIT, "-C", str(work), "diff", "--name-only", "HEAD~1", "HEAD"],
+                    text=True,
+                )
             return result, calls, output.read_text()
 
     def test_protected_pr_lifecycle(self):
@@ -225,7 +244,7 @@ class UpdaterTest(unittest.TestCase):
             with self.subTest(state=state):
                 result, calls, output = self.run_updater(state=state)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output, "cacheable=true\n")
+                self.assertIn("cacheable=true\n", output)
                 gh = [(args, token) for tool, args, token in calls if tool == "gh"]
                 approvals = [(i, args, token) for i, (args, token) in enumerate(gh)
                              if args[-1].endswith("/approve")]
@@ -287,33 +306,50 @@ class UpdaterTest(unittest.TestCase):
     def test_direct_push_does_not_dispatch_test(self):
         result, calls, output = self.run_updater(protected=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, "cacheable=true\n")
+        self.assertIn("cacheable=true\n", output)
         self.assertFalse(any(tool == "gh" for tool, _, _ in calls))
 
     def test_unchanged_binaries_do_not_push_or_test(self):
         result, calls, output = self.run_updater(changed=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, "cacheable=true\n")
+        self.assertIn("cacheable=true\n", output)
         self.assertFalse(any(tool == "gh" or "push" in args for tool, args, _ in calls))
 
     def test_pending_subset_keeps_other_architectures(self):
         sink = {}
         result, _, output = self.run_updater(
-            layout="arm64", pending=True, sink=sink,
+            layout="arm64", pending=True, main_amd64="main-amd64", sink=sink,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, "cacheable=true\n")
+        self.assertIn("cacheable=true\n", output)
+        self.assertIn('platforms=["linux-amd64","linux-arm64"]\n', output)
         self.assertEqual(sink["devpanel-amd64"], "pending-amd64")
         self.assertEqual(sink["devpanel-arm64"], "new")
+        self.assertEqual(sink["changed"], "base/bin/devpanel-arm64\n")
         self.assertIn(
             "Built linux-amd64 linux-arm64 from cmd/devpanel-client at that commit.",
             sink["message"],
         )
 
+    def test_legacy_pending_platform_list_is_extended(self):
+        sink = {}
+        result, _, output = self.run_updater(
+            layout="arm64", pending=True,
+            pending_line="Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit.",
+            sink=sink,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('platforms=["linux-amd64","linux-arm64"]\n', output)
+        self.assertIn(
+            "Built linux-amd64 linux-arm64 from cmd/devpanel-client at that commit.",
+            sink["message"],
+        )
+        self.assertEqual(sink["changed"], "base/bin/devpanel-arm64\n")
+
     def test_flat_single_artifact_is_installed(self):
         result, calls, output = self.run_updater(layout="flat", protected=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, "cacheable=true\n")
+        self.assertIn("cacheable=true\n", output)
         self.assertTrue(any(tool == "git" and "push" in args for tool, args, _ in calls))
 
     def test_failed_tests_fail_the_step(self):
@@ -354,7 +390,7 @@ class UpdaterTest(unittest.TestCase):
                     state=state, auto_merge=True, test_status=1,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output, "cacheable=true\n")
+                self.assertIn("cacheable=true\n", output)
                 self.assertFalse(any(tool in ("sleep", "timeout")
                                      or (tool == "gh" and args[0] == "run")
                                      for tool, args, _ in calls))
@@ -429,7 +465,7 @@ class UpdaterTest(unittest.TestCase):
     def test_direct_push_succeeds_without_test_even_if_tests_would_fail(self):
         result, calls, output = self.run_updater(protected=False, test_status=1)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, "cacheable=true\n")
+        self.assertIn("cacheable=true\n", output)
         self.assertFalse(any(tool == "gh" for tool, _, _ in calls))
 
     def test_missing_test_token_fails_explicitly(self):
@@ -497,6 +533,15 @@ class MergedRevisionTest(unittest.TestCase):
                     'platforms=["linux-amd64","linux-arm64"]\n',
                 )
                 self.assertEqual(revision, "a" * 40 + "\n")
+
+    def test_legacy_platform_list_is_cached(self):
+        result, output, _ = self.run_cache(platforms="linux/amd64 and linux/arm64")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            output,
+            "sha=" + "a" * 40 + "\n"
+            'platforms=["linux-amd64","linux-arm64"]\n',
+        )
 
     def test_missing_platform_list_is_not_cached(self):
         sha = "a" * 40

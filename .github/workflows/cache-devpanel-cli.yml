@@ -48,6 +48,8 @@ jobs:
             exit 1
           fi
           list="${BASH_REMATCH[1]}"
+          list="${list//linux\//linux-}"
+          list="${list// and / }"
           for token in ${list}; do
             if [[ ! "${token}" =~ ^linux(-[a-z0-9]+)+$ ]]; then
               echo "::error::Invalid platform cache key ${token}."

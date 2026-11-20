@@ -258,6 +258,7 @@ jobs:
     runs-on: ubuntu-26.04
     outputs:
       cacheable: ${{ steps.commit-binaries.outputs.cacheable }}
+      platforms: ${{ steps.commit-binaries.outputs.platforms }}
     permissions:
       actions: write
       contents: write
@@ -345,9 +346,8 @@ jobs:
               target_hash=$(printf '%s' "${TARGET_BRANCH}" | sha256sum | cut -d ' ' -f 1)
               branch="devpanel-cli-update-${target_hash}-${UPSTREAM_SHA:0:12}"
               test_branch="${branch}"
-              # A pending update for this revision may contain other architectures.
-              # Overlay this run on those binaries instead of replacing them with
-              # the destination branch's older copies.
+              # A pending update for this revision may already hold other architectures.
+              # Rebase this run's commit onto it so those binaries are kept.
               prior_ref="refs/pending-devpanel-cli"
               if git fetch --depth 1 origin "+refs/heads/${branch}:${prior_ref}"; then
                 prior_sha=$(git rev-parse "${prior_ref}")
@@ -358,6 +358,8 @@ jobs:
                     && [[ "${BASH_REMATCH[1]}" == "${UPSTREAM_SHA}" ]] \
                     && [[ "${prior_line}" =~ ^Built[[:space:]](.+)[[:space:]]from[[:space:]]cmd/devpanel-client[[:space:]]at[[:space:]]that[[:space:]]commit\.$ ]]; then
                   prior_list="${BASH_REMATCH[1]}"
+                  prior_list="${prior_list//linux\//linux-}"
+                  prior_list="${prior_list// and / }"
                   valid=1
                   for token in ${prior_list}; do
                     if [[ ! "${token}" =~ ^linux(-[a-z0-9]+)+$ ]]; then
@@ -366,12 +368,6 @@ jobs:
                     fi
                   done
                   if [[ "${valid}" -eq 1 ]]; then
-                    git checkout "${prior_sha}" -- base/bin
-                    for binary in "${binaries[@]}"; do
-                      name="$(basename "${binary}")"
-                      install -m 0755 "${binary}" "base/bin/${name}"
-                    done
-                    git add -- base/bin
                     union=()
                     seen_platforms=" "
                     for token in ${prior_list} ${platforms}; do
@@ -381,12 +377,13 @@ jobs:
                       fi
                     done
                     platforms="${union[*]}"
-                    git reset --soft HEAD~1
-                    git commit \
+                    base_sha=$(git rev-parse HEAD~1)
+                    git rebase -X theirs --onto "${prior_sha}" "${base_sha}"
+                    git commit --amend \
                       -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
                       -m "Built ${platforms} from cmd/devpanel-client at that commit."
                     commit_sha=$(git rev-parse HEAD)
-                    echo "Kept pending binaries and recorded ${platforms}."
+                    echo "Rebased onto the pending update and recorded ${platforms}."
                   fi
                 fi
               fi
@@ -463,6 +460,8 @@ jobs:
               fi
             fi
           fi
+          committed_platforms=$(jq -nc --arg list "${platforms}" '$list | split(" ")')
+          echo "platforms=${committed_platforms}" >> "$GITHUB_OUTPUT"
           echo "cacheable=true" >> "$GITHUB_OUTPUT"
 
   save-cache:
@@ -472,7 +471,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(needs.plan.outputs.built) }}
+        platform: ${{ fromJSON(needs.commit.outputs.platforms) }}
     runs-on: ubuntu-26.04
     permissions:
       actions: write
