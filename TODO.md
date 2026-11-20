@@ -325,6 +325,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - [x] Give each architecture's binary its own revision cache key.
 - [x] Build one lowest-compatible binary per architecture, using GOARM=5 for 32-bit ARM.
 - [x] Install a downloaded binary from either the flat or per-artifact layout.
+- [x] Keep binaries already on a pending update branch when a later run builds a subset.
 
 ## Definition of Done
 - amd64 and arm64 images install their own binary and skip QEMU on matching runners.
@@ -333,3 +334,4 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - A cached architecture is skipped without skipping the other architectures.
 - `linux/arm/v6` and `linux/arm/v7` share `base/bin/devpanel-arm`, built with GOARM=5.
 - A single downloaded artifact laid out directly in `dist/` is installed.
+- A later architecture subset keeps binaries already committed on the pending update branch.

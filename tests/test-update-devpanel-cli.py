@@ -104,11 +104,15 @@ class UpdaterTest(unittest.TestCase):
                     test_status=0, no_run=False, token="pat", merge_status=0,
                     auto_merge=False, run_conclusion="action_required",
                     approval_status=0, pr_merged=True, merged_head="",
-                    merged_base="main", layout="nested"):
+                    merged_base="main", layout="nested", pending=False,
+                    sink=None):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             subprocess.run([REAL_GIT, "init", "-q", str(work)], check=True)
-            names = ("devpanel-amd64",) if layout == "flat" else ("devpanel-amd64", "devpanel-arm64")
+            names = {
+                "flat": ("devpanel-amd64",),
+                "arm64": ("devpanel-arm64",),
+            }.get(layout, ("devpanel-amd64", "devpanel-arm64"))
             for name in names:
                 destination = work / "base/bin" / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -127,6 +131,45 @@ class UpdaterTest(unittest.TestCase):
                  "-c", "user.email=test@example.com", "commit", "-qm", "Initial"],
                 check=True,
             )
+            branch = "devpanel-cli-update-" + hashlib.sha256(b"main").hexdigest()
+            branch += "-" + "a" * 12
+            if pending:
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "checkout", "-q", "-b", branch],
+                    check=True,
+                )
+                pending_bin = work / "base/bin/devpanel-amd64"
+                pending_bin.write_text("pending-amd64")
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "add", "base/bin/devpanel-amd64"],
+                    check=True,
+                )
+                message = (
+                    f"Update devpanel CLI from GitLab devpanel-vn/cli@{'a' * 40}\n\n"
+                    "Built linux-amd64 from cmd/devpanel-client at that commit.\n"
+                )
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "-c", "user.name=Test",
+                     "-c", "user.email=test@example.com", "commit", "-q",
+                     "-F", "-"],
+                    input=message, text=True, check=True,
+                )
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "checkout", "-q", "-"],
+                    check=True,
+                )
+                origin = work / "origin.git"
+                subprocess.run(
+                    [REAL_GIT, "init", "-q", "--bare", str(origin)], check=True,
+                )
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "remote", "add", "origin", str(origin)],
+                    check=True,
+                )
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "push", "-q", "origin", branch],
+                    check=True,
+                )
             tools = work / "tools"
             tools.mkdir()
             for name in ("git", "gh", "timeout", "sleep"):
@@ -162,6 +205,18 @@ class UpdaterTest(unittest.TestCase):
                 capture_output=True, text=True, timeout=30,
             )
             calls = [json.loads(line) for line in log.read_text().splitlines()]
+            if sink is not None and result.returncode == 0:
+                for name in ("devpanel-amd64", "devpanel-arm64"):
+                    shown = subprocess.run(
+                        [REAL_GIT, "-C", str(work), "show", f"HEAD:base/bin/{name}"],
+                        capture_output=True, text=True,
+                    )
+                    if shown.returncode == 0:
+                        sink[name] = shown.stdout
+                sink["message"] = subprocess.check_output(
+                    [REAL_GIT, "-C", str(work), "log", "-1", "--format=%B"],
+                    text=True,
+                )
             return result, calls, output.read_text()
 
     def test_protected_pr_lifecycle(self):
@@ -240,6 +295,20 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output, "cacheable=true\n")
         self.assertFalse(any(tool == "gh" or "push" in args for tool, args, _ in calls))
+
+    def test_pending_subset_keeps_other_architectures(self):
+        sink = {}
+        result, _, output = self.run_updater(
+            layout="arm64", pending=True, sink=sink,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, "cacheable=true\n")
+        self.assertEqual(sink["devpanel-amd64"], "pending-amd64")
+        self.assertEqual(sink["devpanel-arm64"], "new")
+        self.assertIn(
+            "Built linux-amd64 linux-arm64 from cmd/devpanel-client at that commit.",
+            sink["message"],
+        )
 
     def test_flat_single_artifact_is_installed(self):
         result, calls, output = self.run_updater(layout="flat", protected=False)

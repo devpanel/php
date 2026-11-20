@@ -345,6 +345,51 @@ jobs:
               target_hash=$(printf '%s' "${TARGET_BRANCH}" | sha256sum | cut -d ' ' -f 1)
               branch="devpanel-cli-update-${target_hash}-${UPSTREAM_SHA:0:12}"
               test_branch="${branch}"
+              # A pending update for this revision may contain other architectures.
+              # Overlay this run on those binaries instead of replacing them with
+              # the destination branch's older copies.
+              prior_ref="refs/pending-devpanel-cli"
+              if git fetch --depth 1 origin "+refs/heads/${branch}:${prior_ref}"; then
+                prior_sha=$(git rev-parse "${prior_ref}")
+                prior_message=$(git log -1 --format=%B "${prior_sha}")
+                prior_subject=$(printf '%s\n' "${prior_message}" | head -n 1)
+                prior_line=$(printf '%s\n' "${prior_message}" | sed -n '/^Built /p' | head -n 1)
+                if [[ "${prior_subject}" =~ ^Update\ devpanel\ CLI\ from\ GitLab\ devpanel-vn/cli@([0-9a-f]{40})$ ]] \
+                    && [[ "${BASH_REMATCH[1]}" == "${UPSTREAM_SHA}" ]] \
+                    && [[ "${prior_line}" =~ ^Built[[:space:]](.+)[[:space:]]from[[:space:]]cmd/devpanel-client[[:space:]]at[[:space:]]that[[:space:]]commit\.$ ]]; then
+                  prior_list="${BASH_REMATCH[1]}"
+                  valid=1
+                  for token in ${prior_list}; do
+                    if [[ ! "${token}" =~ ^linux(-[a-z0-9]+)+$ ]]; then
+                      valid=0
+                      break
+                    fi
+                  done
+                  if [[ "${valid}" -eq 1 ]]; then
+                    git checkout "${prior_sha}" -- base/bin
+                    for binary in "${binaries[@]}"; do
+                      name="$(basename "${binary}")"
+                      install -m 0755 "${binary}" "base/bin/${name}"
+                    done
+                    git add -- base/bin
+                    union=()
+                    seen_platforms=" "
+                    for token in ${prior_list} ${platforms}; do
+                      if [[ "${seen_platforms}" != *" ${token} "* ]]; then
+                        seen_platforms="${seen_platforms}${token} "
+                        union+=("${token}")
+                      fi
+                    done
+                    platforms="${union[*]}"
+                    git reset --soft HEAD~1
+                    git commit \
+                      -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
+                      -m "Built ${platforms} from cmd/devpanel-client at that commit."
+                    commit_sha=$(git rev-parse HEAD)
+                    echo "Kept pending binaries and recorded ${platforms}."
+                  fi
+                fi
+              fi
               pr=$(gh pr list \
                 --state all \
                 --base "${TARGET_BRANCH}" \
