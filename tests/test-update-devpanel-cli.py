@@ -329,7 +329,7 @@ class UpdaterTest(unittest.TestCase):
         self.assertIn('platforms=["linux-amd64","linux-arm64"]\n', output)
         self.assertEqual(sink["devpanel-amd64"], "pending-amd64")
         self.assertEqual(sink["devpanel-arm64"], "new")
-        self.assertEqual(sink["commits"], "2\n")
+        self.assertEqual(sink["commits"], "3\n")
         self.assertEqual(
             sink["changed"], "base/bin/devpanel-amd64\nbase/bin/devpanel-arm64\n",
         )

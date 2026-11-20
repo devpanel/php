@@ -378,10 +378,12 @@ jobs:
                     done
                     platforms="${union[*]}"
                     base_sha=$(git rev-parse HEAD~1)
-                    git rebase -X theirs --onto "${prior_sha}" "${base_sha}"
-                    # Reset to the pending commit's parent, not the target branch, so the
-                    # single commit does not revert binaries that changed on the target.
-                    git reset --soft "$(git rev-parse "${prior_sha}^")"
+                    our_sha=$(git rev-parse HEAD)
+                    prior_parent=$(git rev-parse "${prior_sha}^")
+                    git checkout -q -B devpanel-cli-combined "${prior_sha}"
+                    git rebase -X theirs --onto "${base_sha}" "${prior_parent}"
+                    git cherry-pick -X theirs --keep-redundant-commits "${our_sha}"
+                    git reset --soft "${base_sha}"
                     git commit \
                       -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
                       -m "Built ${platforms} from cmd/devpanel-client at that commit."
