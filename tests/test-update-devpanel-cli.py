@@ -173,6 +173,9 @@ class UpdaterTest(unittest.TestCase):
                                  GIT_COMMITTER_NAME="Test",
                                  GIT_COMMITTER_EMAIL="test@example.com"),
                     )
+                target_sha = subprocess.check_output(
+                    [REAL_GIT, "-C", str(work), "rev-parse", "HEAD"], text=True,
+                ).strip()
                 origin = work / "origin.git"
                 subprocess.run(
                     [REAL_GIT, "init", "-q", "--bare", str(origin)], check=True,
@@ -240,13 +243,9 @@ class UpdaterTest(unittest.TestCase):
                     [REAL_GIT, "-C", str(work), "rev-list", "--count", "HEAD"],
                     text=True,
                 )
-                target = subprocess.check_output(
-                    [REAL_GIT, "-C", str(work), "rev-parse", "master~1"],
-                    text=True,
-                ).strip()
                 sink["merges_with_target"] = subprocess.run(
                     [REAL_GIT, "-C", str(work), "merge-tree", "--write-tree",
-                     "HEAD", target],
+                     "HEAD", target_sha],
                     capture_output=True,
                 ).returncode == 0
             return result, calls, output.read_text()
@@ -377,6 +376,7 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual(sink["devpanel-amd64"], "pending-amd64")
         self.assertEqual(sink["devpanel-arm64"], "new")
         self.assertFalse(sink["merges_with_target"])
+        self.assertEqual(sink["commits"], "2\n")
 
     def test_flat_single_artifact_is_installed(self):
         result, calls, output = self.run_updater(layout="flat", protected=False)
