@@ -349,7 +349,7 @@ jobs:
               # A pending update for this revision may already hold other architectures.
               # Rebase this run's commit onto it so those binaries are kept.
               prior_ref="refs/pending-devpanel-cli"
-              if git fetch --depth 1 origin "+refs/heads/${branch}:${prior_ref}"; then
+              if git fetch --depth 2 origin "+refs/heads/${branch}:${prior_ref}"; then
                 prior_sha=$(git rev-parse "${prior_ref}")
                 prior_message=$(git log -1 --format=%B "${prior_sha}")
                 prior_subject=$(printf '%s\n' "${prior_message}" | head -n 1)
@@ -379,7 +379,10 @@ jobs:
                     platforms="${union[*]}"
                     base_sha=$(git rev-parse HEAD~1)
                     git rebase -X theirs --onto "${prior_sha}" "${base_sha}"
-                    git commit --amend \
+                    # Reset to the pending commit's parent, not the target branch, so the
+                    # single commit does not revert binaries that changed on the target.
+                    git reset --soft "$(git rev-parse "${prior_sha}^")"
+                    git commit \
                       -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
                       -m "Built ${platforms} from cmd/devpanel-client at that commit."
                     commit_sha=$(git rev-parse HEAD)

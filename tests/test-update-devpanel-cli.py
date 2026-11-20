@@ -236,6 +236,10 @@ class UpdaterTest(unittest.TestCase):
                     [REAL_GIT, "-C", str(work), "diff", "--name-only", "HEAD~1", "HEAD"],
                     text=True,
                 )
+                sink["commits"] = subprocess.check_output(
+                    [REAL_GIT, "-C", str(work), "rev-list", "--count", "HEAD"],
+                    text=True,
+                )
             return result, calls, output.read_text()
 
     def test_protected_pr_lifecycle(self):
@@ -325,7 +329,10 @@ class UpdaterTest(unittest.TestCase):
         self.assertIn('platforms=["linux-amd64","linux-arm64"]\n', output)
         self.assertEqual(sink["devpanel-amd64"], "pending-amd64")
         self.assertEqual(sink["devpanel-arm64"], "new")
-        self.assertEqual(sink["changed"], "base/bin/devpanel-arm64\n")
+        self.assertEqual(sink["commits"], "2\n")
+        self.assertEqual(
+            sink["changed"], "base/bin/devpanel-amd64\nbase/bin/devpanel-arm64\n",
+        )
         self.assertIn(
             "Built linux-amd64 linux-arm64 from cmd/devpanel-client at that commit.",
             sink["message"],
@@ -344,7 +351,7 @@ class UpdaterTest(unittest.TestCase):
             "Built linux-amd64 linux-arm64 from cmd/devpanel-client at that commit.",
             sink["message"],
         )
-        self.assertEqual(sink["changed"], "base/bin/devpanel-arm64\n")
+        self.assertEqual(sink["commits"], "2\n")
 
     def test_flat_single_artifact_is_installed(self):
         result, calls, output = self.run_updater(layout="flat", protected=False)
