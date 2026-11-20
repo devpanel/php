@@ -12,7 +12,7 @@
 #   REPO                          Docker Hub repository                        (devpanel/php)
 #   GHCR_REPO                     GitHub Container Registry repository         (ghcr.io/devpanel/php)
 #   TAG_SUFFIX                    Image tag suffix                             ("" on main, "-rc" on develop)
-#   VERSIONS                      Space-separated PHP version dirs             ("7.4 8.0 8.1 8.2 8.3")
+#   VERSIONS                      Space-separated PHP version dirs             ("7.4 8.0 8.1 8.2 8.3 8.4 8.5 8.6")
 #   DOWNLOADS_DIR                 Path to pre-seeded artifacts directory       ("" = download in Dockerfile)
 #   CORERULESET_VERSION           ModSecurity CRS version                      (3.3.5)
 #   CACHE_FROM_ENABLED            Read from GHA/GHCR cache ("true"/"false")    ("true")
@@ -59,13 +59,13 @@ variable "REPO"                          { default = "devpanel/php"            }
 # The default below is a convenience fallback for local development only.
 variable "GHCR_REPO"                     { default = "ghcr.io/devpanel/php"    }
 variable "TAG_SUFFIX"                    { default = ""                        }
-variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3"    }
+variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3 8.4 8.5 8.6" }
 # VERSIONS_BASE / VERSIONS_SECURE: subsets of VERSIONS for which the base /
 # secure final images should be tagged and pushed to Docker Hub.  Both default
 # to the full VERSIONS set so a plain `docker buildx bake` pushes everything.
 # CI narrows these to only the versions whose files actually changed.
-variable "VERSIONS_BASE"                 { default = "7.4 8.0 8.1 8.2 8.3"    }
-variable "VERSIONS_SECURE"               { default = "7.4 8.0 8.1 8.2 8.3"    }
+variable "VERSIONS_BASE"                 { default = "7.4 8.0 8.1 8.2 8.3 8.4 8.5 8.6" }
+variable "VERSIONS_SECURE"               { default = "7.4 8.0 8.1 8.2 8.3 8.4 8.5 8.6" }
 
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 # DOWNLOADS_DIR: path to a directory whose pre-downloaded/ subdirectory contains
