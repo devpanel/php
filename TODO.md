@@ -238,6 +238,44 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - OPcache remains loaded on every PHP version without enabling a nonexistent PHP 8.5 shared module.
 - Focused checks pass; any remaining build or CI blockers are explicitly reported.
 
+# Task: Install the platform-matching DevPanel CLI
+
+## Steps
+- [x] Copy `base/bin/devpanel-${TARGETARCH}` in the shared image build.
+- [x] Download the matching release asset from `devpanel/dp-cli` before publish builds.
+- [x] Register QEMU only when the runner architecture differs from the target platform.
+- [x] Document the architecture-specific CLI and the native-build QEMU skip.
+- [x] Run YAML, shell, and Dockerfile lint; self-test asset selection and the amd64 fallback.
+
+## Definition of Done
+- ARM64 image builds install an arm64 `devpanel` binary from `devpanel/dp-cli`.
+- Native AMD64 and ARM64 builds do not register QEMU. Cross-architecture builds still do.
+- YAML, shell, and Dockerfile lint baselines match, and the changed files contain no secrets.
+
+# Task: Use GHCR_TOKEN for the latest DevPanel CLI
+
+## Steps
+- [x] Download the latest `devpanel/dp-cli` release with `GHCR_TOKEN` when that secret is set.
+- [x] Remove the release-version input.
+- [x] Verify the committed fallback CLIs with `devpanel cli:version`.
+- [x] Keep the committed `base/bin/devpanel-amd64` and `devpanel-arm64` binaries when `GHCR_TOKEN` is unset.
+
+## Definition of Done
+- Builds with `GHCR_TOKEN` install the latest platform-matching CLI from `devpanel/dp-cli`.
+- Builds without that token use the committed fallback binary and `devpanel cli:version` succeeds.
+- There is no input for pinning a CLI release.
+
+# Task: Build the DevPanel CLI from devpanel/cli
+
+## Steps
+- [x] Confirm the original `base/bin/devpanel` binary is `github.com/devpanel/cli/cmd/devpanel-client`.
+- [x] Restore that amd64 binary and stop downloading `devpanel/dp-cli` during image builds.
+- [x] Verify the restored amd64 binary with `devpanel version`.
+
+## Definition of Done
+- Image builds copy `base/bin/devpanel-$TARGETARCH` and run `devpanel version`.
+- The committed amd64 binary is the original `github.com/devpanel/cli` executable.
+
 # Task: Rebuild the DevPanel CLI from GitLab
 
 ## Steps
@@ -275,3 +313,25 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - The plan job gets the upstream default-branch HEAD using the same authenticated Git access required by the build.
 - Documentation no longer requires `read_api` for the updater.
 - Focused validation passes and changed files contain no secrets.
+
+# Task: Require a native DevPanel CLI binary
+
+## Steps
+- [x] Copy `devpanel-${TARGETARCH}` and fail the image build when it is missing.
+- [x] Register QEMU only for a target platform with no matching runner.
+- [x] Skip an image-build platform and warn when its native binary is absent.
+- [x] Build the updater matrix from `PLATFORMS`, using QEMU when that platform has no native runner.
+- [x] Add a `platforms` input that overrides `PLATFORMS`.
+- [x] Give each architecture's binary its own revision cache key.
+- [x] Build one lowest-compatible binary per architecture, using GOARM=5 for 32-bit ARM.
+- [x] Install a downloaded binary from either the flat or per-artifact layout.
+- [x] Keep binaries already on a pending update branch when a later run builds a subset.
+
+## Definition of Done
+- amd64 and arm64 images install their own binary and skip QEMU on matching runners.
+- A platform without `base/bin/devpanel-${TARGETARCH}` is omitted from the image build with a warning.
+- `update-devpanel-cli.yml` builds its `platforms` input, `vars.PLATFORMS`, or `linux/amd64,linux/arm64`.
+- A cached architecture is skipped without skipping the other architectures.
+- `linux/arm/v6` and `linux/arm/v7` share `base/bin/devpanel-arm`, built with GOARM=5.
+- A single downloaded artifact laid out directly in `dist/` is installed.
+- A later architecture subset keeps binaries already committed on the pending update branch.

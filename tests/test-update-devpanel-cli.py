@@ -8,21 +8,30 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-import textwrap
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/update-devpanel-cli.yml"
-STEP = WORKFLOW.read_text().split("      - name: Commit binaries\n", 1)[1]
-SCRIPT = textwrap.dedent(
-    STEP.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0]
-)
 CACHE_WORKFLOW = ROOT / ".github/workflows/cache-devpanel-cli.yml"
-CACHE_SCRIPT = textwrap.dedent(
-    CACHE_WORKFLOW.read_text().split("        run: |\n", 1)[1]
-    .split("\n      - name:", 1)[0]
-)
+
+
+def extract_run_script(workflow: Path, step_name: str) -> str:
+    body = workflow.read_text().split(f"      - name: {step_name}\n", 1)[1]
+    body = body.split("        run: |\n", 1)[1]
+    lines = []
+    for line in body.splitlines():
+        if line.startswith("          "):
+            lines.append(line[10:])
+        elif line == "":
+            lines.append("")
+        else:
+            break
+    return "\n".join(lines) + "\n"
+
+
+SCRIPT = extract_run_script(WORKFLOW, "Commit binaries")
+CACHE_SCRIPT = extract_run_script(CACHE_WORKFLOW, "Resolve merged upstream revision")
 REAL_GIT = shutil.which("git")
 MOCK = """#!/usr/bin/env python3
 import json
@@ -95,16 +104,26 @@ class UpdaterTest(unittest.TestCase):
                     test_status=0, no_run=False, token="pat", merge_status=0,
                     auto_merge=False, run_conclusion="action_required",
                     approval_status=0, pr_merged=True, merged_head="",
-                    merged_base="main"):
+                    merged_base="main", layout="nested", pending=False,
+                    pending_line="Built linux-amd64 from cmd/devpanel-client at that commit.",
+                    main_amd64=None, sink=None):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             subprocess.run([REAL_GIT, "init", "-q", str(work)], check=True)
-            for name in ("devpanel-amd64", "devpanel-arm64"):
+            names = {
+                "flat": ("devpanel-amd64",),
+                "arm64": ("devpanel-arm64",),
+            }.get(layout, ("devpanel-amd64", "devpanel-arm64"))
+            for name in names:
                 destination = work / "base/bin" / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text("old")
                 destination.chmod(0o755)
-                artifact = work / "dist" / name.split("-")[1] / name
+                arch = name.split("-", 1)[1]
+                if layout == "flat":
+                    artifact = work / "dist" / name
+                else:
+                    artifact = work / "dist" / f"devpanel-binary-{arch}" / name
                 artifact.parent.mkdir(parents=True, exist_ok=True)
                 artifact.write_text("new" if changed else "old")
             subprocess.run([REAL_GIT, "-C", str(work), "add", "base"], check=True)
@@ -113,6 +132,62 @@ class UpdaterTest(unittest.TestCase):
                  "-c", "user.email=test@example.com", "commit", "-qm", "Initial"],
                 check=True,
             )
+            branch = "devpanel-cli-update-" + hashlib.sha256(b"main").hexdigest()
+            branch += "-" + "a" * 12
+            if pending:
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "checkout", "-q", "-b", branch],
+                    check=True,
+                )
+                pending_bin = work / "base/bin/devpanel-amd64"
+                pending_bin.write_text("pending-amd64")
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "add", "base/bin/devpanel-amd64"],
+                    check=True,
+                )
+                message = (
+                    f"Update devpanel CLI from GitLab devpanel-vn/cli@{'a' * 40}\n\n"
+                    f"{pending_line}\n"
+                )
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "-c", "user.name=Test",
+                     "-c", "user.email=test@example.com", "commit", "-q",
+                     "-F", "-"],
+                    input=message, text=True, check=True,
+                )
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "checkout", "-q", "-"],
+                    check=True,
+                )
+                if main_amd64 is not None:
+                    (work / "base/bin/devpanel-amd64").write_text(main_amd64)
+                    subprocess.run(
+                        [REAL_GIT, "-C", str(work), "add", "base/bin/devpanel-amd64"],
+                        check=True,
+                    )
+                    subprocess.run(
+                        [REAL_GIT, "-C", str(work), "commit", "-qm", "Main amd64"],
+                        check=True,
+                        env=dict(os.environ, GIT_AUTHOR_NAME="Test",
+                                 GIT_AUTHOR_EMAIL="test@example.com",
+                                 GIT_COMMITTER_NAME="Test",
+                                 GIT_COMMITTER_EMAIL="test@example.com"),
+                    )
+                target_sha = subprocess.check_output(
+                    [REAL_GIT, "-C", str(work), "rev-parse", "HEAD"], text=True,
+                ).strip()
+                origin = work / "origin.git"
+                subprocess.run(
+                    [REAL_GIT, "init", "-q", "--bare", str(origin)], check=True,
+                )
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "remote", "add", "origin", str(origin)],
+                    check=True,
+                )
+                subprocess.run(
+                    [REAL_GIT, "-C", str(work), "push", "-q", "origin", branch],
+                    check=True,
+                )
             tools = work / "tools"
             tools.mkdir()
             for name in ("git", "gh", "timeout", "sleep"):
@@ -130,7 +205,11 @@ class UpdaterTest(unittest.TestCase):
                        GITHUB_REPOSITORY="devpanel/php",
                        TEST_TOKEN=token,
                        TARGET_BRANCH="main", REPOSITORY_OWNER="devpanel",
-                       UPSTREAM_SHA="a" * 40, UPDATE_BRANCH=branch,
+                       UPSTREAM_SHA="a" * 40,
+                       BUILT_PLATFORMS=json.dumps([
+                           f"linux-{name.split('-', 1)[1]}" for name in names
+                       ]),
+                       UPDATE_BRANCH=branch,
                        PROTECTED=str(int(protected)), PR_STATE=state,
                        TEST_STATUS=str(test_status), NO_RUN=str(int(no_run)),
                        MERGE_STATUS=str(merge_status),
@@ -144,6 +223,31 @@ class UpdaterTest(unittest.TestCase):
                 capture_output=True, text=True, timeout=30,
             )
             calls = [json.loads(line) for line in log.read_text().splitlines()]
+            if sink is not None and (work / ".git").exists():
+                for name in ("devpanel-amd64", "devpanel-arm64"):
+                    shown = subprocess.run(
+                        [REAL_GIT, "-C", str(work), "show", f"HEAD:base/bin/{name}"],
+                        capture_output=True, text=True,
+                    )
+                    if shown.returncode == 0:
+                        sink[name] = shown.stdout
+                sink["message"] = subprocess.check_output(
+                    [REAL_GIT, "-C", str(work), "log", "-1", "--format=%B"],
+                    text=True,
+                )
+                sink["changed"] = subprocess.check_output(
+                    [REAL_GIT, "-C", str(work), "diff", "--name-only", "HEAD~1", "HEAD"],
+                    text=True,
+                )
+                sink["commits"] = subprocess.check_output(
+                    [REAL_GIT, "-C", str(work), "rev-list", "--count", "HEAD"],
+                    text=True,
+                )
+                sink["merges_with_target"] = subprocess.run(
+                    [REAL_GIT, "-C", str(work), "merge-tree", "--write-tree",
+                     "HEAD", target_sha],
+                    capture_output=True,
+                ).returncode == 0
             return result, calls, output.read_text()
 
     def test_protected_pr_lifecycle(self):
@@ -152,7 +256,7 @@ class UpdaterTest(unittest.TestCase):
             with self.subTest(state=state):
                 result, calls, output = self.run_updater(state=state)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output, "cacheable=true\n")
+                self.assertIn("cacheable=true\n", output)
                 gh = [(args, token) for tool, args, token in calls if tool == "gh"]
                 approvals = [(i, args, token) for i, (args, token) in enumerate(gh)
                              if args[-1].endswith("/approve")]
@@ -214,14 +318,71 @@ class UpdaterTest(unittest.TestCase):
     def test_direct_push_does_not_dispatch_test(self):
         result, calls, output = self.run_updater(protected=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, "cacheable=true\n")
+        self.assertIn("cacheable=true\n", output)
         self.assertFalse(any(tool == "gh" for tool, _, _ in calls))
 
     def test_unchanged_binaries_do_not_push_or_test(self):
         result, calls, output = self.run_updater(changed=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, "cacheable=true\n")
+        self.assertIn("cacheable=true\n", output)
         self.assertFalse(any(tool == "gh" or "push" in args for tool, args, _ in calls))
+
+    def test_pending_subset_keeps_other_architectures(self):
+        sink = {}
+        result, _, output = self.run_updater(
+            layout="arm64", pending=True, sink=sink,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("cacheable=true\n", output)
+        self.assertIn('platforms=["linux-amd64","linux-arm64"]\n', output)
+        self.assertEqual(sink["devpanel-amd64"], "pending-amd64")
+        self.assertEqual(sink["devpanel-arm64"], "new")
+        self.assertEqual(sink["commits"], "2\n")
+        self.assertTrue(sink["merges_with_target"])
+        self.assertEqual(
+            sink["changed"], "base/bin/devpanel-amd64\nbase/bin/devpanel-arm64\n",
+        )
+        self.assertIn(
+            "Built linux-amd64 linux-arm64 from cmd/devpanel-client at that commit.",
+            sink["message"],
+        )
+
+    def test_legacy_pending_platform_list_is_extended(self):
+        sink = {}
+        result, _, output = self.run_updater(
+            layout="arm64", pending=True,
+            pending_line="Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit.",
+            sink=sink,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('platforms=["linux-amd64","linux-arm64"]\n', output)
+        self.assertIn(
+            "Built linux-amd64 linux-arm64 from cmd/devpanel-client at that commit.",
+            sink["message"],
+        )
+        self.assertEqual(sink["commits"], "2\n")
+        self.assertTrue(sink["merges_with_target"])
+
+    def test_newer_target_binary_does_not_merge(self):
+        sink = {}
+        result, calls, output = self.run_updater(
+            layout="arm64", pending=True, main_amd64="main-amd64",
+            merge_status=1, sink=sink,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+        self.assertTrue(any(tool == "gh" and args[:2] == ["pr", "merge"]
+                            for tool, args, _ in calls))
+        self.assertEqual(sink["devpanel-amd64"], "pending-amd64")
+        self.assertEqual(sink["devpanel-arm64"], "new")
+        self.assertFalse(sink["merges_with_target"])
+        self.assertEqual(sink["commits"], "2\n")
+
+    def test_flat_single_artifact_is_installed(self):
+        result, calls, output = self.run_updater(layout="flat", protected=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("cacheable=true\n", output)
+        self.assertTrue(any(tool == "git" and "push" in args for tool, args, _ in calls))
 
     def test_failed_tests_fail_the_step(self):
         result, calls, output = self.run_updater(test_status=1)
@@ -261,7 +422,7 @@ class UpdaterTest(unittest.TestCase):
                     state=state, auto_merge=True, test_status=1,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output, "cacheable=true\n")
+                self.assertIn("cacheable=true\n", output)
                 self.assertFalse(any(tool in ("sleep", "timeout")
                                      or (tool == "gh" and args[0] == "run")
                                      for tool, args, _ in calls))
@@ -336,7 +497,7 @@ class UpdaterTest(unittest.TestCase):
     def test_direct_push_succeeds_without_test_even_if_tests_would_fail(self):
         result, calls, output = self.run_updater(protected=False, test_status=1)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, "cacheable=true\n")
+        self.assertIn("cacheable=true\n", output)
         self.assertFalse(any(tool == "gh" for tool, _, _ in calls))
 
     def test_missing_test_token_fails_explicitly(self):
@@ -358,10 +519,14 @@ class UpdaterTest(unittest.TestCase):
 
 
 class MergedRevisionTest(unittest.TestCase):
-    def run_cache(self, *, target="main", subject=None, branch=None):
+    def run_cache(self, *, target="main", subject=None, branch=None,
+                  platforms="linux-amd64 linux-arm64"):
         sha = "a" * 40
         if subject is None:
-            subject = f"Update devpanel CLI from GitLab devpanel-vn/cli@{sha}"
+            subject = (
+                f"Update devpanel CLI from GitLab devpanel-vn/cli@{sha}\n\n"
+                f"Built {platforms} from cmd/devpanel-client at that commit."
+            )
         if branch is None:
             branch = "devpanel-cli-update-" + hashlib.sha256(target.encode()).hexdigest()
             branch += "-" + sha[:12]
@@ -394,8 +559,31 @@ class MergedRevisionTest(unittest.TestCase):
             with self.subTest(target=target):
                 result, output, revision = self.run_cache(target=target)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output, "sha=" + "a" * 40 + "\n")
+                self.assertEqual(
+                    output,
+                    "sha=" + "a" * 40 + "\n"
+                    'platforms=["linux-amd64","linux-arm64"]\n',
+                )
                 self.assertEqual(revision, "a" * 40 + "\n")
+
+    def test_legacy_platform_list_is_cached(self):
+        result, output, _ = self.run_cache(platforms="linux/amd64 and linux/arm64")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            output,
+            "sha=" + "a" * 40 + "\n"
+            'platforms=["linux-amd64","linux-arm64"]\n',
+        )
+
+    def test_missing_platform_list_is_not_cached(self):
+        sha = "a" * 40
+        result, output, revision = self.run_cache(
+            subject=f"Update devpanel CLI from GitLab devpanel-vn/cli@{sha}",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not list its platform cache keys", result.stdout)
+        self.assertEqual(output, "")
+        self.assertIsNone(revision)
 
     def test_invalid_revision_is_not_cached(self):
         for subject in ("Unrelated update", "Update devpanel CLI from GitLab devpanel-vn/cli@bad"):

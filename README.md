@@ -31,9 +31,10 @@ Each PHP version ships three layered variants.
 
 Release candidate tags end with `-rc` (e.g. `8.3-base-rc`).
 
-The bundled legacy `devpanel` CLI is AMD64-only, including in ARM64 images.
-Executing it on an ARM64 host requires AMD64 emulation on that host; CI runner
-emulation is not included in the published images.
+Each image includes the native `devpanel` CLI built from
+[devpanel-vn/cli on GitLab](https://gitlab.com/devpanel-vn/cli)
+(`base/bin/devpanel-${TARGETARCH}`). The image build fails when that
+binary is not available.
 
 Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3**
 
@@ -184,6 +185,11 @@ removed).  To remove all `devpanel-php-test:*` images at once, run:
 bash tests/cleanup-test-images.sh
 ```
 
+The image build copies the committed native binary
+`base/bin/devpanel-${TARGETARCH}`, which `update-devpanel-cli.yml` builds
+from [devpanel-vn/cli on GitLab](https://gitlab.com/devpanel-vn/cli). A
+platform whose binary is missing is skipped with a warning.
+
 Build tests take several minutes per PHP version because the images download
 packages (code-server, composer, etc.).  Run a single version during
 development to keep the feedback loop short:
@@ -287,38 +293,50 @@ for setup instructions.
 - The build workflow is `docker-build.yml`, which handles both push-triggered
   and manual dispatch builds.  It runs a detect → build (per-platform,
   parallel) → merge pipeline.  ARM64 builds use native `ubuntu-26.04-arm`
-  runners; AMD64 builds use `ubuntu-26.04`. QEMU is set up on ARM runners
-  to execute the bundled AMD64 DevPanel CLI, and for cross-platform builds.
-  Native AMD64 builds skip QEMU.
-- `update-devpanel-cli.yml` rebuilds `base/bin/devpanel-amd64` and
-  `base/bin/devpanel-arm64` from the latest
-  [GitLab CLI repository](https://gitlab.com/devpanel-vn/cli) default branch
-  HEAD. Run it manually on a branch; tags are left unchanged. Each native build
-  compiles `cmd/devpanel-client` for Linux with CGO disabled. This client path
-  is based on the existing binary's metadata and must be confirmed against the
-  GitLab source. Both builds use the same resolved commit and the Go version
-  from its `go.mod`. The workflow caches the revision per destination branch
-  only after both binaries reach that branch, and skips subsequent builds on a
-  cache hit. Delete that cache entry to rebuild the same commit. A new run
-  cancels one already in progress. Set the `GITLAB_TOKEN` repository secret to
-  a GitLab access token with `read_repository` access. The workflow
-  authenticates Git requests with GitLab's `oauth2` username. The workflow
+  runners; AMD64 builds use `ubuntu-26.04`. Each image copies
+  `base/bin/devpanel-${TARGETARCH}` and fails when that file is missing.
+  The workflow skips a platform and warns when its native binary is absent.
+  QEMU is set up only for a target platform that has no matching runner.
+  Native AMD64 and ARM64 builds skip QEMU.
+- `update-devpanel-cli.yml` rebuilds one lowest-compatible
+  `base/bin/devpanel-$arch` binary per architecture. Its `platforms` input
+  selects the list; an empty input uses the `PLATFORMS` repository variable, or
+  `linux/amd64,linux/arm64` when that variable is unset. Variants of one
+  architecture share one binary, and 32-bit ARM is built with `GOARM=5` so it
+  runs on v5, v6, and v7. Each architecture has its own revision cache key, so
+  a cached architecture is skipped and the others still build. It builds from
+  the latest [GitLab CLI repository](https://gitlab.com/devpanel-vn/cli)
+  default branch HEAD. Run it manually on a branch; tags are left unchanged.
+  `linux/amd64` builds on `ubuntu-26.04` and `linux/arm64` builds on
+  `ubuntu-26.04-arm`. A platform without a matching runner is cross-compiled on
+  `ubuntu-26.04` and checked with QEMU. Each build compiles
+  `cmd/devpanel-client` for Linux with CGO disabled. This client path is based
+  on the existing binary’s metadata and must be confirmed against the GitLab
+  source. Every build uses the same resolved commit and the Go version from its
+  `go.mod`. The workflow caches each architecture separately after its binary
+  reaches that branch, and skips an architecture on its own cache hit. Delete
+  that architecture’s cache entry to rebuild its binary for the same commit. A
+  new run cancels one already in progress. Set the `GITLAB_TOKEN` repository
+  secret to a GitLab access token with `read_repository` access. The workflow
+  authenticates Git requests with GitLab’s `oauth2` username. The workflow
   resolves the default-branch HEAD using authenticated Git access, so it does
   not require GitLab API access. The workflow token commits the binaries.
   GitLab credentials are scoped to GitLab Git requests and not stored in global
-  Git configuration. The checkout is placed outside this repository. AMD64 and
-  ARM64 binaries build in parallel on `ubuntu-26.04` and `ubuntu-26.04-arm`.
-  This workflow does not change which binary the Dockerfile copies into images.
-  If branch protection rejects the direct push, it opens or updates a CLI PR,
-  finds the PR's Test run for the generated head SHA, and approves it using
-  `GHCR_TOKEN` (a PAT with `repo` scope). With auto-merge enabled, it requests
-  rebase auto-merge and exits without waiting for tests to finish. It confirms
-  and caches an immediate merge; otherwise it leaves deferred caching to
-  `cache-devpanel-cli.yml`, which handles merged PR events after the updater
+  Git configuration. The checkout is placed outside this repository, and the
+  selected platforms build in parallel. This workflow does not change which
+  binary the Dockerfile copies into images. If branch protection rejects the
+  direct push, it opens or updates a CLI PR. A later subset for the same
+  revision keeps binaries already on that update branch. If the target branch
+  already has a newer binary for one of those architectures, the rebase merge
+  fails. It finds the PR’s Test run for the generated head SHA, and approves it
+  using `GHCR_TOKEN` (a PAT with `repo` scope). With auto-merge enabled, it
+  requests rebase auto-merge and exits without waiting for tests to finish. It
+  confirms and caches an immediate merge; otherwise it leaves deferred caching
+  to `cache-devpanel-cli.yml`, which handles merged PR events after the updater
   exits. With auto-merge disabled, it watches the PR test before merging and
   saves the revision cache only after confirming the tested commit merged into
   the target branch. The updater does not rely on a PR event from the workflow
-  token. The cache workflow validates the bot-authored update's commit metadata
+  token. The cache workflow validates the bot-authored update’s commit metadata
   and branch name without checking out PR code.
 - The `advance` variant depends on `secure`, which depends on `base`. The build
   chain is enforced via the bake target dependency graph.

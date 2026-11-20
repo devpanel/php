@@ -1,17 +1,25 @@
 name: Update DevPanel CLI binaries
 
-# Build linux/amd64 and linux/arm64 devpanel binaries from
-# https://gitlab.com/devpanel-vn/cli and commit
-# base/bin/devpanel-amd64 and base/bin/devpanel-arm64.
+# Build devpanel binaries from https://gitlab.com/devpanel-vn/cli. The
+# platforms input selects the list for that run. An empty input uses the
+# PLATFORMS repository variable, or linux/amd64,linux/arm64 when that variable
+# is unset. linux/amd64 builds on ubuntu-26.04 and linux/arm64 builds on
+# ubuntu-26.04-arm. Other architectures build on ubuntu-26.04 with QEMU.
+# Variants of one architecture share one binary. 32-bit ARM is built with
+# GOARM=5 so base/bin/devpanel-arm runs on v5, v6, and v7.
 #
 # Run it manually on a branch. The workflow pushes directly to unprotected
 # branches. If branch protection rejects that push, it opens or updates a pull
 # request from a deterministic update branch, then approves its pending Test
 # run. When repository auto-merge is enabled, it requests rebase auto-merge and
 # exits without waiting. Otherwise it waits for Test before attempting a rebase
-# merge. The updater records the upstream default branch HEAD in the Actions
-# cache after direct updates and confirmed merges; cache-devpanel-cli.yml handles
-# deferred auto-merges. Delete that cache entry to rebuild the same commit.
+# merge. Each platform binary has its own Actions cache key, so a cached
+# platform is skipped and the others still build. The updater saves those keys
+# after direct updates and confirmed merges; cache-devpanel-cli.yml handles
+# deferred auto-merges. The key is
+# gitlab-devpanel-client-v1-<ref>-<upstream sha>-linux-<arch>, for example
+# linux-amd64 or linux-arm. Delete one architecture's cache entry to rebuild
+# that binary for the same commit.
 #
 # The plan job resolves the default branch HEAD through Git; the build fetches
 # that commit under RUNNER_TEMP. GITLAB_TOKEN needs read_repository access and
@@ -21,6 +29,12 @@ name: Update DevPanel CLI binaries
 
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: >
+          Comma-separated list of platforms to build.
+          Leave empty to use the PLATFORMS repository variable,
+          falling back to "linux/amd64,linux/arm64".
 
 concurrency:
   group: update-devpanel-cli-${{ github.ref }}
@@ -36,7 +50,9 @@ jobs:
       contents: read
     outputs:
       sha: ${{ steps.upstream.outputs.sha }}
-      changed: ${{ steps.decision.outputs.changed }}
+      changed: ${{ steps.platforms.outputs.changed }}
+      builds: ${{ steps.platforms.outputs.builds }}
+      built: ${{ steps.platforms.outputs.built }}
     steps:
       - name: Resolve upstream default branch HEAD
         id: upstream
@@ -62,40 +78,105 @@ jobs:
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
           echo "GitLab CLI default branch HEAD is ${sha}"
 
-      - name: Restore the built revision
-        id: revision-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ runner.temp }}/devpanel-cli-revision
-          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ steps.upstream.outputs.sha }}
-          lookup-only: true
-
-      - name: Decide whether to rebuild
-        id: decision
+      - name: Select uncached platforms
+        id: platforms
         env:
-          CACHE_HIT: ${{ steps.revision-cache.outputs.cache-hit }}
+          RAW_PLATFORMS: ${{ inputs.platforms || vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "${CACHE_HIT}" == "true" ]]; then
+          set -euo pipefail
+          declare -A arch_goarm=()
+          declare -A arch_qemu_noted=()
+          order=()
+          IFS=',' read -ra plats <<< "${RAW_PLATFORMS}"
+          for p in "${plats[@]}"; do
+            p="${p// /}"
+            [[ -z "${p}" ]] && continue
+            case "${p}" in
+              linux/arm64/v8) p="linux/arm64" ;;
+              linux/amd64/v1) p="linux/amd64" ;;
+            esac
+            rest="${p#linux/}"
+            arch="${rest%%/*}"
+            platform_key="linux-${arch}"
+            if [[ "${p}" != linux/* || -z "${arch}" || ! "${platform_key}" =~ ^linux(-[a-z0-9]+)+$ ]]; then
+              echo "::error::Unsupported platform ${p}."
+              exit 1
+            fi
+            if [[ -z "${arch_goarm[${arch}]+x}" ]]; then
+              order+=("${arch}")
+              arch_goarm["${arch}"]=""
+            fi
+            if [[ "${arch}" == "arm" ]]; then
+              if [[ -z "${arch_goarm[${arch}]}" ]]; then
+                echo "::notice::32-bit ARM platforms share base/bin/devpanel-arm, built with GOARM=5 so it runs on v5, v6, and v7."
+              fi
+              arch_goarm["${arch}"]=5
+            elif [[ "${rest}" == */* ]]; then
+              echo "::notice::${p} uses the shared ${arch} binary at its lowest compatible level."
+            fi
+          done
+          if [[ "${#order[@]}" -eq 0 ]]; then
+            echo "::error::No platforms were selected."
+            exit 1
+          fi
+          entries=()
+          for arch in "${order[@]}"; do
+            platform_key="linux-${arch}"
+            goarm="${arch_goarm[${arch}]}"
+            case "${arch}" in
+              amd64) runner="ubuntu-26.04"; qemu=false ;;
+              arm64) runner="ubuntu-26.04-arm"; qemu=false ;;
+              *)
+                runner="ubuntu-26.04"
+                qemu=true
+                if [[ -z "${arch_qemu_noted[${arch}]+x}" ]]; then
+                  echo "::notice::${platform_key} has no native runner; it will be cross-compiled and checked with QEMU."
+                  arch_qemu_noted["${arch}"]=1
+                fi
+                ;;
+            esac
+            cache_key="gitlab-devpanel-client-v1-${GITHUB_REF}-${UPSTREAM_SHA}-${platform_key}"
+            encoded_key=$(printf '%s' "${cache_key}" | jq -sRr @uri)
+            encoded_ref=$(printf '%s' "${GITHUB_REF}" | jq -sRr @uri)
+            payload=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100&key=${encoded_key}&ref=${encoded_ref}")
+            count=$(jq --arg key "${cache_key}" '[.actions_caches[]? | select(.key == $key)] | length' <<< "${payload}")
+            if [[ "${count}" != "0" ]]; then
+              echo "GitLab CLI ${UPSTREAM_SHA} ${platform_key} is already built for this branch."
+              continue
+            fi
+            echo "GitLab CLI ${UPSTREAM_SHA} ${platform_key} has not been built for this branch."
+            entries+=("$(jq -nc \
+              --arg arch "${arch}" \
+              --arg platform "${platform_key}" \
+              --arg runner "${runner}" \
+              --arg goarm "${goarm}" \
+              --argjson qemu "${qemu}" \
+              '{arch:$arch,platform:$platform,runner:$runner,qemu:$qemu,goarm:$goarm}')")
+          done
+          if [[ "${#entries[@]}" -eq 0 ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "GitLab CLI ${UPSTREAM_SHA} is already built for this branch."
+            echo "builds=[]" >> "$GITHUB_OUTPUT"
+            echo "built=[]" >> "$GITHUB_OUTPUT"
+            echo "Every selected platform is already cached."
           else
+            matrix="$(printf '%s\n' "${entries[@]}" | jq -sc '.')"
+            built="$(printf '%s\n' "${entries[@]}" | jq -sc 'map(.platform)')"
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "GitLab CLI ${UPSTREAM_SHA} has not been built for this branch."
+            echo "builds=${matrix}" >> "$GITHUB_OUTPUT"
+            echo "built=${built}" >> "$GITHUB_OUTPUT"
+            echo "Building ${matrix}"
           fi
 
   build:
-    name: Build devpanel (${{ matrix.arch }})
+    name: Build devpanel (${{ matrix.platform }})
     needs: plan
     if: needs.plan.outputs.changed == 'true'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-26.04
-          - arch: arm64
-            runner: ubuntu-26.04-arm
+        include: ${{ fromJSON(needs.plan.outputs.builds) }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -117,16 +198,22 @@ jobs:
             fetch --depth 1 origin "$UPSTREAM_SHA"
           git -C "$dest" checkout --detach FETCH_HEAD
 
+      - name: Set up QEMU
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@v4
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: ${{ runner.temp }}/devpanel-cli/go.mod
           cache: false
 
-      - name: Build native client binary
+      - name: Build client binary
         working-directory: ${{ runner.temp }}/devpanel-cli
         env:
           ARCH: ${{ matrix.arch }}
+          QEMU: ${{ matrix.qemu }}
+          GOARM_VALUE: ${{ matrix.goarm }}
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
           GIT_TERMINAL_PROMPT: "0"
           GOPRIVATE: gitlab.com/devpanel-vn/*
@@ -142,7 +229,14 @@ jobs:
           export GIT_CONFIG_KEY_0=http.https://gitlab.com/.extraheader
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}"
           dest="${RUNNER_TEMP}/devpanel-${ARCH}"
-          env -u GOOS -u GOARCH CGO_ENABLED=0 \
+          build_env=(CGO_ENABLED=0)
+          if [[ "${QEMU}" == "true" ]]; then
+            build_env+=(GOOS=linux GOARCH="${ARCH}")
+          fi
+          if [[ -n "${GOARM_VALUE}" ]]; then
+            build_env+=(GOARM="${GOARM_VALUE}")
+          fi
+          env -u GOOS -u GOARCH -u GOARM "${build_env[@]}" \
             go build -trimpath -o "$dest" ./cmd/devpanel-client
           unset GITLAB_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 auth
           chmod 0755 "$dest"
@@ -162,6 +256,9 @@ jobs:
     needs: [plan, build]
     if: needs.plan.outputs.changed == 'true' && needs.build.result == 'success'
     runs-on: ubuntu-26.04
+    outputs:
+      cacheable: ${{ steps.commit-binaries.outputs.cacheable }}
+      platforms: ${{ steps.commit-binaries.outputs.platforms }}
     permissions:
       actions: write
       contents: write
@@ -172,17 +269,12 @@ jobs:
         with:
           ref: ${{ github.ref }}
 
-      - name: Download amd64 binary
+      - name: Download binaries
         uses: actions/download-artifact@v8
         with:
-          name: devpanel-binary-amd64
-          path: dist/amd64
-
-      - name: Download arm64 binary
-        uses: actions/download-artifact@v8
-        with:
-          name: devpanel-binary-arm64
-          path: dist/arm64
+          pattern: devpanel-binary-*
+          path: dist
+          merge-multiple: "true"
 
       - name: Commit binaries
         id: commit-binaries
@@ -192,11 +284,40 @@ jobs:
           TARGET_BRANCH: ${{ github.ref_name }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
+          BUILT_PLATFORMS: ${{ needs.plan.outputs.built }}
         run: |
           set -euo pipefail
-          install -m 0755 dist/amd64/devpanel-amd64 base/bin/devpanel-amd64
-          install -m 0755 dist/arm64/devpanel-arm64 base/bin/devpanel-arm64
-          git add -- base/bin/devpanel-amd64 base/bin/devpanel-arm64
+          shopt -s nullglob
+          # One downloaded artifact is extracted directly into dist/. Several
+          # artifacts use dist/<artifact>/ unless merge-multiple flattens them.
+          candidates=(dist/*/devpanel-* dist/devpanel-*)
+          binaries=()
+          seen_bins=" "
+          for candidate in "${candidates[@]}"; do
+            [[ -f "${candidate}" ]] || continue
+            name="$(basename "${candidate}")"
+            if [[ "${seen_bins}" == *" ${name} "* ]]; then
+              continue
+            fi
+            seen_bins="${seen_bins}${name} "
+            binaries+=("${candidate}")
+          done
+          if [[ "${#binaries[@]}" -eq 0 ]]; then
+            echo "::error::No devpanel binaries were downloaded."
+            exit 1
+          fi
+          paths=()
+          for binary in "${binaries[@]}"; do
+            name="$(basename "${binary}")"
+            install -m 0755 "${binary}" "base/bin/${name}"
+            paths+=("base/bin/${name}")
+          done
+          platforms=$(jq -r 'join(" ")' <<< "${BUILT_PLATFORMS}")
+          if [[ -z "${platforms}" || "${platforms}" == "null" ]]; then
+            echo "::error::No platforms were selected for the commit."
+            exit 1
+          fi
+          git add -- "${paths[@]}"
           if git diff --cached --quiet; then
             echo "Build produced no changes to commit."
           else
@@ -204,7 +325,7 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit \
               -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
-              -m "Built linux/amd64 and linux/arm64 from cmd/devpanel-client at that commit."
+              -m "Built ${platforms} from cmd/devpanel-client at that commit."
 
             commit_sha=$(git rev-parse HEAD)
 
@@ -225,6 +346,49 @@ jobs:
               target_hash=$(printf '%s' "${TARGET_BRANCH}" | sha256sum | cut -d ' ' -f 1)
               branch="devpanel-cli-update-${target_hash}-${UPSTREAM_SHA:0:12}"
               test_branch="${branch}"
+              # A pending update for this revision may already hold other architectures.
+              # Rebase this run's commit onto it so those binaries are kept.
+              prior_ref="refs/pending-devpanel-cli"
+              if git fetch --depth 2 origin "+refs/heads/${branch}:${prior_ref}"; then
+                prior_sha=$(git rev-parse "${prior_ref}")
+                prior_message=$(git log -1 --format=%B "${prior_sha}")
+                prior_subject=$(printf '%s\n' "${prior_message}" | head -n 1)
+                prior_line=$(printf '%s\n' "${prior_message}" | sed -n '/^Built /p' | head -n 1)
+                if [[ "${prior_subject}" =~ ^Update\ devpanel\ CLI\ from\ GitLab\ devpanel-vn/cli@([0-9a-f]{40})$ ]] \
+                    && [[ "${BASH_REMATCH[1]}" == "${UPSTREAM_SHA}" ]] \
+                    && [[ "${prior_line}" =~ ^Built[[:space:]](.+)[[:space:]]from[[:space:]]cmd/devpanel-client[[:space:]]at[[:space:]]that[[:space:]]commit\.$ ]]; then
+                  prior_list="${BASH_REMATCH[1]}"
+                  prior_list="${prior_list//linux\//linux-}"
+                  prior_list="${prior_list// and / }"
+                  valid=1
+                  for token in ${prior_list}; do
+                    if [[ ! "${token}" =~ ^linux(-[a-z0-9]+)+$ ]]; then
+                      valid=0
+                      break
+                    fi
+                  done
+                  if [[ "${valid}" -eq 1 ]]; then
+                    union=()
+                    seen_platforms=" "
+                    for token in ${prior_list} ${platforms}; do
+                      if [[ "${seen_platforms}" != *" ${token} "* ]]; then
+                        seen_platforms="${seen_platforms}${token} "
+                        union+=("${token}")
+                      fi
+                    done
+                    platforms="${union[*]}"
+                    base_sha=$(git rev-parse HEAD~1)
+                    prior_parent=$(git rev-parse "${prior_sha}^")
+                    git rebase -X theirs --onto "${prior_sha}" "${base_sha}"
+                    git reset --soft "${prior_parent}"
+                    git commit \
+                      -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
+                      -m "Built ${platforms} from cmd/devpanel-client at that commit."
+                    commit_sha=$(git rev-parse HEAD)
+                    echo "Rebased onto the pending update and recorded ${platforms}."
+                  fi
+                fi
+              fi
               pr=$(gh pr list \
                 --state all \
                 --base "${TARGET_BRANCH}" \
@@ -298,19 +462,32 @@ jobs:
               fi
             fi
           fi
+          committed_platforms=$(jq -nc --arg list "${platforms}" '$list | split(" ")')
+          echo "platforms=${committed_platforms}" >> "$GITHUB_OUTPUT"
           echo "cacheable=true" >> "$GITHUB_OUTPUT"
 
+  save-cache:
+    name: Cache ${{ matrix.platform }}
+    needs: [plan, commit]
+    if: needs.commit.outputs.cacheable == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(needs.commit.outputs.platforms) }}
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: write
+      contents: read
+    steps:
       - name: Record the built revision
-        if: steps.commit-binaries.outputs.cacheable == 'true'
         env:
           UPSTREAM_SHA: ${{ needs.plan.outputs.sha }}
         run: |
           mkdir -p "${RUNNER_TEMP}/devpanel-cli-revision"
           printf '%s\n' "${UPSTREAM_SHA}" > "${RUNNER_TEMP}/devpanel-cli-revision/sha"
 
-      - name: Save the built revision
-        if: steps.commit-binaries.outputs.cacheable == 'true'
+      - name: Save the platform revision
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
-          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ needs.plan.outputs.sha }}
+          key: gitlab-devpanel-client-v1-${{ github.ref }}-${{ needs.plan.outputs.sha }}-${{ matrix.platform }}

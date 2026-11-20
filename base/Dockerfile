@@ -294,7 +294,11 @@ RUN a2enmod rewrite remoteip headers
 
 # Copy shared assets from the 'common' build context (./base/ directory).
 # Per-version Dockerfiles may overlay version-specific files on top.
-COPY --from=common bin/devpanel /usr/local/bin/devpanel
+# devpanel-$TARGETARCH is the CLI for this image, built from
+# https://gitlab.com/devpanel-vn/cli (package cmd/devpanel-client).
+# The build fails when that native binary is not in the repository.
+ARG TARGETARCH
+COPY --from=common bin/devpanel-${TARGETARCH} /usr/local/bin/devpanel
 RUN chmod +x /usr/local/bin/devpanel && devpanel version
 COPY --from=common templates /templates
 COPY --from=common scripts   /scripts
