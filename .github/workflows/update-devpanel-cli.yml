@@ -381,14 +381,30 @@ jobs:
                     our_sha=$(git rev-parse HEAD)
                     prior_parent=$(git rev-parse "${prior_sha}^")
                     git checkout -q -B devpanel-cli-combined "${prior_sha}"
-                    git rebase -X theirs --onto "${base_sha}" "${prior_parent}"
-                    git cherry-pick -X theirs --keep-redundant-commits "${our_sha}"
-                    git reset --soft "${base_sha}"
+                    # A conflict means the target already has a newer binary. Leave
+                    # the combined commit on the previous base so the pull request
+                    # merge fails instead of replacing that binary.
+                    if git rebase --onto "${base_sha}" "${prior_parent}"; then
+                      reset_to="${base_sha}"
+                    else
+                      git rebase --abort
+                      reset_to="${prior_parent}"
+                    fi
+                    if ! git cherry-pick --keep-redundant-commits "${our_sha}"; then
+                      mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+                      if [[ "${#conflicts[@]}" -eq 0 ]]; then
+                        exit 1
+                      fi
+                      git checkout --theirs -- "${conflicts[@]}"
+                      git add -- "${conflicts[@]}"
+                      git -c core.editor=true cherry-pick --continue
+                    fi
+                    git reset --soft "${reset_to}"
                     git commit \
                       -m "Update devpanel CLI from GitLab devpanel-vn/cli@${UPSTREAM_SHA}" \
                       -m "Built ${platforms} from cmd/devpanel-client at that commit."
                     commit_sha=$(git rev-parse HEAD)
-                    echo "Rebased onto the pending update and recorded ${platforms}."
+                    echo "Combined the pending update and recorded ${platforms}."
                   fi
                 fi
               fi

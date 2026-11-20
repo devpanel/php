@@ -326,7 +326,9 @@ for setup instructions.
   selected platforms build in parallel. This workflow does not change which
   binary the Dockerfile copies into images. If branch protection rejects the
   direct push, it opens or updates a CLI PR. A later subset for the same
-  revision keeps binaries already on that update branch. It finds the PR’s Test run for the
+  revision keeps binaries already on that update branch. If the target branch
+  already has a newer binary for one of those architectures, the rebase merge
+  fails. It finds the PR’s Test run for the
   generated head SHA, and approves it using `GHCR_TOKEN` (a PAT with `repo`
   scope). With auto-merge enabled, it requests rebase auto-merge and exits
   without waiting for tests to finish. It confirms and caches an immediate

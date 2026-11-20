@@ -220,7 +220,7 @@ class UpdaterTest(unittest.TestCase):
                 capture_output=True, text=True, timeout=30,
             )
             calls = [json.loads(line) for line in log.read_text().splitlines()]
-            if sink is not None and result.returncode == 0:
+            if sink is not None and (work / ".git").exists():
                 for name in ("devpanel-amd64", "devpanel-arm64"):
                     shown = subprocess.run(
                         [REAL_GIT, "-C", str(work), "show", f"HEAD:base/bin/{name}"],
@@ -240,6 +240,15 @@ class UpdaterTest(unittest.TestCase):
                     [REAL_GIT, "-C", str(work), "rev-list", "--count", "HEAD"],
                     text=True,
                 )
+                target = subprocess.check_output(
+                    [REAL_GIT, "-C", str(work), "rev-parse", "master~1"],
+                    text=True,
+                ).strip()
+                sink["merges_with_target"] = subprocess.run(
+                    [REAL_GIT, "-C", str(work), "merge-tree", "--write-tree",
+                     "HEAD", target],
+                    capture_output=True,
+                ).returncode == 0
             return result, calls, output.read_text()
 
     def test_protected_pr_lifecycle(self):
@@ -322,14 +331,15 @@ class UpdaterTest(unittest.TestCase):
     def test_pending_subset_keeps_other_architectures(self):
         sink = {}
         result, _, output = self.run_updater(
-            layout="arm64", pending=True, main_amd64="main-amd64", sink=sink,
+            layout="arm64", pending=True, sink=sink,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("cacheable=true\n", output)
         self.assertIn('platforms=["linux-amd64","linux-arm64"]\n', output)
         self.assertEqual(sink["devpanel-amd64"], "pending-amd64")
         self.assertEqual(sink["devpanel-arm64"], "new")
-        self.assertEqual(sink["commits"], "3\n")
+        self.assertEqual(sink["commits"], "2\n")
+        self.assertTrue(sink["merges_with_target"])
         self.assertEqual(
             sink["changed"], "base/bin/devpanel-amd64\nbase/bin/devpanel-arm64\n",
         )
@@ -352,6 +362,21 @@ class UpdaterTest(unittest.TestCase):
             sink["message"],
         )
         self.assertEqual(sink["commits"], "2\n")
+        self.assertTrue(sink["merges_with_target"])
+
+    def test_newer_target_binary_does_not_merge(self):
+        sink = {}
+        result, calls, output = self.run_updater(
+            layout="arm64", pending=True, main_amd64="main-amd64",
+            merge_status=1, sink=sink,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+        self.assertTrue(any(tool == "gh" and args[:2] == ["pr", "merge"]
+                            for tool, args, _ in calls))
+        self.assertEqual(sink["devpanel-amd64"], "pending-amd64")
+        self.assertEqual(sink["devpanel-arm64"], "new")
+        self.assertFalse(sink["merges_with_target"])
 
     def test_flat_single_artifact_is_installed(self):
         result, calls, output = self.run_updater(layout="flat", protected=False)
