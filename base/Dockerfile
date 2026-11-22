@@ -178,19 +178,25 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
 #== Update PEAR for HTTP chunked response support in legacy PHP images
+# Official php:8.6-apache (and newer) images drop --with-pear. PHP 8.6 installs
+# third-party extensions with PIE in 8.6/base/Dockerfile, so this step does
+# nothing when pear is absent. Older images still upgrade PEAR when they ship
+# a release older than 1.10.18.
 COPY resolve-pear-version.php /tmp/resolve-pear-version.php
 ARG PEAR_MIN_VERSION=1.10.18
-RUN installed_pear="$(pear version)" \
-    && installed_pear="${installed_pear#PEAR Version: }" \
-    && if dpkg --compare-versions "${installed_pear%%[[:space:]]*}" lt "$PEAR_MIN_VERSION"; then \
-      PEAR_VERSION="$(php /tmp/resolve-pear-version.php "$PEAR_MIN_VERSION")" \
-      && echo "Updating PEAR to ${PEAR_VERSION}" \
-      && curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
-        "https://pear.php.net/get/PEAR-${PEAR_VERSION}.tgz" -o /tmp/pear.tgz \
-      && pear upgrade --offline --loose /tmp/pear.tgz \
-      && mkdir -p "$(pear config-get cache_dir)" \
-      && pear clear-cache \
-      && rm -f /tmp/pear.tgz; \
+RUN if command -v pear >/dev/null 2>&1; then \
+      installed_pear="$(pear version)" \
+      && installed_pear="${installed_pear#PEAR Version: }" \
+      && if dpkg --compare-versions "${installed_pear%%[[:space:]]*}" lt "$PEAR_MIN_VERSION"; then \
+        PEAR_VERSION="$(php /tmp/resolve-pear-version.php "$PEAR_MIN_VERSION")" \
+        && echo "Updating PEAR to ${PEAR_VERSION}" \
+        && curl -fsSL --compressed --retry 5 --retry-all-errors --connect-timeout 10 \
+          "https://pear.php.net/get/PEAR-${PEAR_VERSION}.tgz" -o /tmp/pear.tgz \
+        && pear upgrade --offline --loose /tmp/pear.tgz \
+        && mkdir -p "$(pear config-get cache_dir)" \
+        && pear clear-cache \
+        && rm -f /tmp/pear.tgz; \
+      fi; \
     fi \
     && rm -f /tmp/resolve-pear-version.php
 
@@ -219,6 +225,11 @@ RUN installed_pear="$(pear version)" \
 # NOTE: libsodium sources are mounted read-write from the 'common-downloader'
 # stage via --mount=type=bind,rw so ./configure and make can write build
 # artifacts into the mount without polluting the final image layer.
+# NOTE: Images that ship pecl (PHP 8.5 and older) install redis, yaml,
+# memcached, and libsodium with pecl. PHP 8.6 has no pecl. Its third-party
+# extensions are installed with PIE in 8.6/base/Dockerfile. Sodium is bundled,
+# and Packagist has no PIE package for it, so PHP 8.6 rebuilds it with
+# docker-php-ext-install against the libsodium 1.0.18 built just above.
 RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/libsodium,rw \
     echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
@@ -243,24 +254,34 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
         bcmath bz2 calendar exif gettext gmp intl mysqli \
         pdo_mysql pdo_pgsql shmop soap sockets sysvmsg sysvsem sysvshm \
         tidy xsl zip pcntl \
-    && for i in $(seq 1 3); do \
-      pecl channel-update https://pecl.php.net/channel.xml \
-        && break \
-      || { [ "$i" -lt 3 ] && sleep 5; }; \
-    done \
-    && pecl install -o -f \
-        redis \
-        yaml \
-        memcached \
+    && if command -v pecl >/dev/null 2>&1; then \
+         for i in $(seq 1 3); do \
+           pecl channel-update https://pecl.php.net/channel.xml \
+             && break \
+           || { [ "$i" -lt 3 ] && sleep 5; }; \
+         done \
+         && pecl install -o -f redis \
+         && pecl install -o -f yaml \
+         && pecl install -o -f memcached; \
+       fi \
     && rm -f /usr/local/etc/php/conf.d/*sodium.ini \
     && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
     && apt-get remove libsodium* -y \
     && ( cd /tmp/libsodium/libsodium-1.0.18-RELEASE/ && ./configure && make && make check && make install ) \
-    && pecl install -o -f libsodium \
+    && if command -v pecl >/dev/null 2>&1; then \
+         pecl install -o -f libsodium; \
+       else \
+         docker-php-source extract \
+         && docker-php-ext-install -j$(nproc) sodium \
+         && docker-php-source delete; \
+       fi \
     && docker-php-ext-enable \
         bcmath bz2 calendar exif gettext gmp intl mysqli \
-        pdo_mysql pdo_pgsql redis shmop soap sockets sodium sysvmsg \
-        sysvsem sysvshm tidy xsl yaml zip pcntl memcached \
+        pdo_mysql pdo_pgsql shmop soap sockets sodium sysvmsg \
+        sysvsem sysvshm tidy xsl zip pcntl \
+    && if command -v pecl >/dev/null 2>&1; then \
+         docker-php-ext-enable redis yaml memcached; \
+       fi \
     && if ! php -r 'exit(extension_loaded("Zend OPcache") ? 0 : 1);'; then \
       docker-php-ext-enable opcache; \
     fi \

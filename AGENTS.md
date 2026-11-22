@@ -5,7 +5,7 @@ GitHub Copilot reads `.github/copilot-instructions.md`, which defers to this fil
 
 ## Project Overview
 
-This repository contains Dockerfiles and supporting scripts for building DevPanel PHP Docker images. Three shared image variants are built for each supported PHP version (7.4, 8.0, 8.1, 8.2, 8.3):
+This repository contains Dockerfiles and supporting scripts for building DevPanel PHP Docker images. Three shared image variants are built for each supported PHP version (7.4, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6):
 
 - **base** – Full PHP + Apache environment with Code Server, Composer, WP-CLI, and Drush. This is the foundation for all other variants.
 - **secure** – Extends `base`, adds ModSecurity (WAF) with the OWASP Core Rule Set.
@@ -31,7 +31,7 @@ advance/                      # Shared advance Dockerfile (extends secure)
   Dockerfile
   scripts/                    # Redis startup script
   supervisor/                 # Supervisor config
-<php-version>/                # Per-version override directories (e.g. 7.4, 8.0, 8.1, 8.2, 8.3)
+<php-version>/                # Per-version override directories (e.g. 7.4, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6)
   base/
     Dockerfile                # Version-specific PHP extension/package overrides only
   secure/                     # Only present where the version needs a secure-stage tweak (7.4, 8.0)

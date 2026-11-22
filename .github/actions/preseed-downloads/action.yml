@@ -24,7 +24,7 @@ inputs:
     required: true
   versions:
     description: >
-      Space-separated list of PHP versions being built (e.g. "7.4 8.0 8.1 8.2 8.3").
+      Space-separated list of PHP versions being built (e.g. "7.4 8.0 8.1 8.2 8.3 8.4 8.5 8.6").
       Used to pull the actual php:<version>-apache images and detect which Debian
       codename each version runs on, so compatibility tests use the real target image.
     required: true

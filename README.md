@@ -1,7 +1,7 @@
 # devpanel/php
 
 PHP Docker images for [DevPanel](https://devpanel.com) — multi-version,
-multi-variant images covering PHP 7.4 through 8.3 with Apache, ModSecurity,
+multi-variant images covering PHP 7.4 through 8.6 with Apache, ModSecurity,
 Redis, code-server (VS Code in the browser), Composer, Drush, WP-CLI and more.
 
 ---
@@ -36,18 +36,18 @@ Each image includes the native `devpanel` CLI built from
 (`base/bin/devpanel-${TARGETARCH}`). The image build fails when that
 binary is not available.
 
-Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3**
+Available PHP versions: **7.4 · 8.0 · 8.1 · 8.2 · 8.3 · 8.4 · 8.5 · 8.6**
 
 ---
 
 ## Quick start (users)
 
 ```bash
-# Pull the latest stable PHP 8.3 advance image
-docker pull devpanel/php:8.3-advance
+# Pull the latest stable PHP 8.6 advance image
+docker pull devpanel/php:8.6-advance
 
 # Run with code-server enabled on port 8080
-docker run -p 80:80 -p 8080:8080 devpanel/php:8.3-advance
+docker run -p 80:80 -p 8080:8080 devpanel/php:8.6-advance
 ```
 
 Open `http://localhost` for the web application and `http://localhost:8080`
