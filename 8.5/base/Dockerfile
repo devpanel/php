@@ -4,7 +4,7 @@
 # PHP_VERSION=8.5. Contains ONLY PHP 8.5 specific differences:
 #   - libavif-dev + libpcre2-dev (+ gd build libs) installed, used, removed
 #   - gd configure flags (with avif)
-#   - PECL: igbinary latest (no version pin), imagick latest, xdebug
+#   - PECL: igbinary 3.2.17RC1, imagick, xdebug
 #   - Composer override (common installs 2.3.10)
 FROM common-php-ext AS final
 
@@ -20,8 +20,9 @@ USER root
 # imagick is installed without a version pin to pick up the latest release with
 # PHP 8.5 API support (imagick 3.8.x does not support PHP 8.4+).
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
-# renovate: datasource=github-tags depName=igbinary/igbinary extractVersion=^(?<version>\d+\.\d+\.\d+)$
-ARG PECL_IGBINARY_VERSION=3.2.16
+# igbinary 3.2.16 does not compile on PHP 8.5 (missing php_smart_string.h); 3.2.17RC1 does.
+# renovate: datasource=github-tags depName=igbinary/igbinary versioning=loose extractVersion=^(?<version>\d+\.\d+\.\d+(?:RC\d+)?)$
+ARG PECL_IGBINARY_VERSION=3.2.17RC1
 # renovate: datasource=github-tags depName=Imagick/imagick extractVersion=^(?<version>\d+\.\d+\.\d+)$
 ARG PECL_IMAGICK_VERSION=3.8.1
 # renovate: datasource=github-tags depName=xdebug/xdebug extractVersion=^(?<version>\d+\.\d+\.\d+)$
