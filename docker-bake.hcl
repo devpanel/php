@@ -67,6 +67,7 @@ variable "VERSIONS"                      { default = "7.4 8.0 8.1 8.2 8.3 8.4 8.
 variable "VERSIONS_BASE"                 { default = "7.4 8.0 8.1 8.2 8.3 8.4 8.5 8.6" }
 variable "VERSIONS_SECURE"               { default = "7.4 8.0 8.1 8.2 8.3 8.4 8.5 8.6" }
 
+# renovate: datasource=github-releases depName=coreruleset/coreruleset extractVersion=^v(?<version>.+)$
 variable "CORERULESET_VERSION"           { default = "3.3.5"                   }
 # DOWNLOADS_DIR: path to a directory whose pre-downloaded/ subdirectory contains
 # pre-seeded build artifacts (code-server .deb files). When set by CI to a

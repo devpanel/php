@@ -70,7 +70,7 @@ runs:
     # finds the most-recently created entry whose key starts with that prefix.
     - name: Restore codenames cache
       id: codenames-cache
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25  # v5
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
         key: php-codenames-
@@ -100,7 +100,14 @@ runs:
         [[ -f "${CODENAMES_CACHE_FILE}" ]] || echo '{}' > "${CODENAMES_CACHE_FILE}"
 
         for ver in $VERSIONS; do
-          image="php:${ver}-apache"
+          # Use the digest-pinned image from base/Dockerfile so compatibility
+          # checks run against exactly the image the build will use.
+          image="$(sed -nE "s|^FROM (php:${ver//./\\.}-apache@sha256:[0-9a-f]{64}) AS .*|\1|p" \
+            "${GITHUB_WORKSPACE}/base/Dockerfile")"
+          if [ -z "$image" ]; then
+            echo "ERROR: base/Dockerfile has no digest-pinned php:${ver}-apache stage" >&2
+            exit 1
+          fi
 
           # ── Check codenames cache by PHP version ──────────────────────────
           # The Debian release for a PHP version never changes mid-lifecycle,
@@ -263,7 +270,7 @@ runs:
 
     - name: Save codenames cache
       if: always() && steps.codenames-cache-key.outputs.key != '' && steps.codenames-cache.outputs.cache-matched-key != steps.codenames-cache-key.outputs.key
-      uses: actions/cache/save@v5
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25  # v5
       with:
         path: ${{ runner.temp }}/php-codenames-cache.json
         key: ${{ steps.codenames-cache-key.outputs.key }}
@@ -276,7 +283,7 @@ runs:
     # cache entry per hash.
     - name: Restore preseed artifacts cache
       id: cache
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25  # v5
       with:
         path: ${{ runner.temp }}/preseed-artifacts
         key: preseed-codeserver-${{ steps.detect-and-resolve.outputs.cache_key }}
@@ -470,7 +477,7 @@ runs:
     # and no new entry is needed.
     - name: Save preseed artifacts cache
       if: steps.cache.outputs.cache-matched-key != format('preseed-codeserver-{0}', steps.detect-and-resolve.outputs.cache_key)
-      uses: actions/cache/save@v5
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25  # v5
       with:
         path: ${{ runner.temp }}/preseed-artifacts
         key: preseed-codeserver-${{ steps.detect-and-resolve.outputs.cache_key }}

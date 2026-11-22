@@ -28,25 +28,28 @@ concurrency:
 jobs:
   lint-yaml:
     name: Lint YAML
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
       - name: Install yamllint
-        run: pip install --quiet yamllint
+        env:
+          # renovate: datasource=pypi depName=yamllint
+          YAMLLINT_VERSION: 1.38.0
+        run: pip install --quiet "yamllint==${YAMLLINT_VERSION}"
 
       - name: Run YAML lint
         run: bash tests/lint-yaml.sh
 
   lint-shell:
     name: Lint Shell
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
@@ -59,11 +62,11 @@ jobs:
 
   lint-dockerfile:
     name: Lint Dockerfiles
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
       - name: Run Dockerfile lint
         run: bash tests/lint-dockerfile.sh
@@ -75,7 +78,7 @@ jobs:
   # When all_versions is requested via workflow_dispatch the job is skipped
   # and the empty before_shas causes the detect job to test every version.
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     if: github.event_name != 'workflow_dispatch' || inputs.all_versions != true
     permissions:
       actions: read
@@ -85,7 +88,7 @@ jobs:
       before_shas: ${{ steps.effective_sha.outputs.before_shas }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
       - name: Compute effective before_shas
         id: effective_sha
@@ -120,7 +123,7 @@ jobs:
     name: Detect versions
     needs: prepare
     if: always() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -130,7 +133,7 @@ jobs:
       has_versions: ${{ steps.versions.outputs.has_versions }}
       ghcr_repo: ${{ steps.ghcr.outputs.repo }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           fetch-depth: ${{ (needs.prepare.outputs.before_shas || '{}') != '{}' && '0' || '1' }}
 
@@ -176,7 +179,7 @@ jobs:
 
       - name: Upload preseed bake overrides
         if: steps.versions.outputs.has_versions == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: preseed-bake-overrides
           path: ${{ steps.preseed.outputs.bake_overrides_file }}
@@ -190,7 +193,7 @@ jobs:
       # produce an empty pre-downloaded/ dir.
       - name: Upload preseed pre-downloaded artifacts
         if: steps.versions.outputs.has_versions == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: preseed-pre-downloaded
           path: ${{ steps.preseed.outputs.downloads_dir }}/pre-downloaded/
@@ -200,7 +203,7 @@ jobs:
   # verification pass and after the detect job has produced the version list.
   build:
     name: Build and test PHP ${{ matrix.version }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [lint-yaml, lint-shell, lint-dockerfile, verify-code-server, detect]
     if: needs.detect.outputs.has_versions == 'true'
     strategy:
@@ -212,13 +215,13 @@ jobs:
       packages: read
       actions: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -230,7 +233,7 @@ jobs:
       # a cache miss would silently produce an empty pre-downloaded/ directory
       # and fail the Docker build.
       - name: Download preseed pre-downloaded artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8
         with:
           name: preseed-pre-downloaded
           path: ${{ runner.temp }}/build-downloads/pre-downloaded
@@ -240,7 +243,7 @@ jobs:
       # for every detected Debian codename, including the downgraded versions
       # needed for older codenames (Buster / Bullseye).
       - name: Download preseed bake overrides
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8
         with:
           name: preseed-bake-overrides
           path: ${{ runner.temp }}
@@ -259,11 +262,11 @@ jobs:
 
   verify-code-server:
     name: Verify code-server .deb hashes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
       - name: Get pinned code-server version
         id: cs-version
@@ -272,7 +275,7 @@ jobs:
 
       - name: Cache code-server .deb files
         id: cache-debs
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
         with:
           path: ${{ runner.temp }}/code-server-debs
           key: code-server-debs-${{ steps.cs-version.outputs.version }}
@@ -319,7 +322,7 @@ jobs:
   # status check ("Test") cover the whole workflow.
   status:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions: {}
     if: always() && !cancelled()
     needs:

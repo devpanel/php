@@ -1,6 +1,6 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 # ─── Artifact downloader ───────────────────────────────────────────────────
-# Uses php:${PHP_VERSION}-apache as base so that downloads are fetched inside
+# Uses the digest-pinned php:${PHP_VERSION}-apache image as base so that downloads are fetched inside
 # the same OS environment as the PHP version being built.  The Debian release
 # is detected at CI time from the actual PHP image (via VERSION_CODENAME in
 # /etc/os-release); each version gets the newest code-server it can support.
@@ -18,12 +18,23 @@ ARG PHP_VERSION=8.3
 # When no named context is provided (local docker build / local testing), this
 # stage's empty /pre-downloaded directory causes all downloads to fall through to
 # the normal network download path.
-FROM alpine:3 AS downloads
+FROM alpine:3@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS downloads
 RUN mkdir -p /pre-downloaded
+
+# Official PHP images, pinned by digest. One stage per supported PHP version so
+# Renovate can keep each digest current; PHP_VERSION selects the stage below.
+FROM php:7.4-apache@sha256:c9d7e608f73832673479770d66aacc8100011ec751d1905ff63fae3fe2e0ca6d AS php-image-7.4
+FROM php:8.0-apache@sha256:c87b4c94d53b35520467b6d026f38656ab9a6d446fa3a0fbba1bc633125f9ad2 AS php-image-8.0
+FROM php:8.1-apache@sha256:72f0c0134922985022d55a39b0390d35dc7a10e961aa6c44fa35b4c3102f4268 AS php-image-8.1
+FROM php:8.2-apache@sha256:b90981025fa445ad7784981110e9423656409177f761eb67b13dc98861049d00 AS php-image-8.2
+FROM php:8.3-apache@sha256:e520186957084dc0a5baaea83b2ef0c20b16e78c1de31b6fdb21dc1240cce42e AS php-image-8.3
+FROM php:8.4-apache@sha256:3550aedd1c7bdfe26283c7b1550ef76509e6c2b1284aef814e6f2e325b7c9688 AS php-image-8.4
+FROM php:8.5-apache@sha256:0a785eab8b7eb4836f9c6093771c8ea15ff8ba7269444f3da70a1d33d15fe664 AS php-image-8.5
+FROM php:8.6-apache@sha256:0b06b358a7d59cca80e0528aad0e49b43208c3a74754ffcd8a12d7727058511e AS php-image-8.6
 
 # Debian Bullseye reached end of LTS in August 2026. Its main repository is
 # archived, while the security suite is pinned to its final available snapshot.
-FROM php:${PHP_VERSION}-apache AS php-base
+FROM php-image-${PHP_VERSION} AS php-base
 RUN if grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release; then \
       sed -i \
         -e 's|deb.debian.org/debian-security|snapshot.debian.org/archive/debian-security/20260903T220410Z|g' \
@@ -39,9 +50,11 @@ ARG CODESERVER_DEB_SHA256_AMD64=74c107b33643ed11223263b86431530fbc9c9f7c82029975
 ARG CODESERVER_DEB_SHA256_ARM64=ae12d6300736dd742de3f5aef1b80c996c4b164ed385992e5de9d55f1e2077c3
 
 # Download libsodium source (pinned release, identical for every PHP version)
+# renovate: datasource=github-tags depName=jedisct1/libsodium extractVersion=^(?<version>\d+\.\d+\.\d+)-RELEASE$
+ARG LIBSODIUM_VERSION=1.0.18
 RUN mkdir -p /tmp/libsodium \
-    && curl -sL https://github.com/jedisct1/libsodium/archive/1.0.18-RELEASE.tar.gz \
-       | tar xzf - -C /tmp/libsodium
+    && curl -fsSL "https://github.com/jedisct1/libsodium/archive/${LIBSODIUM_VERSION}-RELEASE.tar.gz" \
+       | tar xzf - --strip-components=1 -C /tmp/libsodium
 
 # Download code-server deb. The version is resolved by CI and passed via
 # CODESERVER_VERSION; standalone builds use the Dockerfile default.
@@ -229,7 +242,15 @@ RUN if command -v pear >/dev/null 2>&1; then \
 # memcached, and libsodium with pecl. PHP 8.6 has no pecl. Its third-party
 # extensions are installed with PIE in 8.6/base/Dockerfile. Sodium is bundled,
 # and Packagist has no PIE package for it, so PHP 8.6 rebuilds it with
-# docker-php-ext-install against the libsodium 1.0.18 built just above.
+# docker-php-ext-install against the libsodium built just above.
+# renovate: datasource=github-tags depName=phpredis/phpredis
+ARG PECL_REDIS_VERSION=6.3.0
+# renovate: datasource=github-tags depName=php/pecl-file_formats-yaml
+ARG PECL_YAML_VERSION=2.3.0
+# renovate: datasource=github-tags depName=php-memcached-dev/php-memcached extractVersion=^v(?<version>\d+\.\d+\.\d+)$
+ARG PECL_MEMCACHED_VERSION=3.4.0
+# renovate: datasource=github-tags depName=jedisct1/libsodium-php
+ARG PECL_LIBSODIUM_VERSION=2.0.23
 RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/libsodium,rw \
     echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
@@ -260,16 +281,16 @@ RUN --mount=type=bind,from=common-downloader,source=/tmp/libsodium,target=/tmp/l
              && break \
            || { [ "$i" -lt 3 ] && sleep 5; }; \
          done \
-         && pecl install -o -f redis \
-         && pecl install -o -f yaml \
-         && pecl install -o -f memcached; \
+         && pecl install -o -f "redis-${PECL_REDIS_VERSION}" \
+         && pecl install -o -f "yaml-${PECL_YAML_VERSION}" \
+         && pecl install -o -f "memcached-${PECL_MEMCACHED_VERSION}"; \
        fi \
     && rm -f /usr/local/etc/php/conf.d/*sodium.ini \
     && rm -f /usr/local/lib/php/extensions/*/*sodium.so \
     && apt-get remove libsodium* -y \
-    && ( cd /tmp/libsodium/libsodium-1.0.18-RELEASE/ && ./configure && make && make check && make install ) \
+    && ( cd /tmp/libsodium/ && ./configure && make && make check && make install ) \
     && if command -v pecl >/dev/null 2>&1; then \
-         pecl install -o -f libsodium; \
+         pecl install -o -f "libsodium-${PECL_LIBSODIUM_VERSION}"; \
        else \
          docker-php-source extract \
          && docker-php-ext-install -j$(nproc) sodium \
@@ -327,8 +348,11 @@ COPY --from=common drush     /drush
 COPY --from=common config/drush.yml /etc/drush/drush.yml
 COPY --from=common config/mariadb-client.cnf /etc/mysql/conf.d/drupalforge.cnf
 
-# Install BEE CLI (identical across all PHP versions)
+# Install BEE CLI (identical across all PHP versions), pinned to a commit.
+# renovate: datasource=git-refs depName=https://github.com/backdrop-contrib/bee.git currentValue=1.x-1.x
+ARG BEE_COMMIT=22a30283dc538885018900e725155dbaa25ea0aa
 RUN mkdir /bee && git clone https://github.com/backdrop-contrib/bee.git /bee \
+    && git -C /bee checkout --detach "${BEE_COMMIT}" \
     && chmod +x /bee/bee.php \
     && ln -s /bee/bee.php /usr/bin/bee
 
@@ -341,18 +365,24 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm /tmp/code-server.deb \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
-# Install Composer 2.x (default 2.3.10; PHP 8.3 overrides to 2.7.7 via self-update)
-# and legacy Composer 1.x for projects that require it.
+# Install Composer 2.x (default 2.3.10; PHP 8.3+ overrides it via self-update)
+# and legacy Composer 1.x for projects that require it. Both are the pinned
+# release phars from getcomposer.org.
 # 'composer2' bash alias is set after USER switch below.
-RUN curl -fsSL https://getcomposer.org/installer \
-      | php -- --install-dir=/usr/local/bin --filename=composer  --version=2.3.10 \
-    && curl -fsSL https://getcomposer.org/installer \
-      | php -- --install-dir=/usr/local/bin --filename=composer1 --version=1.10.16
+# renovate: datasource=github-releases depName=composer/composer versioning=semver extractVersion=^(?<version>2\.\d+\.\d+)$
+ARG COMPOSER_VERSION=2.3.10
+# renovate: datasource=github-releases depName=composer/composer versioning=semver extractVersion=^(?<version>1\.\d+\.\d+)$
+ARG COMPOSER1_VERSION=1.10.16
+RUN curl -fsSL "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar" -o /usr/local/bin/composer \
+    && curl -fsSL "https://getcomposer.org/download/${COMPOSER1_VERSION}/composer.phar" -o /usr/local/bin/composer1 \
+    && chmod +x /usr/local/bin/composer /usr/local/bin/composer1
 
 # Install WP-CLI (default 2.9.0; PHP 7.4 per-version Dockerfile overrides with 2.4.0)
-RUN curl -LO https://github.com/wp-cli/wp-cli/releases/download/v2.9.0/wp-cli-2.9.0.phar \
-    && chmod +x wp-cli-2.9.0.phar \
-    && mv wp-cli-2.9.0.phar /usr/local/bin/wp
+# renovate: datasource=github-releases depName=wp-cli/wp-cli extractVersion=^v(?<version>.+)$
+ARG WP_CLI_VERSION=2.9.0
+RUN curl -fsSLO "https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar" \
+    && chmod +x "wp-cli-${WP_CLI_VERSION}.phar" \
+    && mv "wp-cli-${WP_CLI_VERSION}.phar" /usr/local/bin/wp
 
 ARG DRUSH_VERSION=8
 RUN ln -s /drush/drush${DRUSH_VERSION}/vendor/bin/drush /usr/bin/drush \
@@ -378,8 +408,10 @@ RUN composer update --working-dir=/drush/drush10 \
 RUN composer update --working-dir=/drush/drush11 \
     && echo "alias drush11=/drush/drush11/vendor/bin/drush" >> ~/.bashrc
 
-RUN wget https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/heads/1.x-1.x.zip \
-    && unzip 1.x-1.x.zip -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
+# renovate: datasource=github-tags depName=backdrop-contrib/backdrop-drush-extension
+ARG BACKDROP_DRUSH_EXTENSION_VERSION=1.4.1
+RUN wget "https://github.com/backdrop-contrib/backdrop-drush-extension/archive/refs/tags/${BACKDROP_DRUSH_EXTENSION_VERSION}.zip" \
+    && unzip "${BACKDROP_DRUSH_EXTENSION_VERSION}.zip" -d /drush/drush${DRUSH_VERSION}/vendor/drush/drush/commands/backdrop \
     && /drush/drush${DRUSH_VERSION}/vendor/bin/drush cc drush
 
 CMD ["sudo", "-E", "/bin/bash", "/scripts/apache-start.sh"]

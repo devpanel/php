@@ -2,6 +2,24 @@
 
 Use this file to track work that needs to be done. Lint scripts automatically append baseline-cleanup entries here when all violations for a linter reach zero.
 
+# Task: Pin every dependency and automate updates with Renovate
+
+## Steps
+- [x] Inventory every pinned and unpinned dependency (Dockerfiles, per-version overrides, bake file, scripts, workflows, composite actions).
+- [x] Pin the unpinned ones: base images by digest (`php:<version>-apache` stages, `alpine:3`, `docker/dockerfile` syntax image), hadolint image digest, GitHub Actions by commit SHA, `ubuntu-latest` runners, `yamllint`, PECL extensions (redis, yaml, memcached, libsodium, igbinary, imagick, xdebug, oauth), Composer and WP-CLI via `ARG`, Composer `self-update` versions, BEE CLI commit, backdrop-drush-extension tag, libsodium source version, Drush composer constraints.
+- [x] Add `renovate.json` (PR-only, no auto-merge) with regex managers for `# renovate:`-annotated pins, the 8.6 PIE-installed commits, `composer self-update`, and the hadolint image.
+- [x] Make `preseed-downloads` use the digest-pinned `php:<version>-apache` image from `base/Dockerfile`.
+- [x] Validate `renovate.json` with `renovate-config-validator --strict` and a local `renovate --platform=local --dry-run=lookup` run.
+- [x] Refresh the hadolint baseline; confirm YAML and shell lint match their baselines.
+- [x] Build and run-test the affected images (`./test.sh build run --version 7.4`, `8.6`, `8.4`): all exited 0 with 48 passed, 0 failed.
+- [ ] Install the Renovate GitHub App on the repository (admin action; no secrets needed).
+
+## Definition of Done
+- Every dependency listed in the PR body is pinned to a version, commit, or digest, or is listed as a known gap with a follow-up.
+- `renovate.json` validates and a local dry run extracts every annotated pin without warnings.
+- Lint matches the baselines; build and run tests pass for 7.4, 8.4, and 8.6.
+- Known gaps (apt packages, code-server SHA256, preseed code-server resolution, PEAR, Drush transitive dependencies) are documented in `AGENTS.md` and the PR.
+
 # Task: Add PHP 8.6 image support
 
 ## Steps

@@ -1,0 +1,170 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["docker:pinDigests", "helpers:pinGitHubActionDigests"],
+  "enabledManagers": ["dockerfile", "github-actions", "composer", "custom.regex"],
+  "dependencyDashboard": false,
+  "automerge": false,
+  "platformAutomerge": false,
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 10,
+  "labels": ["dependencies"],
+  "customManagers": [
+    {
+      "description": "Annotated ARG pins in Dockerfiles: '# renovate: datasource=... depName=...' directly above 'ARG NAME=value'.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Dockerfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?(?: extractVersion=(?<extractVersion>\\S+))?\\s+ARG\\s+\\w+=\"?(?<currentValue>[^\\s\"]+)\"?\\s"
+      ]
+    },
+    {
+      "description": "Annotated version pins in docker-bake.hcl variables and GitHub workflow env values.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docker-bake\\.hcl$/", "/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?(?: extractVersion=(?<extractVersion>\\S+))?\\s+(?:variable\\s+\"\\w+\"\\s*\\{\\s*default\\s*=\\s*\"|\\w+:\\s*)(?<currentValue>[^\\s\"]+)"
+      ]
+    },
+    {
+      "description": "Annotated git commit pins tracking a branch: '# renovate: datasource=git-refs depName=<url> currentValue=<branch>' above 'ARG NAME=<sha>'.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Dockerfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>git-refs) depName=(?<depName>\\S+) currentValue=(?<currentValue>\\S+)\\s+ARG\\s+\\w+=(?<currentDigest>[a-f0-9]{40})\\s"
+      ]
+    },
+    {
+      "description": "PHP 8.6 PIE-installed extension commits. Matched by ARG name so the 8.6 Dockerfile needs no annotations.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^8\\.6/base/Dockerfile$/"],
+      "datasourceTemplate": "git-refs",
+      "matchStrings": ["ARG PHPREDIS_COMMIT=(?<currentDigest>[a-f0-9]{40})"],
+      "depNameTemplate": "https://github.com/phpredis/phpredis",
+      "currentValueTemplate": "develop"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^8\\.6/base/Dockerfile$/"],
+      "datasourceTemplate": "git-refs",
+      "matchStrings": ["ARG YAML_COMMIT=(?<currentDigest>[a-f0-9]{40})"],
+      "depNameTemplate": "https://github.com/php/pecl-file_formats-yaml",
+      "currentValueTemplate": "php7"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^8\\.6/base/Dockerfile$/"],
+      "datasourceTemplate": "git-refs",
+      "matchStrings": ["ARG MEMCACHED_COMMIT=(?<currentDigest>[a-f0-9]{40})"],
+      "depNameTemplate": "https://github.com/php-memcached-dev/php-memcached",
+      "currentValueTemplate": "master"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^8\\.6/base/Dockerfile$/"],
+      "datasourceTemplate": "git-refs",
+      "matchStrings": ["ARG IGBINARY_COMMIT=(?<currentDigest>[a-f0-9]{40})"],
+      "depNameTemplate": "https://github.com/igbinary/igbinary",
+      "currentValueTemplate": "master"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^8\\.6/base/Dockerfile$/"],
+      "datasourceTemplate": "git-refs",
+      "matchStrings": ["ARG IMAGICK_COMMIT=(?<currentDigest>[a-f0-9]{40})"],
+      "depNameTemplate": "https://github.com/Imagick/imagick",
+      "currentValueTemplate": "master"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^8\\.6/base/Dockerfile$/"],
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "loose",
+      "matchStrings": ["ARG XDEBUG_VERSION=(?<currentValue>\\S+)"],
+      "depNameTemplate": "xdebug/xdebug"
+    },
+    {
+      "description": "Per-version Composer overrides: 'RUN composer self-update <version>'.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\d+\\.\\d+/base/Dockerfile$/"],
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver",
+      "extractVersionTemplate": "^(?<version>2\\.\\d+\\.\\d+)$",
+      "matchStrings": ["composer self-update (?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "composer/composer"
+    },
+    {
+      "description": "Hadolint image used by tests/lint-dockerfile.sh.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^tests/lint-dockerfile\\.sh$/"],
+      "datasourceTemplate": "docker",
+      "matchStrings": ["hadolint/hadolint:(?<currentValue>v[\\d.]+)@(?<currentDigest>sha256:[a-f0-9]{64})"],
+      "depNameTemplate": "hadolint/hadolint"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Official PHP images: the tag selects the PHP version, so only the digest may move. A new PHP version is added by hand (see AGENTS.md).",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["php"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "enabled": false
+    },
+    {
+      "description": "One PR for all PHP image digest refreshes.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["php"],
+      "groupName": "PHP base image digests"
+    },
+    {
+      "description": "PIE binary image stays on the 1.5.x -bin line.",
+      "matchPackageNames": ["ghcr.io/php/pie"],
+      "allowedVersions": "/^1\\.5\\.\\d+-bin$/",
+      "commitMessageTopic": "PIE binary image",
+      "prBodyNotes": [
+        "Also update the `# PIE <version>: ghcr.io/php/pie:<version>-bin` comment in `8.6/base/Dockerfile` to match."
+      ]
+    },
+    {
+      "description": "Group the GitHub Actions bumps.",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "ModSecurity CRS 4 needs new crs-setup.conf/modsecurity.conf templates; stay on 3.x until those are ported.",
+      "matchPackageNames": ["coreruleset/coreruleset"],
+      "allowedVersions": "<4.0.0"
+    },
+    {
+      "description": "PHP 7.4 keeps WP-CLI 2.4.0 on purpose; do not bump it.",
+      "matchPackageNames": ["wp-cli/wp-cli"],
+      "matchFileNames": ["7.4/base/Dockerfile"],
+      "enabled": false
+    },
+    {
+      "description": "Keep each Drush directory on its own major line.",
+      "matchPackageNames": ["drush/drush"],
+      "matchFileNames": ["7.4/base/drush/drush7/composer.json"],
+      "allowedVersions": "/^7\\./"
+    },
+    {
+      "matchPackageNames": ["drush/drush"],
+      "matchFileNames": ["base/drush/drush8/composer.json"],
+      "allowedVersions": "/^8\\./"
+    },
+    {
+      "matchPackageNames": ["drush/drush"],
+      "matchFileNames": ["base/drush/drush9/composer.json"],
+      "allowedVersions": "/^9\\./"
+    },
+    {
+      "matchPackageNames": ["drush/drush"],
+      "matchFileNames": ["base/drush/drush10/composer.json"],
+      "allowedVersions": "/^10\\./"
+    },
+    {
+      "matchPackageNames": ["drush/drush"],
+      "matchFileNames": ["base/drush/drush11/composer.json"],
+      "allowedVersions": "/^11\\./"
+    }
+  ]
+}

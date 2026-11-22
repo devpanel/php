@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 # ─── PHP 7.4 base final image ─────────────────────────────────────────────────
 # Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
 # PHP_VERSION=7.4. Contains ONLY PHP 7.4 specific differences:
@@ -6,7 +6,7 @@
 #   - libmagickwand-dev + libmagickcore-dev for imagick: installed, used, removed
 #   - libpspell-dev for pspell: installed, used, removed
 #   - gd configure flags (no avif)
-#   - PECL: igbinary 3.2.12, imagick 3.8.1, oauth extension
+#   - PECL: igbinary 3.2.16, imagick 3.8.1, oauth extension
 #   - WP-CLI 2.4.0 override (common installs 2.9.0)
 #   - drush7 (PHP 7.4 only)
 #   - apache-start.sh override (extra WEB_ROOT substitution)
@@ -23,6 +23,12 @@ USER root
 # kept (it is a shared-library dependency of the compiled extensions).
 # libmagickwand-dev and libmagickcore-dev are required to build imagick.
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
+# renovate: datasource=github-tags depName=igbinary/igbinary extractVersion=^(?<version>\d+\.\d+\.\d+)$
+ARG PECL_IGBINARY_VERSION=3.2.16
+# renovate: datasource=github-tags depName=Imagick/imagick extractVersion=^(?<version>\d+\.\d+\.\d+)$
+ARG PECL_IMAGICK_VERSION=3.8.1
+# renovate: datasource=github-tags depName=php/pecl-web_services-oauth extractVersion=^(?<version>\d+\.\d+\.\d+)$
+ARG PECL_OAUTH_VERSION=2.0.7
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
     && for i in $(seq 1 3); do \
@@ -43,9 +49,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install -j$(nproc) gd pspell \
     && pecl install -o -f \
-        igbinary \
-        imagick \
-        oauth-2.0.7 \
+        "igbinary-${PECL_IGBINARY_VERSION}" \
+        "imagick-${PECL_IMAGICK_VERSION}" \
+        "oauth-${PECL_OAUTH_VERSION}" \
     && docker-php-ext-enable gd igbinary imagick oauth pspell \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \
@@ -84,10 +90,12 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
 # Override WP-CLI with 7.4-specific version (2.4.0)
+# renovate: datasource=github-releases depName=wp-cli/wp-cli extractVersion=^v(?<version>.+)$
+ARG WP_CLI_VERSION=2.4.0
 RUN rm -f /usr/local/bin/wp \
-    && curl -LO https://github.com/wp-cli/wp-cli/releases/download/v2.4.0/wp-cli-2.4.0.phar \
-    && chmod +x wp-cli-2.4.0.phar \
-    && mv wp-cli-2.4.0.phar /usr/local/bin/wp
+    && curl -fsSLO "https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar" \
+    && chmod +x "wp-cli-${WP_CLI_VERSION}.phar" \
+    && mv "wp-cli-${WP_CLI_VERSION}.phar" /usr/local/bin/wp
 
 # Overlay 7.4-specific drush files: drush7 (PHP 7.4 only).
 # Docker COPY merges so common drush8/9/10/11 are preserved.

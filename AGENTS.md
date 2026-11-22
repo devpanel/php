@@ -37,6 +37,7 @@ advance/                      # Shared advance Dockerfile (extends secure)
   secure/                     # Only present where the version needs a secure-stage tweak (7.4, 8.0)
     Dockerfile
 docker-bake.hcl               # BuildKit Bake file — controls all builds, versions, and tagging
+renovate.json                 # Renovate config: opens PRs to bump pinned versions and digests
 tests/                        # Test and lint scripts
   build-dockerfile.sh
   run-dockerfile.sh
@@ -115,11 +116,18 @@ Baseline JSON files in `tests/baselines/` track pre-existing lint violations per
 1. Create `<version>/base/Dockerfile` with any PHP-version-specific package or extension differences (copy the closest existing version directory as a starting point).
 2. If the new version requires a secure-stage tweak, also create `<version>/secure/Dockerfile`.
 3. Add the new version to the `VERSIONS` variable default in `docker-bake.hcl` and update `LATEST_PHP_VERSION` if it becomes the highest version.
-4. Run `./test.sh` to verify linting and build correctness.
+4. Add a `FROM php:<version>-apache@sha256:<digest> AS php-image-<version>` stage to `base/Dockerfile` (resolve the digest with `docker buildx imagetools inspect php:<version>-apache`). Renovate keeps the digest current; `preseed-downloads` reads it from there.
+5. Run `./test.sh` to verify linting and build correctness.
 
 ### Adding or Updating a Tool
 - Update the relevant `ARG <TOOL>_VERSION` value (or the hard-coded version string) in the shared Dockerfile under `base/`, `secure/`, or `advance/`.
 - If a per-version override Dockerfile in `<version>/base/` also references the tool (e.g. PHP 7.4 pins an older version), update it there too.
+- Every dependency must be pinned to an exact version, commit, or digest; never use `latest`, a bare tag, a branch name, or an unversioned `pecl install`/`composer` constraint. Put the pin in an `ARG` and add a `# renovate: datasource=... depName=...` comment directly above it (see `renovate.json` for the supported attributes) so Renovate can update it.
+
+### Dependency Updates (Renovate)
+- `renovate.json` configures Renovate (install the Renovate GitHub App on the repository; no secrets are needed). It only opens pull requests: `automerge` and `platformAutomerge` are off, it never pushes to `main`, and it runs weekly.
+- Covered: digest pins for the `php:<version>-apache`, `alpine`, `docker/dockerfile` and PIE images; GitHub Actions pinned by commit SHA (keep the `# vN` comment); `# renovate:`-annotated `ARG` pins in Dockerfiles, `docker-bake.hcl` and workflows; PECL extension versions and the 8.6 PIE-installed commits; Composer (`ARG` and `composer self-update <version>`); `drush/drush` constraints in `composer.json`; the hadolint image.
+- Renovate cannot update these; change them by hand and keep them pinned: apt packages (hadolint DL3008 is baselined), `CODESERVER_VERSION` with its two `CODESERVER_DEB_SHA256_*` values (CI resolves code-server dynamically in `preseed-downloads`), the PEAR floor and resolver, transitive Drush dependencies (resolved by `composer update` at build time), the PGDG and Redis apt repositories and keys, `shellcheck`/`skopeo` installed by apt in CI, and `base/bin/devpanel-*` (updated by `update-devpanel-cli.yml`).
 
 ### GitHub Actions
 

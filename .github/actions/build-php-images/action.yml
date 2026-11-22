@@ -104,7 +104,7 @@ runs:
         fi
 
     - name: Login to GitHub Container Registry
-      uses: docker/login-action@v4
+      uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4
       # When ghcr_writable is false the login is best-effort: a failure must
       # not abort the build because GHA cache is the fallback layer cache.
       continue-on-error: ${{ inputs.ghcr_writable != 'true' }}
@@ -118,10 +118,10 @@ runs:
     # ubuntu-26.04-arm, so those native builds skip QEMU.
     - name: Set up QEMU
       if: ${{ (runner.arch == 'X64' && !startsWith(inputs.platform, 'linux/amd64')) || (runner.arch == 'ARM64' && !startsWith(inputs.platform, 'linux/arm64')) }}
-      uses: docker/setup-qemu-action@v4
+      uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v4
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
 
     # Publish the preseed inputs as step outputs so every downstream step
     # references a single consistent set of variables.
@@ -179,7 +179,7 @@ runs:
     # VERSIONS_BASE='' and PUSH_BY_DIGEST=false ensure no Docker Hub output is
     # produced here; the php-base target resolves to empty tags and empty output.
     - name: Pre-warm GHCR layer cache (build php-base without Docker Hub push)
-      uses: docker/bake-action@v7
+      uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e  # v7
       env:
         TAG_SUFFIX: ${{ inputs.tag_suffix }}
         VERSIONS: ${{ inputs.version }}
@@ -208,7 +208,7 @@ runs:
     # Docker Hub via the runner token when the GHCR cache was cold), so the
     # push bakes below find everything in BuildKit's cache and never re-pull.
     - name: Login to Docker Hub
-      uses: docker/login-action@v4
+      uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
@@ -226,7 +226,7 @@ runs:
     - name: Build base image
       id: bake-base
       if: inputs.versions_base != ''
-      uses: docker/bake-action@v7
+      uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e  # v7
       env:
         TAG_SUFFIX: ${{ inputs.tag_suffix }}
         VERSIONS: ${{ inputs.version }}
@@ -276,7 +276,7 @@ runs:
 
     - name: Upload base digest artifact
       if: steps.base-digest.outputs.has_base == 'true'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
       with:
         name: digests-${{ steps.platform.outputs.version }}-base-${{ steps.platform.outputs.platform_key }}
         path: /tmp/digests/base/${{ steps.platform.outputs.platform_key }}.json
@@ -287,7 +287,7 @@ runs:
     - name: Build secure image
       id: bake-secure
       if: inputs.versions_secure != ''
-      uses: docker/bake-action@v7
+      uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e  # v7
       env:
         TAG_SUFFIX: ${{ inputs.tag_suffix }}
         VERSIONS: ${{ inputs.version }}
@@ -337,7 +337,7 @@ runs:
 
     - name: Upload secure digest artifact
       if: steps.secure-digest.outputs.has_secure == 'true'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
       with:
         name: digests-${{ steps.platform.outputs.version }}-secure-${{ steps.platform.outputs.platform_key }}
         path: /tmp/digests/secure/${{ steps.platform.outputs.platform_key }}.json
@@ -347,7 +347,7 @@ runs:
 
     - name: Build advance image
       id: bake-advance
-      uses: docker/bake-action@v7
+      uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e  # v7
       env:
         TAG_SUFFIX: ${{ inputs.tag_suffix }}
         VERSIONS: ${{ inputs.version }}
@@ -397,7 +397,7 @@ runs:
 
     - name: Upload advance digest artifact
       if: steps.advance-digest.outputs.has_advance == 'true'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
       with:
         name: digests-${{ steps.platform.outputs.version }}-advance-${{ steps.platform.outputs.platform_key }}
         path: /tmp/digests/advance/${{ steps.platform.outputs.platform_key }}.json
@@ -433,7 +433,7 @@ runs:
 
     - name: Upload build-done artifact
       if: always() && steps.build-done-marker.outputs.platform_key != ''
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
       with:
         name: build-done-a${{ github.run_attempt }}-${{ steps.build-done-marker.outputs.version }}-${{ steps.build-done-marker.outputs.platform_key }}
         path: /tmp/build-done/${{ steps.build-done-marker.outputs.platform_key }}.txt
