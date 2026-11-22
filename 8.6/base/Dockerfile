@@ -12,6 +12,13 @@
 # pspell stays omitted (removed from PHP in 8.4). OPcache is part of the
 # binary since 8.5 and is handled in the shared stage. Sodium is bundled and
 # rebuilt in the shared stage; Packagist has no PIE package for it.
+
+#== PIE binary (build-time installs and runtime copy)
+# Pinned PIE image; digest is the multi-arch index of ghcr.io/php/pie:1.5.5-bin.
+ARG PIE_VERSION=1.5.5
+ARG PIE_IMAGE_DIGEST=sha256:3fca03c16df842d02b654dc382db3756058d9c128064f57cace14f8728779ce9
+FROM ghcr.io/php/pie:${PIE_VERSION}-bin@${PIE_IMAGE_DIGEST} AS pie
+
 FROM common-php-ext AS final
 
 # Switch to root for version-specific installation
@@ -29,8 +36,9 @@ USER root
 # commits that do, plus Xdebug 3.6.0alpha1 (3.6 drops PHP 8.0 and 8.1, so it
 # stays in this file). Imagick master still calls removed zval_dtor(); that
 # one install maps the call to zval_ptr_dtor_nogc() with a compiler macro.
-# PIE is mounted from its binary image and is not copied into the runtime layer.
-# PIE 1.5.5: ghcr.io/php/pie:1.5.5-bin
+# During this build PIE is bind-mounted from its binary image (ghcr.io/php/pie:1.5.5-bin).
+# The same pinned binary is copied into the runtime layer at the end of this
+# file so users can run `pie install` inside containers.
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
 ARG PHPREDIS_COMMIT=a6ce1e60b3e81ce3b25174aa5aaefd5590dc64fd
 ARG YAML_COMMIT=a7a3b8680b8fbf0895fd63371a0ffc1305b1a5b8
@@ -38,7 +46,7 @@ ARG MEMCACHED_COMMIT=0b52d3657140750fa0eddd20cdbfc6edc8fbdadd
 ARG IGBINARY_COMMIT=2b1f5d62e3037b07c2a46499ac32091cdb41fb40
 ARG XDEBUG_VERSION=3.6.0alpha1
 ARG IMAGICK_COMMIT=55ed2e9fda264395636a2e27e51f31673f5566ab
-RUN --mount=type=bind,from=ghcr.io/php/pie:1.5.5-bin@sha256:3fca03c16df842d02b654dc382db3756058d9c128064f57cace14f8728779ce9,source=/pie,target=/usr/local/bin/pie \
+RUN --mount=type=bind,from=pie,source=/pie,target=/usr/local/bin/pie \
     echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
     && for i in $(seq 1 3); do \
@@ -109,5 +117,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
 
 # Override Composer with PHP 8.6 version using self-update
 RUN composer self-update
+
+#== Install PIE in the runtime image
+# Same pinned binary as the build-time mount above (the 'pie' stage).
+COPY --from=pie --chown=root:root --chmod=0755 /pie /usr/local/bin/pie
 
 USER ${USER}

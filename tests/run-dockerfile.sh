@@ -196,6 +196,16 @@ test_base() {
   assert_contains "$image" "^Zend OPcache$" "OPcache extension loaded" \
     php -m
 
+  # PHP 8.6 has no pecl; the image ships PIE for installing extensions at runtime.
+  if [[ "$version" == "8.6" ]]; then
+    assert_contains "$image" "\(PIE\) [0-9]+\.[0-9]+" "pie --version works as default user" \
+      pie --version
+    assert_contains "$image" "\(PIE\) [0-9]+\.[0-9]+" "pie --version works as root" \
+      sudo pie --version
+    assert_contains "$image" "Loaded PIE extensions" "pie show lists installed extensions" \
+      pie show
+  fi
+
   # Verify no PHP extension .so has unresolved shared-library dependencies.
   # A "not found" line from ldd means a runtime library was removed along with
   # the dev packages — the failure mode caused by the usrmerge path mismatch

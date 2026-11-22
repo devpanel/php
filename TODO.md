@@ -352,3 +352,16 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 - `linux/arm/v6` and `linux/arm/v7` share `base/bin/devpanel-arm`, built with GOARM=5.
 - A single downloaded artifact laid out directly in `dist/` is installed.
 - A later architecture subset keeps binaries already committed on the pending update branch.
+
+# Task: Ship PIE in the PHP 8.6 runtime images
+
+## Steps
+- [x] Pin PIE 1.5.5 (`ghcr.io/php/pie:1.5.5-bin`, digest `sha256:3fca03c16df842d02b654dc382db3756058d9c128064f57cace14f8728779ce9`) with `PIE_VERSION`/`PIE_IMAGE_DIGEST` ARGs in a `pie` stage of `8.6/base/Dockerfile`.
+- [x] Copy `/pie` to `/usr/local/bin/pie` (root:root, 0755) at the end of the final stage; build-time installs keep using the same binary through the stage mount.
+- [x] Update the `8.6/base/Dockerfile` comments that said PIE is not in the runtime layer.
+- [x] Add `pie --version` (default user and root) and `pie show` checks for 8.6 to `tests/run-dockerfile.sh`.
+- [x] Run Dockerfile/shell/YAML lint (baselines unchanged), `./test.sh build --version 8.6`, and `./test.sh run --version 8.6`.
+
+## Definition of Done
+- `devpanel/php:8.6-base`, `8.6-secure`, and `8.6-advance` contain an executable `/usr/local/bin/pie` 1.5.5 that runs as `www` and root.
+- Lint matches baselines; 8.6 build and run tests exit 0. No 8.5 or older files changed.
