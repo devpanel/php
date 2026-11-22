@@ -3,7 +3,7 @@
 # Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
 # PHP_VERSION=8.6 (official php:8.6-apache, PHP 8.6.0 GA). Contains ONLY the
 # differences from PHP 8.5 that the shared stage does not already handle:
-#   - libonig-dev: mbstring is built into php:8.5-apache and absent from 8.6
+#   - libonig-dev: mbstring is enabled by default in php:8.5-apache but not in php:8.6-apache
 #   - libavif-dev + libpcre2-dev (+ gd build libs) installed, used, removed
 #   - gd configure flags (with avif)
 #   - third-party extensions via PIE (php:8.6-apache does not ship pecl):
@@ -21,7 +21,7 @@ USER root
 # Install dev libraries needed to build gd, mbstring, and imagick for PHP 8.6,
 # build the extensions, then remove the dev libraries and their
 # automatically-added dependencies that are not needed at runtime.
-# libonig-dev builds mbstring, which the official 8.6 image no longer includes.
+# libonig-dev builds mbstring, which the official 8.6 image does not enable by default.
 # libavif-dev enables AVIF image support in gd (PHP 8.1+).
 # libmagickwand-dev and libmagickcore-dev are required to build imagick.
 # Released PECL redis 6.3.0, yaml 2.3.0, memcached 3.4.0, igbinary 3.2.16,
