@@ -36,9 +36,9 @@ USER root
 # commits that do, plus Xdebug 3.6.0alpha1 (3.6 drops PHP 8.0 and 8.1, so it
 # stays in this file). Imagick master still calls removed zval_dtor(); that
 # one install maps the call to zval_ptr_dtor_nogc() with a compiler macro.
-# During this build PIE is bind-mounted from its binary image (ghcr.io/php/pie:1.5.5-bin).
-# The same pinned binary is copied into the runtime layer at the end of this
-# file so users can run `pie install` inside containers.
+# PIE is copied into /usr/local/bin/pie from its pinned binary image
+# (ghcr.io/php/pie:1.5.5-bin) right before the install step. The installs use
+# that copy, and it stays in the runtime image so users can run `pie install`.
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
 ARG PHPREDIS_COMMIT=a6ce1e60b3e81ce3b25174aa5aaefd5590dc64fd
 ARG YAML_COMMIT=a7a3b8680b8fbf0895fd63371a0ffc1305b1a5b8
@@ -46,8 +46,8 @@ ARG MEMCACHED_COMMIT=0b52d3657140750fa0eddd20cdbfc6edc8fbdadd
 ARG IGBINARY_COMMIT=2b1f5d62e3037b07c2a46499ac32091cdb41fb40
 ARG XDEBUG_VERSION=3.6.0alpha1
 ARG IMAGICK_COMMIT=55ed2e9fda264395636a2e27e51f31673f5566ab
-RUN --mount=type=bind,from=pie,source=/pie,target=/usr/local/bin/pie \
-    echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
+COPY --from=pie --chown=root:root --chmod=0755 /pie /usr/local/bin/pie
+RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
     && for i in $(seq 1 3); do \
       apt-get update \
@@ -117,9 +117,5 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
 
 # Override Composer with PHP 8.6 version using self-update
 RUN composer self-update
-
-#== Install PIE in the runtime image
-# Same pinned binary as the build-time mount above (the 'pie' stage).
-COPY --from=pie --chown=root:root --chmod=0755 /pie /usr/local/bin/pie
 
 USER ${USER}

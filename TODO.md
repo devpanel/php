@@ -357,7 +357,7 @@ Use this file to track work that needs to be done. Lint scripts automatically ap
 
 ## Steps
 - [x] Pin PIE 1.5.5 (`ghcr.io/php/pie:1.5.5-bin`, digest `sha256:3fca03c16df842d02b654dc382db3756058d9c128064f57cace14f8728779ce9`) with `PIE_VERSION`/`PIE_IMAGE_DIGEST` ARGs in a `pie` stage of `8.6/base/Dockerfile`.
-- [x] Copy `/pie` to `/usr/local/bin/pie` (root:root, 0755) at the end of the final stage; build-time installs keep using the same binary through the stage mount.
+- [x] Copy `/pie` to `/usr/local/bin/pie` (root:root, 0755) with one `COPY --from=pie` right before the extension install `RUN`; the installs run with that copy, with no bind mount.
 - [x] Update the `8.6/base/Dockerfile` comments that said PIE is not in the runtime layer.
 - [x] Add `pie --version` (default user and root) and `pie show` checks for 8.6 to `tests/run-dockerfile.sh`.
 - [x] Run Dockerfile/shell/YAML lint (baselines unchanged), `./test.sh build --version 8.6`, and `./test.sh run --version 8.6`.
