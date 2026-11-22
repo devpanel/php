@@ -1,5 +1,5 @@
 {
     "require": {
-        "drush/drush": "9.x"
+        "drush/drush": "9.7.3"
     }
 }

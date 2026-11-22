@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 # ─── PHP 8.1 base final image ─────────────────────────────────────────────────
 # Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
 # PHP_VERSION=8.1. Contains ONLY PHP 8.1 specific differences:
@@ -6,7 +6,7 @@
 #   - libmagickwand-dev + libmagickcore-dev for imagick: installed, used, removed
 #   - libpspell-dev for pspell: installed, used, removed
 #   - gd configure flags (with avif)
-#   - PECL: igbinary 3.2.12, imagick 3.8.1
+#   - PECL: igbinary 3.2.16, imagick 3.8.1
 FROM common-php-ext AS final
 
 # Switch to root for version-specific installation
@@ -19,6 +19,10 @@ USER root
 # libavif-dev enables AVIF image support in gd (PHP 8.1+).
 # libmagickwand-dev and libmagickcore-dev are required to build imagick.
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
+# renovate: datasource=github-tags depName=igbinary/igbinary extractVersion=^(?<version>\d+\.\d+\.\d+)$
+ARG PECL_IGBINARY_VERSION=3.2.16
+# renovate: datasource=github-tags depName=Imagick/imagick extractVersion=^(?<version>\d+\.\d+\.\d+)$
+ARG PECL_IMAGICK_VERSION=3.8.1
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
     && for i in $(seq 1 3); do \
@@ -39,8 +43,8 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install -j$(nproc) gd pspell \
     && pecl install -o -f \
-        igbinary \
-        imagick \
+        "igbinary-${PECL_IGBINARY_VERSION}" \
+        "imagick-${PECL_IMAGICK_VERSION}" \
     && docker-php-ext-enable gd igbinary imagick pspell \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \

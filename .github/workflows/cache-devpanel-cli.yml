@@ -82,7 +82,7 @@ jobs:
           printf '%s\n' "${UPSTREAM_SHA}" > "${RUNNER_TEMP}/devpanel-cli-revision/sha"
 
       - name: Save the platform revision
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25  # v5
         with:
           path: ${{ runner.temp }}/devpanel-cli-revision
           key: gitlab-devpanel-client-v1-refs/heads/${{ github.event.pull_request.base.ref }}-${{ needs.cache.outputs.sha }}-${{ matrix.platform }}

@@ -9,6 +9,7 @@ USER root
 ARG DEBIAN_FRONTEND=noninteractive
 WORKDIR /home/root
 
+# renovate: datasource=github-releases depName=coreruleset/coreruleset extractVersion=^v(?<version>.+)$
 ARG CORERULESET_VERSION="3.3.5"
 # Retry up to 3 times to handle transient apt mirror/network failures (e.g. connection
 # resets mid-download). seq generates the sequence so i takes values 1, 2, 3 in turn.

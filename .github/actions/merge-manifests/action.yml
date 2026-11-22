@@ -206,7 +206,7 @@ runs:
 
     - name: Log in to GHCR
       if: inputs.ghcr_writable == 'true'
-      uses: docker/login-action@v4
+      uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4
       with:
         registry: ghcr.io
         username: ${{ inputs.ghcr_token && inputs.ghcr_user || github.actor }}
@@ -421,7 +421,7 @@ runs:
           exit 0
         fi
 
-        # Ensure skopeo is available; install it if not (ubuntu-latest runners
+        # Ensure skopeo is available; install it if not (Ubuntu runners
         # have it in apt but it is not pre-installed on all runner images).
         if ! command -v skopeo > /dev/null 2>&1; then
           echo "skopeo not found; installing via apt-get..."
@@ -509,7 +509,7 @@ runs:
 
 
     - name: Log in to Docker Hub
-      uses: docker/login-action@v4
+      uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4
       with:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}

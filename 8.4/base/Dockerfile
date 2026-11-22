@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 # ─── PHP 8.4 base final image ─────────────────────────────────────────────────
 # Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
 # PHP_VERSION=8.4. Contains ONLY PHP 8.4 specific differences:
@@ -20,6 +20,12 @@ USER root
 # imagick is installed without a version pin to pick up the latest release with
 # PHP 8.4 API support (imagick 3.8.x does not support PHP 8.4+).
 # See base/Dockerfile for the full explanation of the apt-mark + ldd strategy.
+# renovate: datasource=github-tags depName=igbinary/igbinary extractVersion=^(?<version>\d+\.\d+\.\d+)$
+ARG PECL_IGBINARY_VERSION=3.2.16
+# renovate: datasource=github-tags depName=Imagick/imagick extractVersion=^(?<version>\d+\.\d+\.\d+)$
+ARG PECL_IMAGICK_VERSION=3.8.1
+# renovate: datasource=github-tags depName=xdebug/xdebug extractVersion=^(?<version>\d+\.\d+\.\d+)$
+ARG PECL_XDEBUG_VERSION=3.5.3
 RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && savedAptMark="$(apt-mark showmanual)" \
     && for i in $(seq 1 3); do \
@@ -39,9 +45,9 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install -j$(nproc) gd \
     && pecl install -o -f \
-        igbinary \
-        imagick \
-        xdebug \
+        "igbinary-${PECL_IGBINARY_VERSION}" \
+        "imagick-${PECL_IMAGICK_VERSION}" \
+        "xdebug-${PECL_XDEBUG_VERSION}" \
     && docker-php-ext-enable gd igbinary imagick xdebug \
     && apt-mark auto '.*' > /dev/null \
     && echo "$savedAptMark" | xargs -r apt-mark manual \
@@ -77,7 +83,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
-# Override Composer with PHP 8.4 version using self-update
-RUN composer self-update
+# Override Composer with PHP 8.4 version (2.11.2) using self-update
+RUN composer self-update 2.11.2
 
 USER ${USER}

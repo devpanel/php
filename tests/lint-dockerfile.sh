@@ -14,7 +14,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASELINE="${REPO_ROOT}/tests/baselines/hadolint-baseline.json"
 TMP_CURRENT="$(mktemp "${TMPDIR:-/tmp}/hadolint-current-XXXXXX")"
 trap 'rm -f "$TMP_CURRENT"' EXIT
-HADOLINT_IMAGE="${HADOLINT_IMAGE:-hadolint/hadolint:v2.12.0}"
+HADOLINT_IMAGE="${HADOLINT_IMAGE:-hadolint/hadolint:v2.12.0@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e}"
 
 # ---------------------------------------------------------------------------
 # Parse arguments

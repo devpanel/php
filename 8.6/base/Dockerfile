@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 # ─── PHP 8.6 base final image ─────────────────────────────────────────────────
 # Extends the 'common-php-ext' intermediate (from base/Dockerfile) built with
 # PHP_VERSION=8.6 (official php:8.6-apache, PHP 8.6.0 GA). Contains ONLY the
@@ -107,7 +107,7 @@ RUN echo 'Dpkg::Use-Pty "0";' > /etc/apt/apt.conf.d/01dpkg-no-pty \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/apt/apt.conf.d/01dpkg-no-pty
 
-# Override Composer with PHP 8.6 version using self-update
-RUN composer self-update
+# Override Composer with PHP 8.6 version (2.11.2) using self-update
+RUN composer self-update 2.11.2
 
 USER ${USER}
